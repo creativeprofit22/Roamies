@@ -124,3 +124,11 @@ stays available but is not shipped by default.
 **Packaging uses:** `moonshine.dll` + `onnxruntime.dll` + licences from `models/moonshine-runtime/`, the
 `models/moonshine-small/` model files, and the MSVC runtime. The helper runs with its defaults (`--engine moonshine`,
 `--moonshine-size small`).
+
+## Packaging (Windows)
+
+- **Helper:** `src-tauri/build.rs` builds `voice-rs` for `x86_64-pc-windows-msvc` into `binaries/roamies-voice-<triple>.exe`; `tauri.windows.conf.json` ships it as `externalBin`. Other Windows targets are refused: there is no published arm64 Moonshine build, so the sidecar only turns voice on for win32 x64.
+- **Runtime (bundled):** `moonshine.dll`, its `onnxruntime.dll`, the app-local MSVC runtime (`vcruntime140*.dll`, `msvcp140*.dll`, the set `dumpbin` reports) and the licences (`licenses/moonshine/`) are Tauri resources installed next to the app. `./build.sh` fetches them with `voice-rs/fetch-moonshine.sh --runtime`.
+- **Model (downloaded):** Moonshine small (135.7 MiB) is over the ~80 MB bundling limit, so the sidecar (`sidecar/voice-model.mjs`) downloads it on first enable into `%LOCALAPPDATA%\Roamies\models\moonshine-small`. Each file is checked against the sha256 pinned in `fetch-moonshine.sh` (a test keeps the two in sync), downloads resume with HTTP Range, and the folder is renamed into place only when complete. Progress shows in a bubble and in the setup guide; until the model is there the helper reports `unavailable`.
+- **Microphone:** `roamies-voice --perms` reads the Windows microphone privacy setting; the setup guide's Microphone row opens `ms-settings:privacy-microphone`.
+- **Checks:** CI runs the default engine on a test clip; the release job installs the NSIS setup silently, checks these files and runs the installed helper with `--wav`.

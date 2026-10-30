@@ -1,6 +1,8 @@
 # Release: tag a version (e.g. `git tag v0.1.0 && git push origin v0.1.0`) or run it by hand.
 # Builds a signed + notarized macOS DMG (Apple silicon and Intel) and a Windows installer, then attaches
-# them to a draft GitHub release for you to review and publish. CI (ci.yml) stays on Linux only.
+# them to a draft GitHub release for you to review and publish. The Windows installer ships the Rust voice
+# helper with the Moonshine runtime, MSVC runtime and licences (the model downloads on first enable), and
+# is installed silently and smoke-tested before upload.
 # Each build also uploads a signed update bundle; the manifest job writes latest.json, the feed the
 # in-app updater reads from the newest published release.
 name: Release
@@ -61,8 +63,23 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: showcase/tauri/src-tauri -> target
+          workspaces: |
+            showcase/tauri/src-tauri -> target
+            showcase/tauri/src-tauri/voice-rs -> target
           key: ${{ matrix.target }}
+
+      # Moonshine runtime + CRT (bundled by tauri.windows.conf.json) and the small model for the smoke test.
+      - uses: actions/cache@v6
+        if: runner.os == 'Windows'
+        with:
+          path: |
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-runtime
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-small
+          key: moonshine-small-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
+
+      - name: Fetch Moonshine
+        if: runner.os == 'Windows'
+        run: bash src-tauri/voice-rs/fetch-moonshine.sh small
 
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
@@ -119,6 +136,24 @@ jobs:
           for f in .DS_Store .background/background.tiff Applications; do [ -e "$MNT/$f" ] || { echo "::error::DMG is missing $f"; ok=0; }; done
           hdiutil detach -quiet "$MNT"
           [ $ok -eq 1 ]
+
+      # Install the NSIS setup silently, check the voice files landed next to the app, then run the installed
+      # helper with its default engine and bundled runtime on a test clip; it must produce a final.
+      - name: Install and smoke test the Windows installer
+        if: runner.os == 'Windows'
+        run: |
+          SETUP=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe | head -1)
+          DEST="$RUNNER_TEMP\smoke"
+          powershell -NoProfile -Command "Start-Process -Wait -FilePath '$(cygpath -w "$SETUP")' -ArgumentList '/S','/D=$DEST'"
+          D=$(cygpath -u "$DEST")
+          ls -la "$D"
+          for f in roamies.exe roamies-voice.exe moonshine.dll onnxruntime.dll vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
+            [ -s "$D/$f" ] || { echo "::error::installer is missing $f"; exit 1; }
+          done
+          [ -n "$(ls "$D/licenses/moonshine")" ] || { echo "::error::installer is missing the Moonshine licences"; exit 1; }
+          out=$("$D/roamies-voice.exe" --wav src-tauri/voice-rs/tests/fixtures/en-short.wav --model-dir src-tauri/voice-rs/models/moonshine-small)
+          echo "$out"
+          echo "$out" | grep '"type":"final"' | grep -q nightfall || { echo "::error::installed helper produced no final"; exit 1; }
 
       - name: Remove the signing keychain
         if: always() && runner.os == 'macOS'

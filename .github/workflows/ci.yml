@@ -77,18 +77,77 @@ jobs:
       - name: Fetch speech model
         run: bash fetch-model.sh
 
-      # Moonshine runtime (linked into moonshine.dll with MSVC) plus the smallest streaming model.
+      # Moonshine runtime (linked into moonshine.dll with MSVC, plus the app-local CRT), the smallest
+      # streaming model for the tests and the shipped default (small) for the smoke run.
       - uses: actions/cache@v6
         with:
           path: |
             showcase/tauri/src-tauri/voice-rs/models/moonshine-runtime
             showcase/tauri/src-tauri/voice-rs/models/moonshine-tiny
-          key: moonshine-tiny-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-small
+          key: moonshine-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
 
       - name: Fetch Moonshine
-        run: bash fetch-moonshine.sh tiny
+        run: bash fetch-moonshine.sh tiny small
 
       # Unit tests plus the CLI tests (WAV dry runs on Zipformer and Moonshine tiny, bench, missing
       # model/lib, unknown engine, stdin close).
       - name: Test voice helper
         run: cargo test --locked
+
+      # The shipped default engine (no --engine): Moonshine small on a test clip must end in a final.
+      - name: Smoke test the default engine
+        run: |
+          out=$(cargo run --release --locked -- --wav tests/fixtures/en-short.wav --model-dir models/moonshine-small --moonshine-lib models/moonshine-runtime/moonshine.dll)
+          echo "$out"
+          echo "$out" | grep '"type":"final"' | grep -q nightfall
+
+  # The Windows app build: build.rs compiles the voice helper and the bundle config ships its runtime.
+  app-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: showcase/tauri/sidecar/package-lock.json
+
+      - name: Install sidecar dependencies
+        working-directory: showcase/tauri/sidecar
+        run: npm ci
+
+      - name: Test sidecar
+        working-directory: showcase/tauri/sidecar
+        run: npm test
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            showcase/tauri/src-tauri -> target
+            showcase/tauri/src-tauri/voice-rs -> target
+
+      - uses: actions/cache@v6
+        with:
+          path: showcase/tauri/src-tauri/voice-rs/models/moonshine-runtime
+          key: moonshine-runtime-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
+
+      # Fetches the Moonshine runtime, bundles the sidecar, then `cargo build` (debug) with the helper.
+      - name: Build
+        run: ./build.sh dev
+
+      - name: Check the helper and runtime sit next to the app
+        run: |
+          D=src-tauri/target/debug
+          for f in roamies.exe roamies-voice.exe moonshine.dll onnxruntime.dll vcruntime140.dll msvcp140.dll; do
+            [ -s "$D/$f" ] || { echo "::error::$f missing from $D"; exit 1; }
+          done
+          "$D/roamies-voice.exe" --perms | grep -q '"type":"perms"'

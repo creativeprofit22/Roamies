@@ -77,6 +77,18 @@ jobs:
       - name: Fetch speech model
         run: bash fetch-model.sh
 
-      # Unit tests plus the CLI tests (WAV dry run on the real model, missing model, stdin close).
+      # Moonshine runtime (linked into moonshine.dll with MSVC) plus the smallest streaming model.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-runtime
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-tiny
+          key: moonshine-tiny-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
+
+      - name: Fetch Moonshine
+        run: bash fetch-moonshine.sh tiny
+
+      # Unit tests plus the CLI tests (WAV dry runs on Zipformer and Moonshine tiny, bench, missing
+      # model/lib, unknown engine, stdin close).
       - name: Test voice helper
         run: cargo test --locked

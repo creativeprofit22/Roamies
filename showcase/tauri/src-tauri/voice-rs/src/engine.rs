@@ -20,6 +20,10 @@ impl fmt::Display for EngineError {
 
 pub trait SpeechEngine {
     fn name(&self) -> &str;
+    /// Which model this engine runs, when it knows (reported in `ready`).
+    fn model(&self) -> Option<String> {
+        None
+    }
     /// Begins a new utterance, dropping anything left from the last one.
     fn start(&mut self) -> Result<(), EngineError>;
     /// Feeds 16 kHz mono samples in [-1, 1].
@@ -36,5 +40,35 @@ pub trait SpeechEngine {
     /// True once after the engine closed a nonempty segment at a pause (its endpoint rule).
     fn endpoint(&mut self) -> bool {
         false
+    }
+}
+
+impl<T: SpeechEngine + ?Sized> SpeechEngine for Box<T> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+    fn model(&self) -> Option<String> {
+        (**self).model()
+    }
+    fn start(&mut self) -> Result<(), EngineError> {
+        (**self).start()
+    }
+    fn accept(&mut self, samples: &[f32]) {
+        (**self).accept(samples)
+    }
+    fn partial(&mut self) -> Option<String> {
+        (**self).partial()
+    }
+    fn finish(&mut self) -> String {
+        (**self).finish()
+    }
+    fn cancel(&mut self) {
+        (**self).cancel()
+    }
+    fn prepare(&mut self) -> Result<(), EngineError> {
+        (**self).prepare()
+    }
+    fn endpoint(&mut self) -> bool {
+        (**self).endpoint()
     }
 }

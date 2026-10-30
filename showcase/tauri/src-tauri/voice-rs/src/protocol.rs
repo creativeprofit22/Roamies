@@ -31,6 +31,8 @@ pub enum ErrorCode {
 pub enum Event {
     Ready {
         engine: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
         #[serde(rename = "dryRun", skip_serializing_if = "std::ops::Not::not")]
         dry_run: bool,
     },
@@ -121,10 +123,17 @@ mod tests {
 
     #[test]
     fn events_match_the_swift_shapes() {
-        assert_eq!(js(&Event::Ready { engine: "zipformer".into(), dry_run: false }), json!({"type":"ready","engine":"zipformer"}));
         assert_eq!(
-            js(&Event::Ready { engine: "zipformer".into(), dry_run: true }),
+            js(&Event::Ready { engine: "zipformer".into(), model: None, dry_run: false }),
+            json!({"type":"ready","engine":"zipformer"})
+        );
+        assert_eq!(
+            js(&Event::Ready { engine: "zipformer".into(), model: None, dry_run: true }),
             json!({"type":"ready","engine":"zipformer","dryRun":true})
+        );
+        assert_eq!(
+            js(&Event::Ready { engine: "moonshine".into(), model: Some("small-streaming-en".into()), dry_run: false }),
+            json!({"type":"ready","engine":"moonshine","model":"small-streaming-en"})
         );
         assert_eq!(
             js(&Event::State { state: SessionState::Listening, mode: Some(Mode::Handsfree), cancelled: None }),

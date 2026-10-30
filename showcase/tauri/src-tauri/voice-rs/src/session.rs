@@ -46,6 +46,10 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         self.engine.name().to_string()
     }
 
+    pub fn engine_model(&self) -> Option<String> {
+        self.engine.model()
+    }
+
     /// Loads the model up front so arming never waits on it; failures surface when a talk starts.
     pub fn prepare(&mut self) {
         if let Err(e) = self.engine.prepare() {

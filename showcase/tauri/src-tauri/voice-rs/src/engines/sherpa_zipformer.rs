@@ -121,6 +121,11 @@ impl SpeechEngine for SherpaZipformer {
         "zipformer"
     }
 
+    fn model(&self) -> Option<String> {
+        let files = find_model_files(&self.model_dir).ok()?;
+        files.encoder.file_name().map(|n| n.to_string_lossy().into_owned())
+    }
+
     fn start(&mut self) -> Result<(), EngineError> {
         let stream = self.recognizer()?.create_stream();
         self.stream = Some(stream);

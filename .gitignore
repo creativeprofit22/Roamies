@@ -18,3 +18,4 @@ node_modules/
 .idea/
 showcase/tauri/src-tauri/voice-rs/target/
 showcase/tauri/src-tauri/voice-rs/models/
+showcase/tauri/src-tauri/voice-rs/bench-data/

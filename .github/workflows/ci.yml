@@ -52,3 +52,31 @@ jobs:
       # Copies the web files into dist/, bundles the sidecar, then `cargo build` (debug).
       - name: Build
         run: ./build.sh dev
+
+  voice-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri/src-tauri/voice-rs
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: showcase/tauri/src-tauri/voice-rs -> target
+
+      - uses: actions/cache@v6
+        with:
+          path: showcase/tauri/src-tauri/voice-rs/models/zipformer
+          key: zipformer-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-model.sh') }}
+
+      - name: Fetch speech model
+        run: bash fetch-model.sh
+
+      # Unit tests plus the CLI tests (WAV dry run on the real model, missing model, stdin close).
+      - name: Test voice helper
+        run: cargo test --locked

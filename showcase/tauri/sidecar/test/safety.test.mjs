@@ -21,7 +21,7 @@ cases('command', cmd, [
   ['ls /tmp | grep -i sidekick', SAFE], ['which python3 2>/dev/null', SAFE], ['git status > /dev/null', SAFE],
   ["osascript -e 'get volume settings'", SAFE], ['echo "a; rm -rf ~"', SAFE],
   // Changes things: needs a yes.
-  ['rm notes.txt', ASK], ['rm -r ~/projects/old-app', ASK], ['mv a.txt b.txt', ASK], ['mkdir ~/new', ASK], ['touch x', ASK],
+  ['rm notes.txt', ASK], ['rm -r ~/projects/old-app', ASK], ['mv a.txt b.txt', ASK], ['mkdir ~/new', SAFE], ['touch x', ASK],
   ['git commit -m wip', ASK], ['git push', ASK], ['git push --force origin main', ASK], ['npm install', ASK], ['npm publish', ASK],
   ['brew install jq', ASK], ['curl https://example.com', ASK], ['echo hi > ~/note.txt', ASK], ['ls $(pwd)', ASK], ['python3 script.py', ASK],
   ['open -a Safari', ASK], ['killall Safari', ASK], ['defaults write com.apple.dock autohide -bool true', ASK], ['bash -c "ls"', ASK],
@@ -155,6 +155,47 @@ console.log('safety tests: passed');
     assert.ok(!isRiskyClick(l), `"${l}" is a normal click`);
   console.log('multilingual risky click tests: passed');
 }
+// Redirects joined with & (2>&1, &>file) are part of the command, not a background job.
+assert.deepEqual(splitCommand('ls 2>&1 | head').map((p) => p.text), ['ls 2>&1', 'head'], '2>&1 stays one part');
+assert.equal(classifyCommand('ls -la /tmp/x 2>&1 | head -50', HOME).level, SAFE, '2>&1 on a read-only command');
+assert.equal(classifyCommand('ls &>out.txt', HOME).level, ASK, '&> writes a file');
+assert.equal(classifyCommand('ls &>/dev/null', HOME).level, SAFE, '&>/dev/null writes nothing');
+assert.equal(classifyCommand('ls &> ~/.zshrc', HOME).level, BLOCK, '&> into a startup file');
+assert.equal(classifyCommand('ls & rm -rf ~', HOME).level, BLOCK, 'a real & still splits');
+assert.equal(classifyCommand('cd /tmp/x && grep -c ERROR *', HOME).level, SAFE, 'cd only changes the folder');
+assert.equal(classifyCommand('cd ~/.ssh && ls', HOME).level, BLOCK, 'cd into secrets is still blocked');
+console.log('redirect tests: all passed');
+// After a cd, relative paths are checked in that folder.
+assert.equal(classifyCommand('cd ~/.config && cat gh/hosts.yml', HOME).level, BLOCK, 'secret reached through cd');
+assert.equal(classifyCommand('cd ~/Library && grep -r x Keychains', HOME).level, BLOCK, 'keychain reached through cd');
+assert.equal(classifyCommand('cd /tmp/x && git status', HOME).level, SAFE, 'subcommands are not paths');
+assert.equal(classifyCommand('cd "$X" && cat notes.txt', HOME).level, ASK, 'unknown folder');
+assert.equal(classifyCommand('cd ~/Projects && cd .. && cat .ssh/id_rsa', HOME).level, BLOCK, 'cd .. is followed');
+// mkdir follows the write_file rules.
+assert.equal(classifyCommand('mkdir -p /tmp/x/proj && echo done', HOME).level, SAFE, 'mkdir in /tmp');
+assert.equal(classifyCommand('mkdir ~/Projects/new', HOME).level, SAFE, 'mkdir at home');
+assert.equal(classifyCommand('mkdir -p ~/.ssh/keys', HOME).level, BLOCK, 'mkdir in .ssh');
+assert.equal(classifyCommand('mkdir ~/Library/LaunchAgents/x', HOME).level, BLOCK, 'mkdir in LaunchAgents');
+assert.equal(classifyCommand('cd ~/Library && mkdir LaunchAgents/x', HOME).level, BLOCK, 'mkdir in LaunchAgents via cd');
+assert.equal(classifyCommand('mkdir /Volumes/Disk/x', HOME).level, ASK, 'mkdir outside home asks');
+console.log('cd and mkdir tests: all passed');
+// A redirect into a new file runs like write_file making one; overwriting still asks.
+const none = { exists: () => false }, all = { exists: () => true };
+assert.equal(classifyCommand('grep ERROR app.log > /tmp/x/errors.txt', HOME, none).level, SAFE, 'new file');
+assert.equal(classifyCommand('grep ERROR app.log > /tmp/x/errors.txt', HOME, all).level, ASK, 'overwrite');
+assert.equal(classifyCommand('grep ERROR app.log > /tmp/x/errors.txt', HOME).level, ASK, 'unknown: ask');
+assert.equal(classifyCommand('echo hi >> notes.txt', HOME, all).level, ASK, 'append to existing');
+assert.equal(classifyCommand('ls &> /tmp/out.txt', HOME, none).level, SAFE, '&> new file');
+assert.equal(classifyCommand('echo x > ~/.zshrc', HOME, none).level, BLOCK, 'startup file');
+assert.equal(classifyCommand('echo x > /etc/hosts', HOME, none).level, BLOCK, 'outside home');
+assert.equal(classifyCommand('cd ~/Library/LaunchAgents && echo x > evil.plist', HOME, none).level, BLOCK, 'redirect after cd');
+let seen = null;
+classifyCommand('cd /tmp/x && grep E a.log > errors.txt', HOME, { exists: (p) => { seen = p; return false; } });
+assert.equal(seen, '/tmp/x/errors.txt', 'checked where the cd went');
+assert.equal(classifyCommand('ls > "$OUT"', HOME, none).level, ASK, 'variable target');
+assert.equal(classifyCommand('ls 2>/dev/null > /tmp/a.txt', HOME, none).level, SAFE, 'dev null and new file');
+assert.equal(classifyCommand('rm a.txt > /tmp/log.txt', HOME, none).level, ASK, 'the command itself still asks');
+console.log('redirect into new file tests: all passed');
 
 // Dictation: never pastes into password, security or system-settings apps; terminals get no newline, so nothing runs.
 {

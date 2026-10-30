@@ -11,7 +11,7 @@ CONFIGS=("$@")
 [ ${#CONFIGS[@]} -gt 0 ] || CONFIGS=(zipformer moonshine-tiny moonshine-small)
 
 cargo build --release --locked
-EXE=target/release/roamies-voice
+EXE=target/release/roamies-voice-moonshine
 [ -x "$EXE.exe" ] && EXE="$EXE.exe"
 LIB=models/moonshine-runtime/moonshine.dll
 [ "$(uname -s)" = Darwin ] && LIB=models/moonshine-runtime/libmoonshine.dylib

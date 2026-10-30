@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_roamies-voice"))
+    Command::new(env!("CARGO_BIN_EXE_roamies-voice-moonshine"))
 }
 
 fn crate_dir() -> PathBuf {

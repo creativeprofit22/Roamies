@@ -1,7 +1,9 @@
 {
   "bundle": {
     "externalBin": [
-      "binaries/roamies-voice"
+      "binaries/roamies-voice-moonshine",
+      "binaries/roamies-voice-parakeet",
+      "binaries/node"
     ],
     "resources": {
       "voice-rs/models/moonshine-runtime/moonshine.dll": "moonshine.dll",

@@ -1,14 +1,16 @@
 # AGENTS.md
 
 Roamies: a Tauri 2 desktop app (Rust shell in `showcase/tauri/src-tauri`), a Node sidecar that runs the
-agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, and macOS Swift helpers built by
-`src-tauri/build.rs`.
+agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, macOS Swift helpers built by
+`src-tauri/build.rs`, and the Windows voice helper (`src-tauri/voice-win`, Rust + Parakeet) built by
+`build.sh` for Windows targets. It compiles elsewhere too: `--transcribe <wav>` and `--test-audio <wav>`
+test speech without a Windows PC (see the top of its `main.rs`).
 
 ## Commands
 
 ```sh
 cd showcase/tauri/sidecar && npm ci     # install sidecar deps
-npm test                                # sidecar tests (reply stream, storage, pointing)
+npm test                                # sidecar tests (reply stream, storage, pointing, safety, voice model download)
 npm run build                           # bundle the sidecar into dist/
 cd .. && ./build.sh dev                 # web files + sidecar + debug `cargo build`
 ./build.sh                              # release bundle for this OS (signs on macOS if a Developer ID is in the keychain)

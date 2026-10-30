@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: showcase/tauri/sidecar/package-lock.json
 
@@ -95,6 +95,9 @@ jobs:
       - name: Test voice helper
         run: cargo test --locked
 
+      - name: Lint voice helper
+        run: cargo clippy --locked --all-targets -- -D warnings
+
       # The shipped default engine (no --engine): Moonshine small on a test clip must end in a final.
       - name: Smoke test the default engine
         run: |
@@ -102,7 +105,53 @@ jobs:
           echo "$out"
           echo "$out" | grep '"type":"final"' | grep -q nightfall
 
-  # The Windows app build: build.rs compiles the voice helper and the bundle config ships its runtime.
+  # The Parakeet helper (voice-win). Its unit tests need no model download.
+  voice-parakeet-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri/src-tauri/voice-win
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: showcase/tauri/src-tauri/voice-win -> target
+
+      - name: Test voice helper
+        run: cargo test --locked
+
+      - name: Lint voice helper
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  # Sidecar tests on Windows on their own, so a Windows-only failure (slow fsyncs, paths) shows up fast.
+  sidecar-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri/sidecar
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: showcase/tauri/sidecar/package-lock.json
+
+      - name: Install sidecar dependencies
+        run: npm ci
+
+      - name: Test sidecar
+        run: npm test
+
+  # The Windows app build: build.rs compiles both voice helpers and the bundle config ships their runtime.
   app-windows:
     runs-on: windows-latest
     timeout-minutes: 45
@@ -115,17 +164,13 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: showcase/tauri/sidecar/package-lock.json
 
       - name: Install sidecar dependencies
         working-directory: showcase/tauri/sidecar
         run: npm ci
-
-      - name: Test sidecar
-        working-directory: showcase/tauri/sidecar
-        run: npm test
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -134,20 +179,22 @@ jobs:
           workspaces: |
             showcase/tauri/src-tauri -> target
             showcase/tauri/src-tauri/voice-rs -> target
+            showcase/tauri/src-tauri/voice-win -> target
 
       - uses: actions/cache@v6
         with:
           path: showcase/tauri/src-tauri/voice-rs/models/moonshine-runtime
           key: moonshine-runtime-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
 
-      # Fetches the Moonshine runtime, bundles the sidecar, then `cargo build` (debug) with the helper.
+      # Fetches Node and the Moonshine runtime, bundles the sidecar, then `cargo build` (debug) with both helpers.
       - name: Build
         run: ./build.sh dev
 
       - name: Check the helper and runtime sit next to the app
         run: |
           D=src-tauri/target/debug
-          for f in roamies.exe roamies-voice.exe moonshine.dll onnxruntime.dll vcruntime140.dll msvcp140.dll; do
+          for f in roamies.exe roamies-voice-moonshine.exe roamies-voice-parakeet.exe node.exe moonshine.dll onnxruntime.dll vcruntime140.dll msvcp140.dll; do
             [ -s "$D/$f" ] || { echo "::error::$f missing from $D"; exit 1; }
           done
-          "$D/roamies-voice.exe" --perms | grep -q '"type":"perms"'
+          "$D/roamies-voice-moonshine.exe" --perms | grep -q '"type":"perms"'
+          "$D/roamies-voice-parakeet.exe" --perms | grep -q '"type":"perms"'

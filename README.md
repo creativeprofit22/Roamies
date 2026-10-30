@@ -54,8 +54,9 @@ your Dock.
   accessibility, files), connecting an AI account, shortcuts and where to find the menu bar icon. Reopen
   it any time from the menu bar icon → Setup Guide….
 
-Voice works best on macOS 26+, which doesn't need Siri or Dictation turned on. Voice, window reading,
-pointing and app control are macOS only for now.
+Voice works best on macOS 26+, which doesn't need Siri or Dictation turned on. On Windows, voice runs
+NVIDIA's Parakeet speech model on your PC (about 670 MB, downloaded once from the setup guide), so your
+voice never leaves it. Window reading, pointing and app control are macOS only for now.
 
 ## Get started
 
@@ -95,6 +96,7 @@ npm install @kenkaiiii/gg-ai @kenkaiiii/gg-agent
 | Path | What |
 |---|---|
 | `showcase/tauri/src-tauri/` | The desktop app shell (Tauri 2, Rust) and the macOS voice and hands helpers (Swift) |
+| `showcase/tauri/src-tauri/voice-win/` | The Windows voice helper (Rust, Parakeet speech on the PC) |
 | `showcase/tauri/sidecar/` | Sidekick's brain: the gg-framework agent, its tools, memory and tests |
 | `showcase/roamies/` | The creatures: physics, rendering, expressions, bubbles, tool animations, sounds |
 | `showcase/onboarding/` | The setup guide |
@@ -103,6 +105,11 @@ npm install @kenkaiiii/gg-ai @kenkaiiii/gg-agent
 
 [AGPL-3.0](LICENSE). You can use, change and share Roamies, but if you distribute it or run a modified
 version as a network service, you have to release your source under the same license.
+
+Voice on Windows uses [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
+([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)), in the ONNX export by
+[istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx), run with
+[parakeet-rs](https://github.com/altunenes/parakeet-rs). The model is downloaded at setup, not bundled.
 
 ## Learn with me
 

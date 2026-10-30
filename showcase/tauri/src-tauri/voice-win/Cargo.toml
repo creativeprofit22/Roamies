@@ -1,0 +1,27 @@
+# Voice helper for Roamies on Windows (the twin of voice/main.swift on macOS). Built by build.rs and
+# bundled as binaries/roamies-voice-parakeet-<target>.exe. Compiles on other systems too (no mic or hotkey there),
+# so the transcription and the session logic can be tested anywhere.
+[package]
+name = "roamies-voice"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "roamies-voice-parakeet"
+path = "src/main.rs"
+
+[dependencies]
+parakeet-rs = "=0.4.3"
+serde_json = "=1.0.154"
+hound = "=3.5.1"
+
+[target.'cfg(windows)'.dependencies]
+cpal = "=0.18.2"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

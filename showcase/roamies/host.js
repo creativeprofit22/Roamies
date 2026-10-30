@@ -149,6 +149,8 @@
         break;
       case 'done':
         endTalk();
+        // A stopped turn ends with 'done' but no tool_end for the tool it cut off: stop its spinner.
+        for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
         setTimeout(() => a.endGuide?.(), 6000);
         break;
       case 'error':
@@ -201,6 +203,7 @@
     else if (m.kind === 'agent') onAgent(m.e);
     else if (m.kind === 'voice') onVoice(m);
     else if (m.kind === 'progress') onProgress(m);
+    else if (m.kind === 'list') getAgent().list(m);
   };
 
   // Long-running status (the Windows voice model download): one bubble per id, updated in place.
@@ -220,6 +223,7 @@
     const a = getAgent();
     if (!a) return setTimeout(ready, 150);
     a.setAuto(true);
+    a.onListToggle = (id) => send({ type: 'list_toggle', id });
     a.hide({ instant: true });
     send({ type: 'ui_ready' });
   };

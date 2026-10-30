@@ -1,4 +1,4 @@
-//! roamies-voice: Windows voice helper. Wiring only; see the modules for behaviour.
+//! roamies-voice-moonshine: Windows voice helper. Wiring only; see the modules for behaviour.
 
 mod audio;
 mod bench;

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { MODEL, installModel, isInstalled, modelDir, talkLabel } from '../voice-model.mjs';
+import { MODEL, downloadModel, installModel, isInstalled, isReady, modelDir, sizeLabel, talkLabel, totalBytes } from '../voice-model.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'roamies-model-test-'));
 process.on('exit', () => fs.rmSync(TMP, { recursive: true, force: true }));
@@ -17,6 +17,7 @@ let mode = {}; // per-file behaviour: 'drop-once' | 'no-range' | 'corrupt'
 const log = [];
 const server = http.createServer((req, res) => {
   const name = req.url.slice(1);
+  if (!blobs[name]) { res.writeHead(404); return res.end(); }
   const body = mode[name] === 'corrupt' ? Buffer.alloc(blobs[name].length, 7) : blobs[name];
   log.push({ name, range: req.headers.range ?? null });
   const m = /^bytes=(\d+)-$/.exec(req.headers.range ?? '');
@@ -95,6 +96,33 @@ const fresh = (n) => path.join(TMP, n, 'test-model');
   assert.equal(log.length, 0);
   fs.truncateSync(path.join(dir, 'b'), 10);
   assert.ok(!isInstalled(dir, manifest), 'a damaged file means not installed');
+}
+
+// upstream-shaped API: sizes, isReady, downloadModel with coded errors
+{
+  assert.equal(totalBytes(manifest), blobs.a.length + blobs.b.length);
+  assert.equal(totalBytes(), MODEL.files.reduce((n, f) => n + f.size, 0));
+  assert.equal(sizeLabel(), `${Math.round(totalBytes() / 1e6)} MB`);
+  const dir = fresh('dl');
+  mode = {};
+  const seen = [];
+  await downloadModel(dir, { manifest, backoffMs: 1, onProgress: (p) => seen.push(p) });
+  assert.ok(isReady(dir, manifest));
+  assert.equal(seen.at(-1).done, totalBytes(manifest));
+  // already there: no fetch, progress reports complete
+  log.length = 0; seen.length = 0;
+  await downloadModel(dir, { manifest, onProgress: (p) => seen.push(p) });
+  assert.equal(log.length, 0);
+  assert.deepEqual(seen, [{ done: totalBytes(manifest), total: totalBytes(manifest) }]);
+
+  mode = { b: 'corrupt' };
+  await assert.rejects(downloadModel(fresh('dl-bad'), { manifest, retries: 0, backoffMs: 1 }), (e) => e.code === 'checksum');
+  mode = {};
+  await assert.rejects(downloadModel(fresh('dl-disk'), { manifest, statfs: async () => ({ bavail: 1, bsize: 4096 }) }), (e) => e.code === 'disk' && /disk space/.test(e.message));
+  const gone = { ...manifest, files: [{ ...manifest.files[0], url: `${base}/missing` }] };
+  await assert.rejects(downloadModel(fresh('dl-net'), { manifest: gone, retries: 0, backoffMs: 1 }), (e) => e.code === 'network');
+  const ac = new AbortController(); ac.abort();
+  await assert.rejects(downloadModel(fresh('dl-abort'), { manifest, signal: ac.signal }), (e) => e.code === 'aborted');
 }
 
 server.close();

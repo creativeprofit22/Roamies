@@ -90,6 +90,8 @@ export function splitCommand(cmd) {
     if (q) { cur += c; if (c === q) q = null; else if (c === '\\' && q === '"') cur += cmd[++i] ?? ''; continue; }
     if (c === '\\') { cur += c + (cmd[++i] ?? ''); continue; }
     if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    // 2>&1, <&3 and &>file are redirects, not "run in the background".
+    if (c === '&' && (cmd[i - 1] === '>' || cmd[i - 1] === '<' || (cmd[i + 1] === '>' && cmd[i - 1] !== '&'))) { cur += c; continue; }
     if (c === ';' || c === '\n' || c === '|' || c === '&') {
       if (cur.trim()) parts.push({ text: cur.trim(), pipeIn: false });
       cur = '';
@@ -137,7 +139,7 @@ const BLOCKED_PROGRAMS = {
 const SHELLS = new Set(['powershell', 'pwsh', 'cmd', 'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'csh', 'tcsh', 'python', 'python3', 'node', 'perl', 'ruby', 'php', 'osascript', 'swift', 'deno', 'bun', 'lua']);
 // Read-only programs that are fine to run without asking (paths still checked).
 const READ_ONLY = new Set([
-  'ls', 'pwd', 'date', 'cal', 'whoami', 'id', 'uname', 'sw_vers', 'hostname', 'uptime', 'which', 'type', 'whereis', 'echo', 'printf',
+  'ls', 'cd', 'pwd', 'date', 'cal', 'whoami', 'id', 'uname', 'sw_vers', 'hostname', 'uptime', 'which', 'type', 'whereis', 'echo', 'printf',
   'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'du', 'df', 'tree', 'basename', 'dirname', 'realpath', 'readlink',
   'grep', 'egrep', 'fgrep', 'rg', 'ag', 'find', 'fd', 'mdfind', 'mdls', 'locate', 'sort', 'uniq', 'cut', 'tr', 'column', 'jq', 'diff', 'cmp',
   'ps', 'pgrep', 'top', 'vm_stat', 'sysctl', 'system_profiler', 'ioreg', 'pmset', 'defaults', 'networksetup', 'scutil', 'ifconfig',
@@ -155,9 +157,12 @@ const READ_ONLY_SUB = {
   java: /^(-version|--version)$/, rustc: /^(-V|--version)$/, env: /^$/, printenv: /^$/,
 };
 
-function checkSimple(text, pipeIn, home) {
+function checkSimple(text, pipeIn, home, cwd = home) {
   const ws = words(text);
   const prog = program(ws), args = prog.args;
+  // Path checks see relative arguments from the folder a cd moved to.
+  const at = (a) => (cwd !== home && !a.startsWith('-') && !/^[~/$]/.test(a) && !/^[a-z]:[\\/]/i.test(a) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(a) ? path.join(cwd, slash(a)) : a);
+  const pathArgs = args.map(at);
   const name = prog.name.replace(/^(mkfs|newfs|fsck)[._].*$/, '$1').toLowerCase();
   const joined = args.join(' ');
   if (!name) return verdict(SAFE);
@@ -201,7 +206,7 @@ function checkSimple(text, pipeIn, home) {
   // Walking the whole home folder (find ~, grep -r ~, du ~) trips macOS privacy prompts for Music, Photos, iCloud and other apps.
   if (['find', 'fd', 'grep', 'egrep', 'rg', 'ag', 'du', 'tree', 'ls'].includes(name)) {
     const recursive = name === 'find' || name === 'fd' || name === 'rg' || name === 'ag' || name === 'tree' || name === 'du' || /(^|\s)-[a-zA-Z]*[rR]/.test(joined);
-    for (const a of args.filter((x) => !x.startsWith('-'))) {
+    for (const a of pathArgs.filter((x) => !x.startsWith('-'))) {
       if (/^\$(HOME|\{HOME\})/.test(a)) { const v = checkRead(a.replace(/^\$\{?HOME\}?/, '~'), home, { recursive }); if (v.level !== SAFE) return verdict(v.level, v.reason); continue; }
       if (!/^[~/.]/.test(a)) continue;
       const v = checkRead(a, home, { recursive });
@@ -210,11 +215,19 @@ function checkSimple(text, pipeIn, home) {
     if (name === 'find' && /\s-(delete|exec|execdir|ok|okdir|fprint\w*)\b/.test(' ' + joined)) return verdict(ASK, '`find` here also changes or runs things.');
   }
   // Any path that looks like a secret, in any command, means no.
-  for (const a of args) {
+  for (const a of pathArgs) {
     if (!/[/~.]/.test(a) || a.startsWith('-') && !a.includes('=')) continue;
     const t = a.includes('=') ? a.split('=').slice(1).join('=') : a;
     if (/^[a-z]+:\/\//i.test(t)) continue;
     if (SECRET.some((re) => re.test(rel(norm(t, home), home)) || re.test(t))) return verdict(BLOCK, `${t} holds passwords or keys, so I never touch it.`);
+  }
+  // Making folders is like write_file making a new file: fine where writing is, a yes elsewhere, never where it's blocked.
+  if (name === 'mkdir') {
+    for (const a of pathArgs.filter((x) => !x.startsWith('-'))) {
+      const w = checkWrite(a, home);
+      if (w.level === BLOCK) return w.path.startsWith(slash(home) + '/') || /^\/(private\/)?tmp\//.test(w.path) ? verdict(BLOCK, w.reason) : verdict(ASK, w.reason);
+    }
+    return verdict(SAFE);
   }
   if (READ_ONLY.has(name)) {
     const sub = READ_ONLY_SUB[name];
@@ -224,8 +237,13 @@ function checkSimple(text, pipeIn, home) {
   return verdict(ASK);
 }
 
-/** run_command. SAFE runs, ASK needs the user's yes, BLOCK never runs. */
-export function classifyCommand(cmd, home) {
+// Files a command writes with > >> &>, quotes removed; /dev/null and 2>&1 style copies left out.
+const redirectTargets = (text) => [...text.matchAll(/(?:^|[^>])>{1,2}(?!&)\s*("[^"]*"|'[^']*'|[^\s;&|<>]+)/g)]
+  .map((m) => m[1].replace(/^(['"])([\s\S]*)\1$/, '$2')).filter((t) => t && t !== '/dev/null');
+
+/** run_command. SAFE runs, ASK needs the user's yes, BLOCK never runs. `exists(path)`, if given, lets a redirect
+ *  that makes a new file run like write_file making one; without it every redirect asks. */
+export function classifyCommand(cmd, home, { exists } = {}) {
   home = slash(home);
   const s = String(cmd ?? '').trim();
   if (!s) return verdict(BLOCK, 'That command is empty.');
@@ -234,20 +252,29 @@ export function classifyCommand(cmd, home) {
   const parts = splitCommand(s);
   if (!parts) return verdict(ASK, "I couldn't read that command clearly.");
   let level = SAFE, reason = '';
+  // The folder each part runs in, so relative paths after a cd are checked where they really point. null: unknown.
+  let cwd = home;
   for (const p of parts) {
-    const v = checkSimple(p.text, p.pipeIn, home);
+    let v = checkSimple(p.text, p.pipeIn, home, cwd ?? home);
+    if (cwd == null && v.level === SAFE) v = verdict(ASK, "I can't tell which folder that runs in.");
+    for (const r of redirectTargets(p.text)) {
+      const t = /^~/.test(r) || isAbs(slash(r)) ? r : path.join(cwd ?? home, slash(r));
+      const w = checkWrite(t, home, { exists: !exists || !!exists(norm(t, home)) });
+      if (w.level === BLOCK) return verdict(BLOCK, w.reason);
+      if ((w.level === ASK || cwd == null || /[$`*?{]/.test(r)) && v.level === SAFE) v = verdict(ASK, w.reason);
+    }
+    const ws = words(p.text);
+    if (ws[0] === 'cd') {
+      const t = ws[1];
+      if (!t || t === '~') cwd = home;
+      else if (cwd == null || /[$`*?]/.test(t) || t === '-') cwd = null;
+      else cwd = norm(/^~/.test(t) || isAbs(slash(t)) ? t : path.join(cwd, slash(t)), home);
+    }
     if (v.level === BLOCK) return v;
     if (v.level === ASK && level === SAFE) { level = ASK; reason = v.reason; }
   }
-  // Writing into files, command substitution and background jobs change things in ways the parts don't show.
-  if (level === SAFE && (/(^|[^>&0-9])>{1,2}(?!&)\s*(?!\/dev\/null\b)\S/.test(s) || /\$\(|`/.test(s) || /(^|\s)&\s*$/.test(s))) level = ASK;
-  const redirect = /(^|[^>])>{1,2}\s*([^\s;&|]+)/g;
-  for (let m; (m = redirect.exec(s));) {
-    const target = m[2];
-    if (target === '/dev/null' || target.startsWith('&')) continue;
-    const w = checkWrite(target, home);
-    if (w.level === BLOCK) return verdict(BLOCK, w.reason);
-  }
+  // Command substitution and background jobs change things in ways the parts don't show.
+  if (level === SAFE && (/\$\(|`/.test(s) || /(^|\s)&\s*$/.test(s))) level = ASK;
   return verdict(level, reason);
 }
 

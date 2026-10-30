@@ -1,6 +1,7 @@
 // Builds the platform helpers into the sidecar paths Tauri bundles (externalBin):
 // macOS: the Swift roamies-voice (talk chord + speech) and roamies-hands (window capture, app control).
-// Windows x64: the Rust roamies-voice in voice-rs; its Moonshine runtime ships as resources.
+// Windows x64: the Rust roamies-voice-moonshine (voice-rs; its Moonshine runtime ships as resources)
+// and roamies-voice-parakeet (voice-win).
 fn main() {
     #[cfg(target_os = "macos")]
     {
@@ -8,7 +9,7 @@ fn main() {
         build_swift_helper("hands");
     }
     #[cfg(windows)]
-    build_rust_voice();
+    build_rust_helpers();
     tauri_build::build()
 }
 
@@ -32,40 +33,45 @@ fn build_swift_helper(name: &str) {
 }
 
 #[cfg(windows)]
-fn build_rust_voice() {
-    use std::path::PathBuf;
-    use std::process::Command;
+fn build_rust_helpers() {
     const RUNTIME: [&str; 6] =
         ["moonshine.dll", "onnxruntime.dll", "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
     let target = std::env::var("TARGET").expect("cargo sets TARGET");
     // Moonshine publishes only an x86_64 Windows runtime, so voice is x64-only on Windows.
     assert!(target == "x86_64-pc-windows-msvc", "Windows voice needs x86_64-pc-windows-msvc, not {target}");
-    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets this"));
-    let crate_dir = root.join("voice-rs");
-    for p in ["src", "Cargo.toml", "Cargo.lock", ".cargo/config.toml"] {
-        println!("cargo:rerun-if-changed=voice-rs/{p}");
-    }
-    let runtime = crate_dir.join("models").join("moonshine-runtime");
+    let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets this"));
+    let runtime = root.join("voice-rs").join("models").join("moonshine-runtime");
     for f in RUNTIME.iter().copied().chain(["licenses"]) {
         println!("cargo:rerun-if-changed=voice-rs/models/moonshine-runtime/{f}");
         assert!(runtime.join(f).exists(), "missing {}: run voice-rs/fetch-moonshine.sh --runtime", runtime.join(f).display());
     }
-    // Run in voice-rs so its .cargo/config.toml (+crt-static, to match sherpa-onnx) applies, with
-    // our own flags and target dir kept out of it.
+    build_rust_helper(&root, &target, "voice-rs", "roamies-voice-moonshine");
+    build_rust_helper(&root, &target, "voice-win", "roamies-voice-parakeet");
+}
+
+// Always a release build: a debug one is far too slow at reading speech.
+#[cfg(windows)]
+fn build_rust_helper(root: &std::path::Path, target: &str, krate: &str, bin: &str) {
+    let crate_dir = root.join(krate);
+    for p in ["src", "Cargo.toml", "Cargo.lock", ".cargo/config.toml"] {
+        println!("cargo:rerun-if-changed={krate}/{p}");
+    }
+    // Run in the crate dir so its own .cargo/config.toml applies (voice-rs: +crt-static, to match
+    // sherpa-onnx), with our flags and target dir kept out of it.
     let target_dir = crate_dir.join("target");
-    let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+    let status = std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .current_dir(&crate_dir)
-        .args(["build", "--release", "--locked", "--target", &target])
+        .args(["build", "--release", "--locked", "--target", target, "--bin", bin])
         .env("CARGO_TARGET_DIR", &target_dir)
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_PROFILE_RELEASE_DEBUG")
         .status()
-        .expect("run cargo for voice-rs");
-    assert!(status.success(), "building the voice-rs helper failed");
-    let built = target_dir.join(&target).join("release").join("roamies-voice.exe");
+        .unwrap_or_else(|e| panic!("run cargo for {krate}: {e}"));
+    assert!(status.success(), "building the {krate} helper failed");
+    let built = target_dir.join(target).join("release").join(format!("{bin}.exe"));
     let dir = root.join("binaries");
     std::fs::create_dir_all(&dir).expect("create binaries dir");
-    std::fs::copy(&built, dir.join(format!("roamies-voice-{target}.exe"))).expect("copy roamies-voice.exe");
+    std::fs::copy(&built, dir.join(format!("{bin}-{target}.exe"))).unwrap_or_else(|e| panic!("copy {bin}.exe: {e}"));
 }

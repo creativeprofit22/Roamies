@@ -7,7 +7,7 @@ description = "Roamies on-device voice helper (Windows): mic capture, streaming 
 publish = false
 
 [[bin]]
-name = "roamies-voice"
+name = "roamies-voice-moonshine"
 path = "src/main.rs"
 
 [dependencies]

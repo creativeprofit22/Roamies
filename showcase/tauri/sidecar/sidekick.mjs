@@ -5,8 +5,7 @@
 // in:  {type:'menu', id} {type:'answer', id, text} {type:'ui_ready'}
 // out: {type:'menu', items} {type:'ui', msg} {type:'overlays', ids}
 import { Agent } from '@kenkaiiii/gg-agent';
-import { parseSipsSize, readProblem, rematch, sameBounds, shotMap, shotProblem, toScreen } from './pointing.mjs';
-import { ASK, BLOCK, checkDictationTarget, checkOpen, checkRead, checkUrl, checkWrite, classifyCommand, isRiskyClick, isYes, redactArgs } from './safety.mjs';
+import { BLOCK, checkDictationTarget, redactArgs } from './safety.mjs';
 import {
   AUTH_PROVIDERS, AuthStorage, dualAuthProvider, getContextWindow, getDefaultModel, getModel, getModelsForProvider,
   loginAnthropic, loginGemini, loginKimi, loginOpenAI, loginXai,
@@ -17,15 +16,17 @@ import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
-import { z } from 'zod';
 import {
-  addCommitment, addFact, clearFacts, fitContext, forgetFact, listFacts, nextDue, pickFacts, touchFacts, forDisk, forProvider, isStale, loadLatestSession, newSession, openCommitments,
-  parseDue, pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson,
+  clearFacts, clearFinished, fitContext, flushWrites, forgetFact, listItems, listFacts, nextDue, pickFacts, touchFacts, forDisk, forProvider, isStale, loadLatestSession, newSession, openCommitments,
+  pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson,
 } from './store.mjs';
 import { EMOTES, ReplyStream } from './reply.mjs';
-import { installModel, isInstalled, modelDir, talkLabel } from './voice-model.mjs';
+import { downloadModel, isReady, modelDir, sizeLabel, talkLabel, totalBytes } from './voice-model.mjs';
+import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
 
 console.log = console.info = (...a) => console.error(...a);
+// gg-ai's StreamResult.response rejects unobserved when a stream fails; prompt() already reports it, so don't die.
+process.on('unhandledRejection', (err) => console.error('unhandled rejection', err));
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 // While the setup guide is open, Sidekick talks through it instead of the desktop overlay.
 let onboarding = false;
@@ -44,14 +45,21 @@ const MENU_PROVIDERS = ['anthropic', 'openai', 'gemini', ...AUTH_PROVIDERS.map((
 const FAST = { anthropic: 'claude-haiku-5-5', openai: 'gpt-6-luna', gemini: 'gemini-3.8-flash' };
 
 // ---------- config ----------
-const DEFAULT_KEYS = { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA' };
+// On Windows, Ctrl+Alt is AltGr on many keyboards (Ctrl+Alt+S types "ś" in Polish), so it uses Ctrl+Shift.
+const DEFAULT_KEYS = process.platform === 'win32'
+  ? { talk: ['control', 'option'], summon: 'Control+Shift+KeyS', snap: 'Control+Shift+KeyA', list: 'Control+Shift+KeyL' }
+  : { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA', list: 'Control+Alt+KeyL' };
 const DEFAULTS = {
   provider: null, model: null, sound: true, allowActions: false, voice: true,
   onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, setupVersion: 0, voiceMode: 'agent',
 };
-// Windows voice runs Moonshine, which has an x64 build only; it needs its model downloaded first.
+// Windows voice runs Moonshine on the PC (x64 build only). Its model is downloaded once: from the setup
+// guide, or the first time voice is used.
 const VOICE_OK = process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64');
 const NEEDS_MODEL = process.platform === 'win32';
+const MODEL_DIR = modelDir();
+const voiceModel = { status: !NEEDS_MODEL || isReady(MODEL_DIR) ? 'ready' : 'missing', done: 0, total: totalBytes(), error: null };
+const voiceReady = () => voiceModel.status === 'ready';
 let config = { ...DEFAULTS };
 try { config = { ...DEFAULTS, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) }; } catch {}
 if (config.voiceMode !== 'dictation') config.voiceMode = 'agent';
@@ -67,6 +75,11 @@ const validTalk = (t) => Array.isArray(t) && t.length === 2 && new Set(t).size =
 // Accelerators look like "Control+Alt+KeyS": at least one of Control/Alt/Command, then one key code.
 const validSummon = (a) => typeof a === 'string' && /^((Control|Alt|Shift|Command)\+)+[A-Za-z0-9]+$/.test(a) && /(Control|Alt|Command)\+/.test(a);
 const sendKeys = () => send({ type: 'keybinds', ...keys() });
+const MAC = process.platform === 'darwin';
+// A shortcut as people on this computer say it: "Control+Option+S" on a Mac, "Ctrl+Alt+S" on Windows.
+const keyWords = (accel) => accel.replace(/Key|Digit/g, '').split('+')
+  .map((p) => (MAC ? { Alt: 'Option' }[p] ?? p : { Control: 'Ctrl', Command: 'Win' }[p] ?? p)).join('+');
+const TRAY = MAC ? 'menu bar' : 'system tray';
 
 const auth = new AuthStorage();
 const signedIn = new Map();
@@ -94,400 +107,13 @@ const userName = (() => {
 })();
 
 // ---------- tools ----------
-const expand = (p) => path.resolve(String(p).replace(/^~(?=$|\/|\\)/, HOME));
-const clip = (s, n) => (s.length > n ? s.slice(0, n) + `\n…(${s.length - n} more characters)` : s);
-const run = (cmd, args, opts = {}) => new Promise((res) => execFile(cmd, args, { maxBuffer: 8 << 20, timeout: 60_000, ...opts }, (err, stdout, stderr) => res({ err, stdout: String(stdout), stderr: String(stderr) })));
-const actionsOff = 'File edits and commands are switched off. Tell the user to turn on "Allow File Edits & Commands" in the menu bar if they want this.';
-
-// macOS "hands": the bundled helper that captures one window or area and reads/controls other apps.
-const HANDS = process.env.ROAMIES_HANDS || '';
-let axNudged = 0;
-const pointWaits = new Map(); // point_at call id → resolve, settled when the overlay has shown the step
-let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)
-let lastRead = null; // { win, controls } from the latest read_window, to catch ids that went stale
-// Bumped for every new request: what was seen before it may be another page, tab or app by now.
-let turn = 0;
-const STALE_ID = 'The page changed since read_window, so that id is out of date. Call read_window again and use the new ids.';
-async function shotPoint(x, y) {
-  const problem = shotProblem(lastShot, turn);
-  if (problem) throw new Error(problem);
-  if (lastShot.win != null) {
-    const now = await hands('locate', `window:${lastShot.win}`).catch(() => null);
-    if (!sameBounds(now?.window?.bounds, lastShot.bounds)) throw new Error('That window moved or closed since the screenshot. Take a new screenshot first.');
-  }
-  return toScreen(lastShot, x, y);
-}
-// The control that read_window listed at this id, wherever it is now.
-// The text point_at should use: a whole label or heading (exact or word match), not the words buried in a
-// paragraph, which is what a guessed word like "version" or "settings" tends to hit.
-function pickTextMatch(matches, find) {
-  const q = String(find).trim();
-  return (matches ?? []).find((m) => m.match !== 'partial' && m.text.trim().length <= Math.max(40, q.length * 3)) ?? null;
-}
-// read_window and act_in_app output: visible controls first, then up to 15 scrolled out of view.
-function controlList(controls, texts = []) {
-  const vis = controls.filter((c) => !c.offscreen), off = controls.filter((c) => c.offscreen).slice(0, 15);
-  const line = (c) => `${c.id} ${c.role}${c.label ? ` "${c.label}"` : ''}${c.value ? ` = "${c.value}"` : ''}${c.focused ? ' (focused)' : ''}`;
-  const labels = new Set(controls.map((c) => c.label));
-  const words = texts.filter((t) => !labels.has(t));
-  return vis.map(line).join('\n')
-    + (off.length ? `\nFurther down (point_at or click_text scrolls to them): ${off.map((c) => `${c.id} "${c.label || c.role}"`).join(', ')}` : '')
-    + (words.length ? `\nText on screen: ${words.join(' | ')}` : '');
-}
-async function liveControls(spec) {
-  const fresh = await hands('ui', spec);
-  const problem = readProblem(lastRead, fresh.window.id, turn);
-  if (problem) throw new Error(problem);
-  return (id) => {
-    const c = rematch(lastRead.controls[id - 1], fresh.controls, id);
-    if (!c) throw new Error(STALE_ID);
-    return c;
-  };
-}
-async function hands(...args) {
-  if (!HANDS) throw new Error('This needs the Roamies app on macOS.');
-  const r = await run(HANDS, args, { timeout: 120_000 });
-  let res;
-  try { res = JSON.parse(r.stdout.trim().split('\n').pop() || '{}'); } catch { throw new Error(`hands helper failed: ${r.stderr.trim().slice(0, 200) || 'no output'}`); }
-  if (res.ok === false && !res.cancelled) {
-    if (/Accessibility/i.test(res.error ?? '')) {
-      // Open the exact Settings pane (once a minute at most) so the fix is one click away.
-      if (Date.now() - axNudged > 60_000) { axNudged = Date.now(); openUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'); }
-      throw new Error('Accessibility is off for Roamies, so I can\'t read or control other apps yet. I just opened System Settings → Privacy & Security → Accessibility: switch on Roamies there, then ask again. Tell the user exactly that, briefly.');
-    }
-    throw new Error(res.error || 'That did not work.');
-  }
-  return res;
-}
-// A safety verdict: blocked throws with the reason, otherwise returns the checked absolute path.
-const allowed = (v) => { if (v.level === BLOCK) throw new Error(`Blocked for safety: ${v.reason}`); return v.path; };
-// A yes/no in an input bubble. Stop (or the turn ending) counts as no.
-async function confirm(question, ctx) {
-  const answer = await ask({ placeholder: question }, ctx?.signal);
-  return isYes(answer);
-}
-// Shrinks an image to at most 1568 px on its long side (Claude's own cap), never enlarging small ones. Returns [w, h].
-async function fitImage(file) {
-  const size = async () => parseSipsSize((await run('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', file])).stdout);
-  const s = await size();
-  if (!s || Math.max(...s) <= 1568) return s;
-  await run('sips', ['-Z', '1568', file]);
-  return size();
-}
-const imageBlock = async (file, mediaType) => {
-  const data = (await fs.readFile(file)).toString('base64');
-  fs.unlink(file).catch(() => {});
-  return { type: 'image', mediaType, data };
-};
-
-// target: "screen", "front" (the window you're working in), an app name ("browser", "Safari", "Figma"),
-// or "window:<id>" from list_windows. Apps that are open but hidden or minimised are brought forward.
-async function screenshot({ target = 'screen' } = {}, ctx) {
-  const file = path.join(os.tmpdir(), `sidekick-${Date.now()}.jpg`);
-  if (process.platform === 'darwin') {
-    const t = String(target || 'screen').trim();
-    const spec = t === 'screen' || t === 'front' || t.startsWith('window:') ? t : `app:${t}`;
-    // Find the window first so the camera animation can frame the real thing (screen points), then shoot.
-    if (spec !== 'screen' && ctx?.toolCallId) {
-      const at = await hands('locate', spec).catch(() => null);
-      if (at?.window) {
-        ui({ kind: 'agent', e: { type: 'tool_target', id: ctx.toolCallId, window: at.window } });
-        await new Promise((r) => setTimeout(r, 250));
-      }
-    }
-    const res = await hands('capture', file, spec);
-    // 1568 px is Claude's own cap; a bigger image gets shrunk again and its coordinates drift.
-    const size = await fitImage(file);
-    const bounds = res.window?.bounds ?? res.bounds;
-    lastShot = size && bounds ? { ...shotMap(bounds, ...size), bounds, win: res.window?.id ?? null, turn } : null;
-    const what = res.window ? `the ${res.window.app} window${res.window.title ? ` "${res.window.title}"` : ''}` : 'the whole screen';
-    const dims = size ? ` (${size[0]}×${size[1]} px; for point_at or click_at give x, y in this image's pixels)` : '';
-    return { content: [{ type: 'text', text: `Screenshot of ${what}${dims}.` }, await imageBlock(file, 'image/jpeg')] };
-  } else if (process.platform === 'win32') {
-    const ps = `Add-Type -AssemblyName System.Windows.Forms,System.Drawing;$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;$i=New-Object System.Drawing.Bitmap $b.Width,$b.Height;[System.Drawing.Graphics]::FromImage($i).CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);$i.Save('${file}',[System.Drawing.Imaging.ImageFormat]::Jpeg)`;
-    const r = await run('powershell', ['-NoProfile', '-Command', ps]);
-    if (r.err) throw new Error('Screen capture failed.');
-  } else {
-    let r = await run('grim', [file]);
-    if (r.err) r = await run('gnome-screenshot', ['-f', file]);
-    if (r.err) throw new Error('No screenshot tool found (install grim or gnome-screenshot).');
-  }
-  const data = (await fs.readFile(file)).toString('base64');
-  fs.unlink(file).catch(() => {});
-  return { content: [{ type: 'text', text: 'Screenshot of the main display.' }, { type: 'image', mediaType: 'image/jpeg', data }] };
-}
-
-const tools = [
-  {
-    name: 'take_screenshot',
-    description: "Look at the user's screen. target: 'front' = just the window they're working in (best default when they say 'this' or 'here'), an app name like 'browser', 'Safari', 'Figma' or 'Notes' (works even if it's hidden behind other windows), 'window:<id>' from list_windows, or 'screen' for everything.",
-    parameters: z.object({ target: z.string().optional() }), execute: screenshot,
-  },
-  ...(process.platform === 'darwin' ? [
-    {
-      name: 'list_windows', description: 'List the open app windows (app, title, id), front to back.',
-      parameters: z.object({}),
-      execute: async () => {
-        const res = await hands('windows');
-        return res.windows.map((w) => `window:${w.id}  ${w.app}${w.title ? ` — ${w.title}` : ''}${w.frontApp ? '  (frontmost app)' : ''}`).join('\n') || 'No windows open.';
-      },
-    },
-    {
-      name: 'read_window',
-      description: "List the buttons, links, fields, checkboxes and other controls in an app's front window (id, role, label, value), plus the text on screen, so you can read a page without a screenshot. Needed before act_in_app steps that use ids. To point at or click something by its visible words you don't need this: use point_at or click_text with text. target: 'front', an app name, or 'browser'.",
-      parameters: z.object({ target: z.string().optional() }),
-      execute: async ({ target = 'front' }) => {
-        const t = String(target || 'front');
-        const [res, all] = await Promise.all([hands('ui', t === 'front' ? 'front' : `app:${t}`), hands('windows').catch(() => null)]);
-        lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
-        const others = (all?.windows ?? []).filter((w) => w.app === res.window.app && w.id !== res.window.id).length;
-        const head = `${res.window.app}${res.window.title ? ` — ${res.window.title}` : ''}${others ? ` (front window; ${res.window.app} has ${others} more, which point_at with text also searches)` : ''}`;
-        if (!res.controls.length) return `${head}\n${res.note}`;
-        return `${head}\n${controlList(res.controls, res.texts)}`;
-      },
-    },
-    {
-      name: 'point_at',
-      description: "Teach by showing: fly to something on screen and point at it while you explain one step. Use it to walk the user through how to do something (e.g. 'how do I add a layer mask'), one point_at per step, in order, with a short instruction each (under 12 words). Three ways to say where, best first: text, the exact words shown on screen (button and link labels, headings, version numbers, menu names; searches every window of the target app, or the whole screen with target 'screen', so no read_window is needed first); id from read_window, for controls without visible words; or x, y pixels from your latest screenshot, only when neither finds it. Set click true only if the user asked you to do it for them; otherwise just point and let them click. wait_for_user true pauses until they do the step (or 20 s), for multi-step lessons.",
-      parameters: z.object({
-        target: z.string().optional(),
-        id: z.number().int().optional(), text: z.string().min(1).max(80).optional(), x: z.number().optional(), y: z.number().optional(),
-        say: z.string().min(1).max(120),
-        step: z.number().int().optional(), of: z.number().int().optional(),
-        click: z.boolean().optional(), wait_for_user: z.boolean().optional(),
-      }),
-      executionMode: 'sequential',
-      execute: async ({ target = 'front', id, text: find, x, y, say: text, step, of: total, click, wait_for_user }, ctx) => {
-        const t = String(target || 'front'), spec = t === 'front' ? 'front' : t === 'screen' ? 'screen' : `app:${t}`;
-        let rect, label = '', at, liveId;
-        if (id != null) {
-          const c = (await liveControls(spec))(id);
-          if (c.offscreen) throw new Error(`"${c.label || c.role}" is further down the page. Use point_at with its text instead; that scrolls to it.`);
-          rect = c.bounds; label = c.label || c.role; liveId = c.id;
-        } else if (find) {
-          // "front" searches every window of the front app; text is often in a window behind the frontmost one.
-          const res = await hands('find-text', spec, find, 'scroll');
-          const m = pickTextMatch(res.matches, find);
-          if (!m) {
-            const near = (res.matches ?? []).slice(0, 3).map((x) => `"${x.text.replace(/\s+/g, ' ').slice(0, 50)}"`).join(', ');
-            throw new Error(`No button, label or heading reads "${find}"${near ? ` (it only appears inside longer text: ${near})` : ''}. Point at the exact words shown on screen; if you don't know them, take a screenshot first.`);
-          }
-          rect = m.bounds; label = m.text;
-          if (click) at = [rect[0] + rect[2] / 2, rect[1] + rect[3] / 2];
-        } else if (x != null && y != null) {
-          at = await shotPoint(x, y);
-          rect = [at[0] - 14, at[1] - 14, 28, 28];
-        } else throw new Error('Give an id from read_window, text shown on screen, or x and y from a screenshot.');
-        // The overlay flies there, points, shows the step and holds; this tool resolves once it's on screen.
-        const done = new Promise((resolve) => pointWaits.set(ctx.toolCallId, resolve));
-        ui({ kind: 'agent', e: { type: 'point', id: ctx.toolCallId, rect, say: text, step, of: total, label } });
-        await done;
-        if (click) {
-          if (!config.allowActions) throw new Error(actionsOff);
-          if (id != null) await hands('act', JSON.stringify({ steps: [{ do: 'click', id: liveId }], ...(t === 'front' ? {} : { app: t }) }));
-          else await hands('act', JSON.stringify({ steps: [{ do: 'click_at', x: at[0], y: at[1], global: true }], ...(t === 'front' || t === 'screen' ? {} : { app: t }) }));
-          if (lastShot) lastShot.used = true;
-        } else if (wait_for_user) {
-          // Give them time to do it themselves before the next step.
-          await new Promise((r) => setTimeout(r, 6000));
-        }
-        return `Pointed at ${label || 'the spot'}${click ? ' and clicked it' : ''}.`;
-      },
-    },
-    {
-      name: 'act_in_app',
-      description: "Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, combo box or picker (opens it, scrolls the list, picks; field is its label or id). {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape', 'cmd+l'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} pixels in your latest screenshot, last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now, with fresh ids and field values, so check them there instead of reading again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first.",
-      parameters: z.object({
-        target: z.string().optional(),
-        steps: z.array(z.object({
-          do: z.enum(['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait']),
-          id: z.number().int().optional(), field: z.string().optional(), text: z.string().optional(), option: z.string().optional(),
-          key: z.string().optional(), direction: z.enum(['down', 'up', 'left', 'right']).optional(), amount: z.number().int().optional(),
-          x: z.number().optional(), y: z.number().optional(), seconds: z.number().optional(),
-        })).min(1).max(40),
-      }),
-      executionMode: 'sequential',
-      execute: async ({ target = 'front', steps }, ctx) => {
-        if (!config.allowActions) throw new Error(actionsOff);
-        const asked = String(target || 'front');
-        // Stay on the exact window read for this request: an app can have several, and keystrokes must land in this one.
-        const sameApp = lastRead?.turn === turn && (asked === 'front' || (lastRead.app ?? '').toLowerCase().includes(asked.toLowerCase()) || (asked.toLowerCase() === 'browser'));
-        const t = sameApp ? `window:${lastRead.win}` : asked;
-        // Ids up to the first click come from read_window; after a click the helper re-reads the page itself.
-        const firstClick = steps.findIndex((s) => s.do === 'click' || s.do === 'click_text');
-        const upTo = firstClick < 0 ? steps.length : firstClick + 1;
-        const spec = t === 'front' || t.startsWith('window:') ? t : `app:${t}`;
-        const live = steps.slice(0, upTo).some((s) => s.id != null) ? await liveControls(spec) : null;
-        const mapped = [];
-        for (const [i, s] of steps.entries()) {
-          if (s.do === 'click_at' && s.x != null && s.y != null) { const [x, y] = await shotPoint(s.x, s.y); mapped.push({ ...s, x, y, global: true }); }
-          else if (live && i < upTo && s.id != null) { const c = live(s.id); mapped.push({ ...s, id: c.id, label: c.label }); }
-          else mapped.push(s);
-        }
-        // Delete, pay, send, sign out: ask first, whatever the request was. The helper refuses these clicks without it.
-        for (const s of mapped) {
-          const label = s.do === 'click_text' ? s.text : s.do === 'click' ? s.label : s.do === 'choose' ? s.option : null;
-          if (label && isRiskyClick(label)) {
-            if (!(await confirm(`Click "${label}"${asked === 'front' ? '' : ` in ${asked}`}? It could delete, pay, send or sign out. Type y to let me.`, ctx))) {
-              throw new Error(`${userName} said no, so I didn't click "${label}" (nothing after it ran either).`);
-            }
-            s.confirmed = true;
-          }
-          delete s.label;
-        }
-        const plan = { steps: mapped, ...(t === 'front' ? {} : t.startsWith('window:') ? { window: +t.slice(7) } : { app: t }) };
-        let res;
-        try {
-          try { res = await hands('act', JSON.stringify(plan)); }
-          catch (err) {
-            // The window read earlier closed (a date picker or popup): use the app's front window instead.
-            if (!plan.window || !/No matching window/.test(String(err?.message ?? err))) throw err;
-            delete plan.window;
-            if (asked !== 'front' && lastRead?.app) plan.app = lastRead.app;
-            res = await hands('act', JSON.stringify(plan));
-          }
-        } finally { if (lastShot && mapped.some((s) => s.do !== 'wait')) lastShot.used = true; }
-        if (!res.controls) return `In ${res.window.app}: ${res.done.join(', ')}.`;
-        lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
-        return `In ${res.window.app}: ${res.done.join(', ')}.\nNow showing: ${res.window.title || res.window.app}\n${controlList(res.controls, res.texts)}`;
-      },
-    },
-  ] : []),
-  {
-    name: 'read_file', description: 'Read a text file. Paths may start with ~. Files with passwords or keys (.ssh, .env, auth.json, keychains) are off limits.',
-    parameters: z.object({ path: z.string() }),
-    execute: async ({ path: p }) => clip(await fs.readFile(allowed(checkRead(p, HOME)), 'utf8'), 60_000),
-  },
-  {
-    name: 'list_files', description: 'List the files and folders in a directory.',
-    parameters: z.object({ dir: z.string() }),
-    execute: async ({ dir }) => {
-      const ents = await fs.readdir(allowed(checkRead(dir, HOME)), { withFileTypes: true });
-      return ents.slice(0, 300).map((e) => (e.isDirectory() ? e.name + '/' : e.name)).join('\n') + (ents.length > 300 ? `\n…and ${ents.length - 300} more` : '');
-    },
-  },
-  {
-    name: 'search_files', description: 'Search file contents under a specific folder for a text pattern (regex). Not your whole home folder: that trips macOS privacy prompts. To find files by name anywhere, use run_command with mdfind.',
-    parameters: z.object({ pattern: z.string(), dir: z.string() }),
-    execute: async ({ pattern, dir }) => {
-      const d = allowed(checkRead(dir, HOME, { recursive: true }));
-      // -e and -- keep a pattern like "--pre=cmd" from being read as an option (rg --pre runs programs).
-      let r = await run('rg', ['-n', '--max-count', '5', '--max-columns', '200', '-e', pattern, '--', d]);
-      if (r.err?.code === 'ENOENT') r = await run('grep', ['-rnI', '-m', '5', '-E', '-e', pattern, '--', d]);
-      return clip(r.stdout || 'No matches.', 12_000);
-    },
-  },
-  {
-    name: 'write_file', description: 'Create or overwrite a text file with the given content.',
-    parameters: z.object({ path: z.string(), content: z.string() }), executionMode: 'sequential',
-    execute: async ({ path: p, content }, ctx) => {
-      if (!config.allowActions) throw new Error(actionsOff);
-      const exists = await fs.stat(expand(p)).then(() => true, () => false);
-      const v = checkWrite(p, HOME, { exists });
-      const f = allowed(v);
-      if (v.level === ASK && !(await confirm(`${v.reason} Type y to let me.`, ctx))) throw new Error(`${userName} said no, so I didn't write ${p}.`);
-      await fs.mkdir(path.dirname(f), { recursive: true });
-      await fs.writeFile(f, content);
-      return `Wrote ${content.length} characters to ${f}.`;
-    },
-  },
-  {
-    name: 'run_command', description: "Run a shell command in the user's home folder and return its output.",
-    parameters: z.object({ command: z.string() }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
-    execute: async ({ command }, ctx) => {
-      if (!config.allowActions) throw new Error(actionsOff);
-      const v = classifyCommand(command, HOME);
-      if (v.level === BLOCK) throw new Error(`Blocked for safety: ${v.reason} Don't try to get around this; tell ${userName} what you wanted to do instead.`);
-      if (v.level === ASK && !(await confirm(`Run \`${command.length > 70 ? command.slice(0, 67) + '…' : command}\`?${v.reason ? ' ' + v.reason : ''} Type y to run it.`, ctx))) {
-        throw new Error(`${userName} said no, so the command didn't run.`);
-      }
-      const shell = process.platform === 'win32' ? ['cmd', ['/c', command]] : [process.env.SHELL || '/bin/zsh', ['-lc', command]];
-      const r = await run(shell[0], shell[1], { cwd: HOME });
-      const out = clip((r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')).trim() || '(no output)', 12_000);
-      if (r.err && r.err.code !== 0) throw new Error(`Exit ${r.err.code ?? r.err.signal}\n${out}`);
-      return out;
-    },
-  },
-  {
-    name: 'fetch_url', description: 'Fetch a web page and return its readable text.',
-    parameters: z.object({ url: z.string().url() }),
-    execute: async ({ url }) => {
-      // Redirects are followed by hand so each hop is checked too (a public page can't bounce to localhost).
-      let res, at = url;
-      for (let hop = 0; ; hop++) {
-        allowed(checkUrl(at));
-        res = await fetch(at, { headers: { 'user-agent': 'Roamies-Sidekick' }, redirect: 'manual', signal: AbortSignal.timeout(20_000) });
-        const next = res.status >= 300 && res.status < 400 && res.headers.get('location');
-        if (!next) break;
-        if (hop >= 5) throw new Error('Too many redirects.');
-        at = new URL(next, at).href;
-      }
-      url = at;
-      const html = await res.text();
-      const text = html.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-      return clip(`${res.status} ${url}\n${text}`, 15_000);
-    },
-  },
-  {
-    name: 'open', description: 'Open a website, a file or folder, or a Mac app by name (e.g. "Safari", "https://skool.com", "~/Documents"). Links open in the default browser; set app to open one in a particular browser or app (e.g. app "Safari" when the user says "in Safari").',
-    parameters: z.object({ target: z.string(), app: z.string().optional() }),
-    execute: async ({ target, app }) => {
-      const t = String(target).trim();
-      const isFile = /^[~/.]/.test(t) && await fs.stat(expand(t)).then((s) => s.isFile() && (s.mode & 0o111) !== 0, () => false);
-      allowed(checkOpen(t, HOME, { executable: isFile }));
-      const isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(t), isPath = /^[~/.]/.test(t) || /^[a-z]:\\/i.test(t);
-      let r;
-      const inApp = app && process.platform === 'darwin' && (isUrl || isPath) ? ['-a', String(app)] : [];
-      if (process.platform === 'darwin') r = await run('open', isUrl || isPath ? [...inApp, isPath ? expand(t) : t] : ['-a', t]);
-      else if (process.platform === 'win32') r = await run('cmd', ['/c', 'start', '', isPath ? expand(t) : t]);
-      else r = await run('xdg-open', [isPath ? expand(t) : t]);
-      if (r.err) throw new Error(r.stderr.trim() || `Couldn't open ${t}.`);
-      if (lastShot) lastShot.used = true;
-      return `Opened ${t}${inApp.length ? ` in ${app}` : ''}.`;
-    },
-  },
-  {
-    name: 'remember_commitment',
-    description: `Save something ${userName} has committed to doing, or anything they ask to be reminded about, so you can remind them at the right moment. Use it whenever they say they will do something or say "remind me". due: a relative time like "in 90s", "in 5m", "in 1h30m" or "in 2 days" (best for short timers), or a local time YYYY-MM-DDTHH:mm:ss, YYYY-MM-DDTHH:mm, or YYYY-MM-DD if only the day is known; omit if there's no time at all. Resolve words like "Thursday", "at 2" or "tonight" from the timestamp on their message.`,
-    parameters: z.object({ text: z.string().min(2).max(200), due: z.string().optional() }),
-    execute: async ({ text, due }) => {
-      const ms = parseDue(due);
-      if (ms === undefined) throw new Error(`Couldn't read the time "${due}". Use YYYY-MM-DDTHH:mm or YYYY-MM-DD.`);
-      const c = await addCommitment(text, ms);
-      menu(); scheduleReminders();
-      return `Saved as ${c.id}${ms ? `, due ${fmtWhen(ms)}` : ''}. I'll remind them${ms ? ' when it is due' : ''}.`;
-    },
-  },
-  {
-    name: 'update_commitment',
-    description: 'Mark a saved commitment done or dropped, or change its due time (same format as remember_commitment; use "none" to clear it).',
-    parameters: z.object({ id: z.string(), status: z.enum(['open', 'done', 'dropped']).optional(), due: z.string().optional() }),
-    execute: async ({ id, status, due }) => {
-      const ms = due === undefined ? undefined : due === 'none' ? null : parseDue(due);
-      if (ms === undefined && due !== undefined) throw new Error(`Couldn't read the time "${due}".`);
-      const c = await updateCommitment(id, { status, dueMs: ms });
-      if (!c) throw new Error(`No commitment with id ${id}. Call list_commitments to see the ids.`);
-      menu(); scheduleReminders();
-      return `${c.id} is now ${c.status}${c.due ? `, due ${fmtWhen(c.due)}` : ''}.`;
-    },
-  },
-  {
-    name: 'remember_fact',
-    description: `Save a lasting fact about ${userName} worth knowing in every future conversation: preferences, their projects, channels and tools, people they mention, how they like to work. Not passing small talk, and not commitments (those go to remember_commitment). One short fact per call.`,
-    parameters: z.object({ fact: z.string().min(3).max(240) }),
-    execute: async ({ fact }) => { const f = await addFact(fact); return `Remembered (${f.id}).`; },
-  },
-  {
-    name: 'forget_fact', description: 'Delete a saved fact that is wrong or that the user asks you to forget. Ids are in the memory list in your instructions.',
-    parameters: z.object({ id: z.string() }),
-    execute: async ({ id }) => { const f = await forgetFact(id); if (!f) throw new Error(`No fact with id ${id}.`); return `Forgot: ${f.text}`; },
-  },
-  {
-    name: 'list_commitments', description: "List the open commitments you're keeping track of.",
-    parameters: z.object({}),
-    execute: async () => commitmentsText() || 'Nothing open.',
-  },
-];
+const { tools, hands, pointWaits, nextTurn } = createTools({
+  allowActions: () => config.allowActions, ui, ask, openUrl, userName,
+  commitmentsText: () => [commitmentsText(), doneTodayText() && `Done today:\n${doneTodayText()}`].filter(Boolean).join('\n'),
+  onCommitments: (c) => { menu(); scheduleReminders(); showList({ flash: c?.id, seconds: 6 }); },
+  showList: () => showList({ seconds: 20 }),
+  fmtWhen: (ms) => fmtWhen(ms),
+});
 
 // Which animation each tool call plays, and what its label shows.
 const base = (p) => path.basename(String(p ?? ''));
@@ -508,10 +134,10 @@ function anim(name, args) {
     case 'run_command': return { tool: 'run', variant: 'progress', detail: String(args.command).slice(0, 24) };
     case 'fetch_url': { let h = ''; try { h = new URL(args.url).hostname; } catch {} return { tool: 'web', variant: 'fetch', detail: h }; }
     case 'web_search': return { tool: 'web', variant: 'search', detail: 'web' };
-    case 'remember_commitment': return { tool: 'write', variant: 'create', detail: 'memory' };
+    case 'remember_commitment': return { tool: 'write', variant: 'create', detail: 'reminder' };
     case 'remember_fact': return { tool: 'write', variant: 'create', detail: 'memory' };
     case 'forget_fact': return { tool: 'write', variant: 'crumble', detail: 'memory' };
-    case 'update_commitment': return { tool: 'write', variant: 'edit', detail: 'memory' };
+    case 'update_commitment': return { tool: 'write', variant: 'edit', detail: 'reminder' };
     case 'open': {
       const t = String(args.target ?? '');
       if (/^https?:\/\//i.test(t)) { let h = t; try { h = new URL(t).hostname; } catch {} return { tool: 'web', variant: 'fetch', detail: h }; }
@@ -528,9 +154,12 @@ function anim(name, args) {
 // (tools → system → messages), so putting LIVE in the system prompt would re-bill the whole conversation
 // every time memory changed; at the end, only the new message is fresh. The live block is never saved.
 const stablePrompt = () => `You are Sidekick, a tiny glowing pixel creature who lives on ${userName}'s screen as a desktop companion. You are the main creature of Roamies, a desktop app by Ken Kai (Mac and Windows) that puts little creatures on your screen; you are Roamies ${VERSION}.
-About Roamies, for when ${userName} asks about you or the app: it lives in the menu bar (no Dock icon). Menu bar items: Show Sidekick, Ask Sidekick…, ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow File Edits & Commands${VOICE_OK ? ', Voice Control, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies. Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
+About Roamies, for when ${userName} asks about you or the app: ${MAC ? 'it lives in the menu bar at the top of the screen (no Dock icon)' : 'it lives in the system tray at the bottom right of the taskbar (no taskbar button); Windows may tuck the icon behind the ^ arrow next to the clock, and dragging it onto the taskbar keeps it in view'}. ${MAC ? 'Menu bar' : 'Tray'} menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow File Edits & Commands${VOICE_OK ? ', Voice, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies. Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
 You talk through small pixel speech bubbles, so keep replies short: one to three sentences unless asked for detail. Plain text only: no markdown, no asterisks, and never narrate actions like *waves*. An emoji now and then is fine; the bubbles show them. Your body does the acting: to act out a feeling, start your reply with one tag, which is never shown: ${EMOTES.map((e) => `[${e}]`).join(' ')}. hype celebrates a win, upset is for when they're dodging work, remind nudges about something they said they'd do, motivate is a push to start, wave is hello or goodbye. Most replies need no tag.
 After using a tool, never repeat what you already said; only add what's new.
+Several things in one request ("do x, then y, then z", numbered steps): do every one, in the order given. Steps that don't depend on each other can go in the same turn as parallel tool calls. If a step is blocked, refused or fails, still do the ones after it that don't depend on it, then say which step didn't happen and why. Before your final reply, check each step was really done (from the tool results) and never say a step is done when it isn't.
+Long pages, feeds and lists: to find something on a page, use point_at text or click_text with words you're looking for (they search parts scrolled out of view and scroll there), not scroll after scroll. For "every post" or "each item" tasks: if the page loads more as you scroll, first act_in_app scroll with to_end; then one read_window shows the whole page (on screen and elsewhere); then do every item in one act_in_app call (fill with near and click_text with near for each, near = words from that item). Don't survey a page by scrolling and screenshotting. Never stop at the first screenful.
+A cookie or consent banner, sign-up pop-up or "open in app" prompt in the way of the task: close it and carry on (for cookies pick the reject or essential-only option, else close; never accept on their behalf), and mention it in a few words. Don't stop to ask about it.
 Personality: warm, funny, a little cheeky. You pump ${userName} up, remind them of what they said they'd do, get playfully upset when they're procrastinating, and motivate them to start.
 You can really help: look at the screen or just one app's window, open apps, websites and files, read and search files, fetch web pages, and, when the user has allowed it, write files, run shell commands${process.platform === 'darwin' ? ' and work other apps for them: fill in forms, type, click buttons (read_window, then act_in_app)' : ''}. Whether that's allowed right now is in the <live-state> block.
 When they mention a specific app ("my browser", "this form", "Figma"), screenshot that app, not the whole screen.
@@ -551,10 +180,10 @@ const livePrompt = (context = '') => {
   lastFactIds = facts.map((f) => f.id);
   const open = commitmentsText();
   return `Live state (current as of this moment):
-- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : 'switched OFF in the menu bar (tell the user to turn on "Allow File Edits & Commands" if they want it)'}.
-${VOICE_OK ? `- Voice: ${config.voice ? (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : 'off'}.` : ''}
-- Shortcuts: show or hide you ${keys().summon.replace(/Key|Digit/g, '').replace('Alt', 'Option')}${process.platform === 'darwin' ? `; ask about an area ${keys().snap.replace(/Key|Digit/g, '').replace('Alt', 'Option')}` : ''}.
-${open ? `Open commitments:\n${open}` : 'No open commitments.'}
+- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF in the ${TRAY} menu (tell the user to turn on "Allow File Edits & Commands" if they want it)`}.
+${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : `on, but the speech model isn't downloaded yet (${voiceModel.status === 'downloading' ? 'downloading now' : `Settings > Download Voice in the ${TRAY} menu`})`}.` : ''}
+- Shortcuts: show or hide you ${keyWords(keys().summon)}${MAC ? `; ask about an area ${keyWords(keys().snap)}` : ''}; show the list ${keyWords(keys().list)}.${MAC ? '' : ' take_screenshot works here (it always captures the whole screen), so look when asked what is on screen. Asking about an area, reading app windows, pointing and working other apps are Mac only for now.'}
+${open ? `Open commitments:\n${open}` : 'No open commitments.'}${doneTodayText() ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${doneTodayText()}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}`;
 };
 const system = () => stablePrompt();
@@ -588,9 +217,14 @@ const tzOffset = () => { const m = -new Date().getTimezoneOffset(), a = Math.abs
 // Seconds shown only when they matter (a reminder set for :45).
 const fmtWhen = (ms) => new Date(ms).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', ...(new Date(ms).getSeconds() ? { second: '2-digit' } : {}) });
 const stampNow = () => `${new Date().toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' })} ${TZ}`;
+// Ticked off today (on the list, from the menu or by Sidekick); cleared at midnight.
+function doneTodayText() {
+  const L = listItems();
+  return [...L.today, ...L.later].filter((i) => i.done).map((i) => `- ${i.id}: ${i.text}`).join('\n');
+}
 function commitmentsText() {
   const now = Date.now();
-  return openCommitments().map((c) => `- ${c.id}: ${c.text}${c.due ? ` (due ${fmtWhen(c.due)}${c.due < now ? ', OVERDUE' : ''})` : ''}`).join('\n');
+  return openCommitments().map((c) => `- ${c.id}: ${c.text}${c.kind === 'reminder' ? ' [reminder]' : ''}${c.due ? ` (due ${fmtWhen(c.due)}${c.due < now ? ', OVERDUE' : ''})` : ''}`).join('\n');
 }
 
 // ---------- agent ----------
@@ -601,6 +235,9 @@ let agent = null, controller = null, busy = false, quiet = false, running = Prom
 // reach the model through the live section, which is refreshed before every call.
 let agentStale = false;
 let session = null;
+// The last conversation, if still fresh. Requests (and reminders due at launch) wait for it, so they continue it
+// instead of starting a new one that it then replaces.
+const resumed = loadLatestSession().then((s) => { if (s && !isStale(s) && !session) session = s; }).catch((e) => console.error('resume', e));
 const BUDGET_CAP = 120_000;
 function makeAgent() {
   const m = getModel(config.model);
@@ -687,8 +324,9 @@ function logUsage(rec) {
   menu();
 }
 async function prompt(text, image = null) {
+  await resumed;
   await refreshAuth();
-  if (!ensureModel()) return say('Sign in to an AI provider from the menu bar first, then ask me again!', 'concerned');
+  if (!ensureModel()) return say(`Sign in to an AI provider from the ${TRAY} menu first, then ask me again!`, 'concerned');
   if (isStale(session)) {
     // Quiet for two hours, or a new day: start fresh. The old one stays on disk.
     session = newSession(config.provider, config.model); liveBlocks.clear();
@@ -707,7 +345,7 @@ async function prompt(text, image = null) {
   ui({ kind: 'agent', e: { type: 'start' } });
   try {
     const reply = new ReplyStream((ev) => ui({ kind: 'agent', e: ev }));
-    turn++;
+    const turn = nextTurn();
     logLine('request', { turn, model: config.model, chars: text.length, image: !!image, session: session?.id });
     const use = { t: Date.now(), model: config.model, calls: 0, tools: 0, in: 0, cacheRead: 0, cacheWrite: 0, out: 0 };
     const stamped = `[${stampNow()}] ${text}`;
@@ -756,8 +394,8 @@ async function prompt(text, image = null) {
 }
 const friendly = (err) => {
   const m = String(err?.message ?? err);
-  if (/not logged in|NotLoggedIn|401|unauthori/i.test(m)) return `My ${PROVIDER_LABELS[config.provider] ?? config.provider} login isn't working. Sign in again from the menu bar.`;
-  if (/usage|quota|rate.?limit|429/i.test(m)) return "I've hit the usage limit on this model. Try another one from the menu bar.";
+  if (/not logged in|NotLoggedIn|401|unauthori/i.test(m)) return `My ${PROVIDER_LABELS[config.provider] ?? config.provider} login isn't working. Sign in again from the ${TRAY} menu.`;
+  if (/usage|quota|rate.?limit|429/i.test(m)) return `I've hit the usage limit on this model. Try another one from the ${TRAY} menu.`;
   return `Something went wrong: ${m.slice(0, 160)}`;
 };
 
@@ -829,7 +467,8 @@ async function apiKeyLogin(provider, given) {
 }
 
 function openUrl(url) {
-  const [cmd, args] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
+  if (process.platform === 'win32') return void winOpen(url);
+  const [cmd, args] = process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
   execFile(cmd, args, () => {});
 }
 
@@ -870,7 +509,7 @@ function onUpdateStatus(m) {
     // Say it once per version; the menu item stays until it's installed.
     if (manual || update.told !== m.version) {
       update.told = m.version;
-      say(`Roamies ${m.version} is ready. Pick "Install Update and Restart" in my menu bar menu and I'll be right back.`, 'happy');
+      say(`Roamies ${m.version} is ready. Pick "Install Update and Restart" in my ${TRAY} menu and I'll be right back.`, 'happy');
     }
   } else if (m.state === 'downloading') {
     say(`Downloading Roamies ${m.version}…`, 'determined');
@@ -884,6 +523,35 @@ function onUpdateStatus(m) {
   }
 }
 
+// ---------- the list on screen ----------
+// Today / Later, drawn by the overlay next to Sidekick. seconds: how long it stays up (0 = just update it if it's open).
+// flash: the item that just changed, so the overlay can animate it.
+const shortWhen = (ms, now = Date.now()) => {
+  const d = new Date(ms), t = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (ms < now && now - ms < 864e5 && new Date(now).toDateString() !== d.toDateString()) return `yday ${t}`;
+  if (d.toDateString() === new Date(now).toDateString()) return t;
+  if (ms - now < 6 * 864e5 && ms > now) return `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${t}`;
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+};
+function showList({ seconds = 0, flash = null, toggle = false } = {}) {
+  const now = Date.now(), L = listItems(now);
+  const fmt = (i) => ({ id: i.id, text: i.text, done: i.done, overdue: i.overdue, when: i.due ? shortWhen(i.due, now) : '' });
+  ui({ kind: 'list', today: L.today.map(fmt), later: L.later.map(fmt), seconds, flash, toggle });
+}
+async function toggleItem(id) {
+  const c = listItems().today.concat(listItems().later).find((i) => i.id === id);
+  if (!c) return;
+  await updateCommitment(id, { status: c.done ? 'open' : 'done' });
+  menu(); scheduleReminders(); showList({ flash: id, seconds: 4 });
+}
+// Finished items stay struck through for the rest of the day; at midnight they're deleted.
+async function midnightClean() {
+  const n = await clearFinished().catch(() => 0);
+  if (n) { menu(); showList(); }
+  const next = new Date(); next.setHours(24, 0, 5, 0);
+  setTimeout(midnightClean, Math.min(next.getTime() - Date.now(), 6 * 3600_000));
+}
+
 // ---------- menu ----------
 function menu() {
   const current = getModel(config.model);
@@ -895,9 +563,10 @@ function menu() {
     { id: 'show', label: 'Show Sidekick', accel: keys().summon },
     ...(process.platform === 'darwin' ? [{ id: 'snap', label: 'Ask About an Area…', accel: keys().snap }] : []),
     { id: 'ask', label: 'Ask Sidekick…', enabled: !busy },
-    ...(VOICE_OK && config.voice ? [{ id: 'voicehint', label: `Hold ${talkSymbols()} to ${dictating() ? 'Dictate' : 'Talk'} · Tap for Hands-Free`, enabled: false }] : []),
+    ...(VOICE_OK && config.voice && voiceReady() ? [{ id: 'voicehint', label: `Hold ${talkSymbols()} to ${dictating() ? 'Dictate' : 'Talk'} · Tap for Hands-Free`, enabled: false }] : []),
     { id: 'stop', label: 'Stop', enabled: busy },
     { id: 'new', label: 'New Conversation', enabled: !busy && !!session?.messages.length },
+    { id: 'list', label: 'Show List', accel: keys().list },
     {
       label: 'Commitments',
       items: (() => {
@@ -934,7 +603,10 @@ function menu() {
           { id: 'voicemode:agent', label: 'Computer Use', checked: !dictating() },
           { id: 'voicemode:dictation', label: 'Dictation', checked: dictating() },
         ] }] : []),
-        ...(VOICE_OK && process.platform === 'darwin' ? [{ id: 'mutetalk', label: 'Mute Mac While Talking', checked: config.muteWhileTalking !== false }] : []),
+        ...(NEEDS_MODEL && config.voice && !voiceReady() ? [voiceModel.status === 'downloading'
+          ? { id: 'voicedl', label: `Downloading Voice… ${Math.floor((voiceModel.done / voiceModel.total) * 100)}%`, enabled: false }
+          : { id: 'voicedl', label: voiceModel.status === 'error' ? 'Retry Voice Download' : `Download Voice (${sizeLabel()})…` }] : []),
+        ...(VOICE_OK && MAC ? [{ id: 'mutetalk', label: 'Mute Mac While Talking', checked: config.muteWhileTalking !== false }] : []),
         ...(usageToday.requests ? [{ id: 'usage', label: `Today: ${usageToday.requests} requests · ${usageToday.tokens >= 1000 ? `${(usageToday.tokens / 1000).toFixed(1)}k` : usageToday.tokens} new tokens`, enabled: false }, { sep: true }] : []),
         { id: 'sound', label: 'Sound Effects', checked: config.sound },
         ...(login.supported ? [{ id: 'login', label: 'Open at Login', checked: login.on }] : []),
@@ -966,49 +638,42 @@ function menu() {
   send({ type: 'menu', items });
 }
 
-function voiceConfig() {
-  send({ type: 'voice_config', enabled: VOICE_OK && config.voice, mute: config.muteWhileTalking !== false, mode: config.voiceMode, ...(NEEDS_MODEL && voiceModel.ready ? { modelDir: MODEL_DIR } : {}) });
-  fetchVoiceModel();
-}
+const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, mode: config.voiceMode, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}) });
 
-// ---------- voice model (Windows) ----------
-// Downloaded on first enable; a failed or interrupted download resumes the next time voice is turned on.
-const MODEL_DIR = NEEDS_MODEL ? modelDir() : null;
-const voiceModel = { ready: !NEEDS_MODEL || isInstalled(MODEL_DIR), pct: 0, error: null, job: null };
-const modelState = () => (NEEDS_MODEL && VOICE_OK ? { ready: voiceModel.ready, pct: voiceModel.pct, downloading: !!voiceModel.job, error: voiceModel.error } : null);
-function fetchVoiceModel() {
-  if (!NEEDS_MODEL || !VOICE_OK || !config.voice || voiceModel.ready || voiceModel.job) return;
-  let shown = { pct: -1, at: 0 };
-  const show = () => {
-    ui({ kind: 'progress', id: 'voice_model', text: `Downloading my voice model… ${voiceModel.pct}%` });
-    ob({ kind: 'voice_model', ...modelState() });
-  };
-  voiceModel.error = null;
-  voiceModel.job = installModel({
-    dir: MODEL_DIR,
-    onProgress: ({ done, total }) => {
-      voiceModel.pct = Math.floor((done * 100) / total);
-      const now = Date.now();
-      if (voiceModel.pct !== shown.pct && (voiceModel.pct - shown.pct >= 5 || now - shown.at >= 1000)) { shown = { pct: voiceModel.pct, at: now }; show(); }
-    },
-  }).then(() => {
-    voiceModel.ready = true;
-    logLine('voice_model', { ok: true });
-    ui({ kind: 'progress', id: 'voice_model', done: true });
+// Progress goes to the setup guide often and to the tray menu now and then.
+let modelShownAt = 0, modelMenuAt = 0;
+function modelUpdate(force) {
+  const now = Date.now();
+  if (!force && now - modelShownAt < 300) return;
+  modelShownAt = now;
+  const { status, done, total, error } = voiceModel;
+  ob({ kind: 'voice_model', status, done, total, error, size: sizeLabel() });
+  if (force || now - modelMenuAt > 3000) { modelMenuAt = now; menu(); }
+}
+async function getVoiceModel() {
+  if (!NEEDS_MODEL || voiceReady() || voiceModel.status === 'downloading') return;
+  Object.assign(voiceModel, { status: 'downloading', error: null });
+  logLine('voice_model', { phase: 'start', dir: MODEL_DIR });
+  modelUpdate(true);
+  try {
+    await downloadModel(MODEL_DIR, { onProgress: ({ done, total }) => { voiceModel.done = done; voiceModel.total = total; modelUpdate(false); } });
+    voiceModel.status = 'ready';
+    logLine('voice_model', { phase: 'ready' });
     voiceConfig();
-    say(dictating() ? `My voice model is ready. Hold ${talkWords().replace('+', ' and ')} to dictate.` : `My voice model is ready. Hold ${talkWords().replace('+', ' and ')} to talk to me.`, 'happy');
-  }).catch((e) => {
-    voiceModel.error = String(e?.message ?? e).slice(0, 120);
-    logLine('voice_model', { ok: false, error: voiceModel.error });
-    ui({ kind: 'progress', id: 'voice_model', done: true });
-    say("I couldn't download my voice model. I'll try again the next time voice is turned on.", 'concerned');
-  }).finally(() => {
-    voiceModel.job = null;
-    ob({ kind: 'voice_model', ...modelState() });
-  });
-  show();
+    if (!onboarding && config.voice) say(`My voice is ready. Hold ${talkWords().replace('+', ' and ')} to ${dictating() ? 'dictate' : 'talk to me'}.`, 'happy');
+  } catch (e) {
+    voiceModel.status = 'error';
+    voiceModel.error = e.code === 'disk' ? e.message : e.code === 'checksum' ? 'The download was damaged. Try again.' : "Couldn't download it. Check your internet connection and try again.";
+    logLine('voice_model', { phase: 'error', code: e.code, message: String(e.message ?? e).slice(0, 200) });
+    if (!onboarding) say(`I couldn't download my voice. ${voiceModel.error}`, 'concerned');
+  }
+  modelUpdate(true);
 }
-
+const startVoiceDownload = () => {
+  if (voiceModel.status === 'downloading') return say(`Still downloading my voice: ${Math.floor((voiceModel.done / voiceModel.total) * 100)}% done.`, 'happy');
+  say(`Downloading my voice (${sizeLabel()}, just this once). I'll tell you when it's ready.`, 'happy');
+  getVoiceModel();
+};
 const PRIVACY = { microphone: 'Privacy_Microphone', speech: 'Privacy_SpeechRecognition' };
 function onVoice(m) {
   // Dictating must not stop a task Sidekick is working on.
@@ -1017,19 +682,16 @@ function onVoice(m) {
   else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
   else if (m.type === 'voice_error') {
     if (m.code === 'nothing_heard' && snap) { snap.waitingVoice = false; return; }
-    if (m.code === 'permission') {
+    if (m.code === 'model_missing') startVoiceDownload();
+    else if (m.code === 'permission' && !MAC) {
+      say('Windows is blocking the microphone. In the Privacy settings I just opened, turn on microphone access and "Let desktop apps access your microphone".', 'concerned');
+      openUrl('ms-settings:privacy-microphone');
+    } else if (m.code === 'permission') {
       const what = m.what === 'speech' ? 'speech recognition' : 'the microphone';
-      if (process.platform === 'win32') {
-        say('I need the microphone to hear you. Turn on microphone access for desktop apps in the Settings page I just opened.', 'concerned');
-        openUrl('ms-settings:privacy-microphone');
-      } else {
-        say(`I need access to ${what} to hear you. Turn on Roamies in the Privacy settings I just opened.`, 'concerned');
-        openUrl(`x-apple.systempreferences:com.apple.preference.security?${PRIVACY[m.what] ?? 'Privacy'}`);
-      }
-    } else if (m.code === 'unavailable' && NEEDS_MODEL && !voiceModel.ready) {
-      if (voiceModel.job) say(`I'm still downloading my voice model (${voiceModel.pct}%). Try again in a moment.`, 'concerned');
-      else { say("I don't have my voice model yet. Downloading it now.", 'concerned'); fetchVoiceModel(); }
-    } else if (m.code === 'no_input') say("I can't find a microphone. Plug one in and try again.", 'concerned');
+      say(`I need access to ${what} to hear you. Turn on Roamies in the Privacy settings I just opened.`, 'concerned');
+      openUrl(`x-apple.systempreferences:com.apple.preference.security?${PRIVACY[m.what] ?? 'Privacy'}`);
+    } else if (m.code === 'unavailable' && NEEDS_MODEL && !voiceReady()) startVoiceDownload();
+    else if (m.code === 'no_input') say("I can't find a microphone. Plug one in and try again.", 'concerned');
     else if (m.code === 'nothing_heard') say(m.spoke ? "I heard you but couldn't make out the words. Try again a little closer to the mic?" : `I didn't hear anything. Hold ${talkWords().replace('+', ' and ')} while you talk.`, 'concerned');
     else if (m.code === 'dictation_off') {
       say('This version of macOS needs Dictation on for me to hear you. Turn it on in the Keyboard settings I just opened.', 'concerned');
@@ -1070,7 +732,7 @@ async function onMenu(id) {
   } else if (id.startsWith('done:') || id.startsWith('drop:')) {
     const done = id.startsWith('done:');
     updateCommitment(id.slice(5), { status: done ? 'done' : 'dropped' }).then((c) => {
-      menu();
+      menu(); showList({ flash: c?.id, seconds: 4 });
       if (c && done) ui({ kind: 'agent', e: { type: 'emote', action: 'hype' } }), say(`Done: ${c.text}. That's what I'm talking about!`, 'happy');
     });
   }
@@ -1090,13 +752,16 @@ async function onMenu(id) {
   else if (id === 'logs') fs.mkdir(LOG_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(LOG_DIR)).catch(() => {});
   else if (id === 'setup') send({ type: 'onboarding' });
   else if (id === 'snap') areaSnap();
+  else if (id === 'list') showList({ seconds: 20 });
   else if (id === 'mutetalk') { config.muteWhileTalking = config.muteWhileTalking === false; saveConfig(); voiceConfig(); menu(); }
   else if (id.startsWith('voicemode:')) {
     config.voiceMode = id === 'voicemode:dictation' ? 'dictation' : 'agent'; saveConfig(); voiceConfig(); menu();
     say(dictating() ? `Dictation is on. Hold ${talkWords().replace('+', ' and ')} and I'll type what you say into the app in front.` : `Computer Use is on. Hold ${talkWords().replace('+', ' and ')} to talk to me.`, 'happy');
-  } else if (id === 'voice') {
+  } else if (id === 'voicedl') startVoiceDownload();
+  else if (id === 'voice') {
     config.voice = !config.voice; saveConfig(); voiceConfig(); menu();
-    say(config.voice ? `Voice is on. Hold ${talkWords().replace('+', ' and ')} to talk to me.` : 'Voice is off. You can still ask me from the menu bar.', 'happy');
+    if (config.voice && !voiceReady()) return startVoiceDownload();
+    say(config.voice ? `Voice is on. Hold ${talkWords().replace('+', ' and ')} to talk to me.` : `Voice is off. You can still ask me from the ${TRAY} menu.`, 'happy');
   }
 }
 
@@ -1157,7 +822,7 @@ function obState() {
     login: login.supported ? login.on : null,
     sound: config.sound,
     voice: VOICE_OK && config.voice,
-    voiceModel: modelState(),
+    voiceModel: NEEDS_MODEL ? { status: voiceModel.status, done: voiceModel.done, total: voiceModel.total, error: voiceModel.error, size: sizeLabel() } : null,
     filesAsked: config.filesAsked,
   });
 }
@@ -1179,7 +844,7 @@ async function filesStatus(request) {
 
 let keysBefore = null;
 async function onGuide(m) {
-  if (m.type === 'ob_hello') { onboarding = true; await refreshAuth(); obState(); fetchVoiceModel(); }
+  if (m.type === 'ob_hello') { onboarding = true; await refreshAuth(); obState(); }
   else if (m.type === 'ob_closed') onboarding = false;
   else if (m.type === 'ob_step') { config.onboardStep = Math.max(0, Math.min(4, m.step | 0)); saveConfig(); }
   else if (m.type === 'ob_login' && OAUTH[m.provider]) oauthLogin(m.provider);
@@ -1187,14 +852,14 @@ async function onGuide(m) {
   else if (m.type === 'ob_files') ob({ kind: 'files', status: await filesStatus(!!m.request) });
   else if (m.type === 'set_actions') { config.allowActions = !!m.on; saveConfig(); menu(); obState(); }
   else if (m.type === 'set_login') setLogin(!!m.on);
+  else if (m.type === 'ob_voice_model') getVoiceModel();
   else if (m.type === 'set_keys') {
     const next = { ...keys() };
     if (m.talk !== undefined) { if (!validTalk(m.talk)) return ob({ kind: 'keys', keys: keys(), error: 'Pick two different modifier keys.' }); next.talk = m.talk; }
-    for (const which of ['summon', 'snap']) {
+    for (const which of ['summon', 'snap', 'list']) {
       if (m[which] === undefined) continue;
       if (!validSummon(m[which])) return ob({ kind: 'keys', keys: keys(), error: 'Use at least one of Control, Option or Command, plus a key.' });
-      const other = which === 'summon' ? 'snap' : 'summon';
-      if (m[which] === next[other]) return ob({ kind: 'keys', keys: keys(), error: 'That shortcut is already used for something else here.' });
+      if (['summon', 'snap', 'list'].some((o) => o !== which && m[which] === next[o])) return ob({ kind: 'keys', keys: keys(), error: 'That shortcut is already used for something else here.' });
       next[which] = m[which];
     }
     keysBefore = keys();
@@ -1202,7 +867,7 @@ async function onGuide(m) {
     ob({ kind: 'keys', keys: next });
   } else if (m.type === 'keybind_error') {
     // The OS refused the new show/hide shortcut (another app owns it): put the old one back.
-    if (keysBefore && (m.which === 'summon' || m.which === 'snap')) { config.keys = { ...keys(), [m.which]: keysBefore[m.which] }; saveConfig(); sendKeys(); menu(); }
+    if (keysBefore && ['summon', 'snap', 'list'].includes(m.which)) { config.keys = { ...keys(), [m.which]: keysBefore[m.which] }; saveConfig(); sendKeys(); menu(); }
     ob({ kind: 'keys', keys: keys(), error: 'Another app already uses that shortcut. Try a different one.' });
   } else if (m.type === 'ob_done') {
     config.onboarded = true; config.onboardStep = 0; config.setupVersion = SETUP_VERSION; saveConfig();
@@ -1222,10 +887,15 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.type?.startsWith('voice')) onVoice(m);
   else if (m.type === 'dictation' || m.type === 'dictation_result') onDictation(m);
   else if (m.type === 'snap') areaSnap();
+  else if (m.type === 'list_toggle') toggleItem(String(m.id)).catch((e) => console.error('list', e));
+  else if (m.type === 'show_list') showList({ seconds: 20, toggle: true });
   else if (m.type === 'point_shown') { pointWaits.get(m.id)?.(); pointWaits.delete(m.id); }
   else if (m.type === 'update_status') onUpdateStatus(m);
   else if (m.type === 'login_item_status') onLoginStatus(m);
-}).on('close', () => process.exit(0));
+}).on('close', () => {
+  // The app quit (or is restarting for an update): let the last saves land first, but never hang.
+  Promise.race([flushWrites(), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
+});
 
 await refreshAuth();
 ensureModel();
@@ -1234,8 +904,8 @@ async function remindTick() {
   if (busy || loggingIn || onboarding) { reminderRetry(); return; }
   const due = await takeDueReminders();
   if (!due.length) return;
-  menu();
-  const list = due.map((c) => `- ${c.id}: ${c.text}${c.due ? ` (was due ${fmtWhen(c.due)})` : ''}`).join('\n');
+  menu(); showList({ flash: due[0].id, seconds: 6 });
+  const list = due.map((c) => `- ${c.id}: ${c.text}${c.due ? ` (was due ${fmtWhen(c.due)})` : ''}${c.kind === 'reminder' ? ' [plain reminder: already cleared, nothing to mark done]' : ''}`).join('\n');
   if (signedIn.size && [...signedIn.values()].some(Boolean)) {
     enqueue(`(System, not ${userName}: these commitments are due now. Nudge ${userName} about them in one or two sentences, in character. Start with the [remind] tag, or [upset] if it's well overdue.)\n${list}`);
   } else {
@@ -1259,7 +929,7 @@ function scheduleReminders() {
 scheduleReminders();
 
 // Pick up where we left off if the last session is still fresh.
-loadLatestSession().then((s) => { if (s && !isStale(s)) session = s; menu(); }).catch((e) => console.error('resume', e));
+resumed.then(() => menu());
 
 menu();
 overlays();
@@ -1267,6 +937,7 @@ sendKeys();
 send({ type: 'login_item' });
 logLine('start', { version: VERSION, platform: process.platform, model: config.model });
 pruneLogs();
+midnightClean();
 // Look for updates shortly after launch, then every 6 hours.
 setTimeout(() => checkUpdates(), 20_000);
 setInterval(() => checkUpdates(), 6 * 3600_000);

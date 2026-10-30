@@ -159,6 +159,13 @@ h2 { margin: 0; font: 700 13px/1.35 var(--mono); font-stretch: 87.5%; color: var
 .waiting { font: 600 11px/1.2 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
 .row .btn { padding: 7px 12px; white-space: nowrap; }
 .pair { display: inline-flex; gap: 6px; }
+.row p.bad { color: var(--danger); white-space: normal; }
+/* Download progress: the step bar's LED segments, smaller. */
+.dl-wrap { display: inline-flex; align-items: center; gap: 10px; }
+.dl { display: inline-flex; gap: 2px; }
+.dl i { width: 8px; height: 6px; background: #14302f; transition: background-color .3s var(--ease), box-shadow .3s var(--ease); }
+.dl i.on { background: var(--accent); box-shadow: 0 0 6px rgba(120, 255, 226, 0.6); }
+.dl-pct { min-width: 4ch; text-align: right; }
 
 /* Pixel switch: a stepped track and a square knob. */
 .switch { appearance: none; width: 44px; height: 24px; padding: 0; border: 0; cursor: pointer; --bc: var(--line-hi); --fill: #0b2224; }
@@ -247,6 +254,13 @@ input:focus-visible, select:focus-visible { outline: none; }
 }
 @keyframes ping { 50% { background: rgba(120, 255, 226, 0.34); } }
 .mb-clock { font: 700 12px/1 var(--mono); font-stretch: 87.5%; color: var(--ink-2); }
+.mb-more { display: none; font: 700 12px/1 var(--mono); color: var(--ink-2); }
+/* Windows: the taskbar, with the tray's ^ overflow arrow before the icons. */
+.menubar.taskbar .mb-more { display: block; }
+.tip { margin: -10px 0 18px; font-size: 11px; line-height: 1.45; color: var(--ink-3); }
+.tip b { color: var(--ink-2); }
+/* Rows that set display: grid otherwise ignore the hidden attribute. */
+.kline[hidden], .tip[hidden] { display: none; }
 .recap { display: grid; grid-template-columns: auto 1fr; gap: 10px 16px; align-items: center; margin: 0; }
 .recap dt { white-space: nowrap; }
 .recap dd { margin: 0; color: var(--ink-2); }
@@ -278,5 +292,5 @@ input:focus-visible, select:focus-visible { outline: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .step, .mb-me, .summon.recording .caps, .led.busy { animation: none; }
-  .px, .px::before, .link, .switch::after, .quip, .quip-tail, .progress li { transition: none; }
+  .px, .px::before, .link, .switch::after, .quip, .quip-tail, .progress li, .dl i { transition: none; }
 }

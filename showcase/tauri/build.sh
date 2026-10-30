@@ -8,6 +8,9 @@ rm -rf dist && mkdir -p dist
 cp ../desktop.html dist/
 cp -R ../roamies ../onboarding dist/
 ../tauri/sidecar/bundle.sh
+# Ship a Node.js runtime with the app, for the target being built (--target <triple>, else this machine).
+TARGET=""; prev=""; for a in "$@"; do [ "$prev" = "--target" ] && TARGET="$a"; prev="$a"; done
+../tauri/sidecar/fetch-node.sh ${TARGET:+"$TARGET"}
 cd src-tauri
 # Windows: the voice helper's Moonshine runtime and MSVC CRT are bundled; no-op once fetched.
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) bash voice-rs/fetch-moonshine.sh --runtime ;; esac

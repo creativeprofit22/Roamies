@@ -107,6 +107,31 @@ export async function installModel({ dir = modelDir(), manifest = MODEL, onProgr
   return dir;
 }
 
+// The shape sidekick.mjs's voice-model UX expects (shared with voicemodel.mjs, the Parakeet download).
+export const totalBytes = (manifest = MODEL) => manifest.files.reduce((n, f) => n + f.size, 0);
+export const sizeLabel = (manifest = MODEL) => `${Math.round(totalBytes(manifest) / 1e6)} MB`;
+export const isReady = (dir, manifest = MODEL) => isInstalled(dir, manifest);
+
+const fail = (code, message, cause) => Object.assign(new Error(message, { cause }), { code });
+
+// installModel with errors coded 'disk' (not enough space), 'checksum', 'network' or 'aborted'.
+export async function downloadModel(dir, { manifest = MODEL, onProgress = () => {}, signal, fetchImpl = fetch, retries, backoffMs, statfs = fs.promises.statfs } = {}) {
+  if (isInstalled(dir, manifest)) { onProgress({ done: totalBytes(manifest), total: totalBytes(manifest) }); return dir; }
+  const parent = path.dirname(dir);
+  fs.mkdirSync(parent, { recursive: true });
+  let free = Infinity;
+  try { const st = await statfs(parent); free = st.bavail * st.bsize; } catch {}
+  // Room for the whole model plus a little slack (what's already staged is small next to it).
+  if (free < totalBytes(manifest) + 50e6) throw fail('disk', `Not enough free disk space: the voice model needs ${sizeLabel(manifest)}.`);
+  try {
+    return await installModel({ dir, manifest, onProgress, signal, fetchImpl, ...(retries != null && { retries }), ...(backoffMs != null && { backoffMs }) });
+  } catch (e) {
+    if (signal?.aborted || e?.name === 'AbortError') throw fail('aborted', 'Download stopped.', e);
+    if (/checksum mismatch/.test(e?.message)) throw fail('checksum', e.message, e);
+    throw fail('network', `Couldn't download the voice model (${e?.message ?? e}).`, e);
+  }
+}
+
 const WIN_KEY = { control: 'Ctrl', option: 'Alt', shift: 'Shift', command: 'Win' };
 const MAC_SYMBOL = { control: '⌃', option: '⌥', shift: '⇧', command: '⌘' };
 const MAC_WORD = { control: 'Control', option: 'Option', shift: 'Shift', command: 'Command' };

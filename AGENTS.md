@@ -2,9 +2,11 @@
 
 Roamies: a Tauri 2 desktop app (Rust shell in `showcase/tauri/src-tauri`), a Node sidecar that runs the
 agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, macOS Swift helpers built by
-`src-tauri/build.rs`, and the Windows voice helper (`src-tauri/voice-win`, Rust + Parakeet) built by
-`build.sh` for Windows targets. It compiles elsewhere too: `--transcribe <wav>` and `--test-audio <wav>`
-test speech without a Windows PC (see the top of its `main.rs`).
+`src-tauri/build.rs`, and two Windows voice helpers, also built by `src-tauri/build.rs` for Windows targets:
+`src-tauri/voice-rs` (`roamies-voice-moonshine`, Rust + Moonshine, the default the host launches; see
+`docs/voice-engines.md`) and `src-tauri/voice-win` (`roamies-voice-parakeet`, Rust + Parakeet). Both compile
+elsewhere too, to test speech without a Windows PC: `--wav <wav>` for voice-rs, `--transcribe <wav>` and
+`--test-audio <wav>` for voice-win (see the top of its `main.rs`).
 
 ## Commands
 

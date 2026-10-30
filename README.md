@@ -96,7 +96,8 @@ npm install @kenkaiiii/gg-ai @kenkaiiii/gg-agent
 | Path | What |
 |---|---|
 | `showcase/tauri/src-tauri/` | The desktop app shell (Tauri 2, Rust) and the macOS voice and hands helpers (Swift) |
-| `showcase/tauri/src-tauri/voice-win/` | The Windows voice helper (Rust, Parakeet speech on the PC) |
+| `showcase/tauri/src-tauri/voice-rs/` | The default Windows voice helper (Rust, Moonshine speech on the PC) |
+| `showcase/tauri/src-tauri/voice-win/` | The alternative Windows voice helper (Rust, Parakeet speech on the PC) |
 | `showcase/tauri/sidecar/` | Sidekick's brain: the gg-framework agent, its tools, memory and tests |
 | `showcase/roamies/` | The creatures: physics, rendering, expressions, bubbles, tool animations, sounds |
 | `showcase/onboarding/` | The setup guide |

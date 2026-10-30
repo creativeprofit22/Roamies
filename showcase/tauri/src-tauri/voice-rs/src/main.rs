@@ -6,6 +6,7 @@ mod chord;
 mod engine;
 mod engines;
 mod keys_windows;
+mod perms;
 mod protocol;
 mod record;
 mod session;
@@ -35,6 +36,7 @@ struct Args {
     moonshine_size: String,
     moonshine_lib: Option<PathBuf>,
     model_dir: Option<PathBuf>,
+    perms: bool,
 }
 
 fn parse_args() -> Args {
@@ -48,6 +50,7 @@ fn parse_args() -> Args {
         moonshine_size: "small".into(),
         moonshine_lib: None,
         model_dir: None,
+        perms: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -59,6 +62,12 @@ fn parse_args() -> Args {
             }
             "--wav" => args.wav = it.next().map(PathBuf::from),
             "--bench" => args.bench = it.next().map(PathBuf::from),
+            // Windows has no mic prompt for desktop apps, so --request just reports like --perms.
+            "--perms" => args.perms = true,
+            "--request" => {
+                it.next();
+                args.perms = true;
+            }
             "--record" => args.record = it.next().map(PathBuf::from),
             "--prompts" => args.prompts = it.next().map(PathBuf::from),
             "--model-dir" => args.model_dir = it.next().map(PathBuf::from).or(args.model_dir),
@@ -130,6 +139,10 @@ fn build_engine(args: &Args) -> Result<(Box<dyn SpeechEngine>, bench::BenchInfo)
 fn main() -> ExitCode {
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
     let args = parse_args();
+    if args.perms {
+        let _ = Emitter::new(io::stdout()).emit(&Event::Perms { mic: perms::mic() });
+        return ExitCode::SUCCESS;
+    }
     if let Some(dir) = &args.record {
         return record::run(dir, args.prompts.as_deref());
     }
@@ -137,7 +150,7 @@ fn main() -> ExitCode {
         Ok(e) => e,
         Err(e) => {
             log(&e);
-            let _ = Emitter::new(io::stdout()).emit(&Event::Error { code: ErrorCode::Unavailable, spoke: None, message: Some(e) });
+            let _ = Emitter::new(io::stdout()).emit(&Event::Error { code: ErrorCode::Unavailable, spoke: None, message: Some(e), what: None });
             return ExitCode::FAILURE;
         }
     };
@@ -163,14 +176,14 @@ fn run_wav(session: &mut Live, path: &Path) -> ExitCode {
         Ok(v) => v,
         Err(e) => {
             log(&format!("can't read {}: {e}", path.display()));
-            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e) });
+            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e), what: None });
             return ExitCode::FAILURE;
         }
     };
     let mut resampler = match Resampler16k::new(rate) {
         Ok(r) => r,
         Err(e) => {
-            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e) });
+            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e), what: None });
             return ExitCode::FAILURE;
         }
     };
@@ -291,7 +304,11 @@ fn run_live(session: &mut Live) -> ExitCode {
                 Ok(m) => mic = Some(m),
                 Err(e) => {
                     log(&format!("mic: {e}"));
-                    session.audio_failed();
+                    if perms::mic() == perms::Status::Denied {
+                        session.mic_denied();
+                    } else {
+                        session.audio_failed();
+                    }
                 }
             }
         } else if !session.wants_audio() && mic.is_some() {

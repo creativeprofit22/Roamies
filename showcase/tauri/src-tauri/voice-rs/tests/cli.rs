@@ -211,3 +211,15 @@ fn moonshine_defaults_find_fetched_models_without_paths() {
     let fin = ev.iter().find(|e| e["type"] == "final").expect("no final event");
     assert!(fin["text"].as_str().unwrap().to_lowercase().contains("nightfall"), "final: {fin}");
 }
+
+#[test]
+fn perms_prints_one_mic_line() {
+    for args in [&["--perms"][..], &["--request", "mic"][..]] {
+        let out = bin().args(args).stdin(Stdio::null()).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let ev = events(&out.stdout);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0]["type"], "perms");
+        assert!(["granted", "denied"].contains(&ev[0]["mic"].as_str().unwrap()), "{}", ev[0]);
+    }
+}

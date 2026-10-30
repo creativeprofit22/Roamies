@@ -153,13 +153,22 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
 
     /// The mic couldn't open or died: same as the Mac helper's `no_input` once it's a talk.
     pub fn audio_failed(&mut self) {
+        self.fail_audio(Event::error(ErrorCode::NoInput));
+    }
+
+    /// The mic is off in Windows privacy settings: like `audio_failed`, but the host can point there.
+    pub fn mic_denied(&mut self) {
+        self.fail_audio(Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone") });
+    }
+
+    fn fail_audio(&mut self, event: Event) {
         match self.machine.phase() {
             Phase::Idle => {}
             Phase::Armed => self.mic_down = true,
             // The tail can't be cancelled; deliver what was heard and stop retrying the mic.
             Phase::Finishing { .. } => self.mic_down = true,
             Phase::Holding | Phase::HandsFree => {
-                self.emit(&Event::error(ErrorCode::NoInput));
+                self.emit(&event);
                 self.cancel();
             }
         }
@@ -234,7 +243,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         self.emit(&Event::state(SessionState::Idle));
         if text.is_empty() && self.shown {
             let spoke = self.machine.spoke();
-            self.emit(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(spoke), message: None });
+            self.emit(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(spoke), message: None, what: None });
         }
     }
 
@@ -425,6 +434,15 @@ mod tests {
         s.listen(|| 0.0).unwrap();
         s.audio_failed();
         assert_eq!(kinds(&s), ["listening", "error:no_input", "idle"]);
+    }
+
+    #[test]
+    fn denied_mic_is_a_permission_error() {
+        let mut s = session(FakeEngine::new(&[]));
+        s.listen(|| 0.0).unwrap();
+        s.mic_denied();
+        assert!(events(&s).contains(&json!({"type":"error","code":"permission","what":"microphone"})));
+        assert_eq!(kinds(&s), ["listening", "error:permission", "idle"]);
     }
 
     #[test]

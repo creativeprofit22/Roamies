@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Downloads Moonshine streaming English models into models/moonshine-<size>/ and, on Windows x64, the
 # Moonshine runtime into models/moonshine-runtime/. Usage: ./fetch-moonshine.sh [tiny|small|medium ...]
+# or ./fetch-moonshine.sh --runtime (runtime and MSVC CRT only; used by build.sh and the Windows build).
 # Moonshine publishes only static .lib files for Windows (built /MD), so we link them into our own
 # moonshine.dll with MSVC link.exe; roamies-voice loads it at runtime. Code and streaming models: MIT.
 set -euo pipefail
@@ -49,17 +50,12 @@ check_sha() { # file expected
   [ "$got" = "$2" ] || { echo "sha256 mismatch for $1: got $got, want $2" >&2; exit 1; }
 }
 
-fetch_runtime() {
-  if [ -s "$RT_DEST/moonshine.dll" ] && [ -s "$RT_DEST/onnxruntime.dll" ]; then
-    echo "runtime already in $RT_DEST"; return
-  fi
-  case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) ;; *)
-    echo "skipping runtime: only Windows x64 is wired up (models still downloaded)"; return ;;
-  esac
-  # Find MSVC link.exe and the Windows SDK libs directly (vcvars from bash is unreliable).
+# Finds MSVC (link.exe, dumpbin.exe, the CRT redist) and the Windows SDK libs directly (vcvars from bash
+# is unreliable). Sets vs, msvc, sdk.
+find_msvc() {
   local vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
   [ -x "$vswhere" ] || { echo "need Visual Studio C++ build tools to link moonshine.dll" >&2; exit 1; }
-  local vs ver msvc sdk
+  local ver
   vs=$(cygpath -u "$("$vswhere" -latest -products '*' \
     -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | tr -d '\r')")
   ver=$(tr -d '\r\n ' < "$vs/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
@@ -68,6 +64,37 @@ fetch_runtime() {
   [ -x "$msvc/bin/Hostx64/x64/link.exe" ] && [ -n "$sdk" ] ||
     { echo "MSVC x64 toolset or Windows SDK not found" >&2; exit 1; }
   sdk=${sdk%/um/x64}
+}
+
+# Copies the app-local MSVC C++ runtime DLLs that moonshine.dll and onnxruntime.dll import (per dumpbin)
+# from the VS redist, so a machine without the VC++ redistributable can load them. The UCRT
+# (api-ms-win-crt-*) ships with Windows 10+.
+copy_crt() {
+  local redist deps d
+  redist=$(ls -d "$vs/VC/Redist/MSVC/"*/x64/Microsoft.VC14*.CRT 2>/dev/null | sort -V | tail -1)
+  [ -n "$redist" ] || { echo "MSVC CRT redist (Microsoft.VC14x.CRT) not found under $vs" >&2; exit 1; }
+  deps=$(MSYS_NO_PATHCONV=1 "$msvc/bin/Hostx64/x64/dumpbin.exe" /nologo /dependents \
+    "$(cygpath -w "$RT_DEST/moonshine.dll")" "$(cygpath -w "$RT_DEST/onnxruntime.dll")" |
+    tr -d '\r' | grep -ioE '^ +(msvcp|vcruntime|concrt)[a-z0-9_]*\.dll' | tr -d ' ' | tr 'A-Z' 'a-z' | sort -u)
+  [ -n "$deps" ] || { echo "dumpbin found no MSVC runtime imports (unexpected)" >&2; exit 1; }
+  for d in $deps; do
+    [ -f "$redist/$d" ] || { echo "$d is imported but missing from $redist" >&2; exit 1; }
+    cp "$redist/$d" "$RT_DEST/$d"
+  done
+  echo "MSVC runtime:" $deps
+}
+
+have_crt() { [ -s "$RT_DEST/vcruntime140.dll" ] && [ -s "$RT_DEST/msvcp140.dll" ]; }
+
+fetch_runtime() {
+  case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) ;; *)
+    echo "skipping runtime: only Windows x64 is wired up (models still downloaded)"; return ;;
+  esac
+  if [ -s "$RT_DEST/moonshine.dll" ] && [ -s "$RT_DEST/onnxruntime.dll" ]; then
+    have_crt || { find_msvc; copy_crt; }
+    echo "runtime already in $RT_DEST"; return
+  fi
+  find_msvc
 
   echo "downloading $RT_URL"
   curl -fL --retry 3 -o "$tmp/rt.tgz" "$RT_URL"
@@ -91,6 +118,7 @@ fetch_runtime() {
   for f in "${THIRD_PARTY[@]}"; do
     curl -fsSL --retry 3 -o "$RT_DEST/licenses/${f%%/*}-${f#*/}" "$RAW/core/third-party/$f"
   done
+  copy_crt
   echo "runtime ready in $RT_DEST ($(du -sh "$RT_DEST" | cut -f1))"
 }
 
@@ -113,5 +141,6 @@ fetch_model() { # size
 }
 
 fetch_runtime
+if [ "${1:-}" = --runtime ]; then exit 0; fi
 [ $# -gt 0 ] || set -- small
 for size in "$@"; do fetch_model "$size"; done

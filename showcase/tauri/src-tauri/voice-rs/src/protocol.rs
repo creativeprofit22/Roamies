@@ -24,6 +24,7 @@ pub enum ErrorCode {
     NoInput,
     Unavailable,
     NothingHeard,
+    Permission,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -58,6 +59,11 @@ pub enum Event {
         spoke: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        what: Option<&'static str>,
+    },
+    Perms {
+        mic: crate::perms::Status,
     },
 }
 
@@ -71,7 +77,7 @@ impl Event {
     }
 
     pub fn error(code: ErrorCode) -> Self {
-        Event::Error { code, spoke: None, message: None }
+        Event::Error { code, spoke: None, message: None, what: None }
     }
 }
 
@@ -155,9 +161,14 @@ mod tests {
         assert_eq!(js(&Event::error(ErrorCode::NoInput)), json!({"type":"error","code":"no_input"}));
         assert_eq!(js(&Event::error(ErrorCode::Unavailable)), json!({"type":"error","code":"unavailable"}));
         assert_eq!(
-            js(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(false), message: None }),
+            js(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(false), message: None, what: None }),
             json!({"type":"error","code":"nothing_heard","spoke":false})
         );
+        assert_eq!(
+            js(&Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone") }),
+            json!({"type":"error","code":"permission","what":"microphone"})
+        );
+        assert_eq!(js(&Event::Perms { mic: crate::perms::Status::Denied }), json!({"type":"perms","mic":"denied"}));
     }
 
     #[test]

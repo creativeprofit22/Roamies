@@ -293,3 +293,33 @@ export function checkUrl(url) {
 
 /** A yes from the user, typed or spoken. */
 export const isYes = (text) => /^\s*(y|yes|yeah|yep|yup|ok|okay|sure|go|go ahead|do it|run it|allow|confirm)\b/i.test(String(text ?? ''));
+
+// Dictation pastes what was said into the app in front. Blocked apps hold passwords or security and system
+// settings; the macOS ids follow HANDS_OFF in hands/main.swift (keep both in sync), plus Windows equivalents.
+const DICTATION_BLOCK = new Map(Object.entries({
+  'com.apple.keychainaccess': 'Keychain Access', 'com.apple.passwords': 'Passwords', 'com.apple.systempreferences': 'System Settings',
+  'com.apple.settings': 'System Settings', 'com.1password.1password': '1Password', 'com.agilebits.onepassword7': '1Password',
+  'com.bitwarden.desktop': 'Bitwarden', 'org.keepassxc.keepassxc': 'KeePassXC', 'com.apple.installer': 'Installer',
+  'com.apple.migrateassistant': 'Migration Assistant', 'com.apple.diskutility': 'Disk Utility',
+  'keepass.exe': 'KeePass', 'keepassxc.exe': 'KeePassXC', '1password.exe': '1Password', 'bitwarden.exe': 'Bitwarden',
+  'dashlane.exe': 'Dashlane', 'enpass.exe': 'Enpass', 'sechealthui.exe': 'Windows Security', 'systemsettings.exe': 'Settings',
+  'regedit.exe': 'Registry Editor', 'msiexec.exe': 'Windows Installer', 'consent.exe': 'the admin prompt',
+}));
+// Terminals: pasting is fine, but a newline would run the command, so control characters become spaces.
+const DICTATION_TERMINALS = new Set([
+  'com.apple.terminal', 'com.googlecode.iterm2', 'dev.warp.warp-stable', 'dev.warp.warp', 'com.mitchellh.ghostty', 'net.kovidgoyal.kitty',
+  'org.alacritty', 'io.alacritty', 'com.github.wez.wezterm', 'co.zeit.hyper', 'org.tabby', 'com.raphaelamorim.rio',
+  'windowsterminal.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe', 'conhost.exe', 'openconsole.exe', 'mintty.exe', 'alacritty.exe',
+  'wezterm-gui.exe', 'hyper.exe', 'tabby.exe',
+]);
+
+/** Dictation paste target. app = { id, name } (bundle id on macOS, exe name on Windows). Returns { level, reason, text }. */
+export function checkDictationTarget(app, text) {
+  const id = String(app?.id ?? '').trim().toLowerCase(), t = String(text ?? '');
+  if (!id) return { ...verdict(BLOCK, "I couldn't tell which app is in front, so I won't paste."), text: t };
+  const blocked = DICTATION_BLOCK.get(id);
+  if (blocked) return { ...verdict(BLOCK, `I won't paste into ${blocked}.`), text: t };
+  // eslint-disable-next-line no-control-regex
+  if (DICTATION_TERMINALS.has(id)) return { ...verdict(SAFE), text: t.replace(/[\u0000-\u001f\u007f]/g, ' ') };
+  return { ...verdict(SAFE), text: t };
+}

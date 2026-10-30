@@ -174,6 +174,9 @@
     else if (m.type === 'final') {
       // Keep what was heard on screen until the agent starts thinking.
       if (listen) { listen.set(m.text).processing(); heard = listen; listen = null; Roamie.sfx?.play('heard'); }
+    } else if (m.type === 'dictated') {
+      // Dictation: no agent hand-off, so close the transcript once it's pasted.
+      if (heard) { const h = heard; setTimeout(() => { if (heard === h) { h.close(); heard = null; } }, 600); }
     } else if (m.type === 'state' && m.state === 'idle') {
       listen?.close(); listen = null;
       if (heard) { const h = heard; setTimeout(() => { if (heard === h) { h.close(); heard = null; } }, 4000); }
@@ -197,7 +200,19 @@
     else if (m.kind === 'cancel_ask') { if (ask?.id === m.id) { ask.id = null; finishAsk(null); } }
     else if (m.kind === 'agent') onAgent(m.e);
     else if (m.kind === 'voice') onVoice(m);
+    else if (m.kind === 'progress') onProgress(m);
   };
+
+  // Long-running status (the Windows voice model download): one bubble per id, updated in place.
+  const progress = new Map();
+  function onProgress(m) {
+    const cur = progress.get(m.id);
+    if (m.done) { cur?.close(); progress.delete(m.id); return; }
+    if (ask) return;
+    if (cur?.open) cur.set(m.text);
+    // Don't talk over another bubble; the next update reopens it once the Sidekick is free.
+    else if (!getAgent().busy) progress.set(m.id, getAgent().status(m.text));
+  }
 
   // Start hidden in auto mode and tell the brain we're listening. It replies with the sound setting,
   // and a greeting wave unless the setup guide is about to open.

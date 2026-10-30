@@ -124,13 +124,16 @@
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
   const CHEERS = ['Got it!', 'Nice!', 'Perfect.', 'Yes!'];
   const isMac = () => state?.platform === 'darwin';
+  const isWin = () => state?.platform === 'win32';
 
-  // Keycaps for shortcuts, in Apple's modifier order.
-  const MOD = { control: '⌃', option: '⌥', shift: '⇧', command: '⌘' };
+  // Keycaps for shortcuts, in Apple's modifier order; Windows keyboards print the names instead.
+  const MAC_MOD = { control: '⌃', option: '⌥', shift: '⇧', command: '⌘' };
+  const WIN_MOD = { control: 'Ctrl', option: 'Alt', shift: 'Shift', command: 'Win' };
+  const MOD_NAME = (x) => (isWin() ? WIN_MOD[x] : x[0].toUpperCase() + x.slice(1));
   const ORDER = ['control', 'option', 'shift', 'command'];
   const ACC_MOD = { Control: 'control', Alt: 'option', Shift: 'shift', Command: 'command' };
   const keyLabel = (code) => code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Arrow/, '') .replace('Backquote', '`').replace('Minus', '-').replace('Equal', '=').replace('BracketLeft', '[').replace('BracketRight', ']').replace('Backslash', '\\').replace('Semicolon', ';').replace('Quote', "'").replace('Comma', ',').replace('Period', '.').replace('Slash', '/');
-  const capsFor = (mods, key) => [...[...mods].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)).map((x) => MOD[x]), ...(key ? [keyLabel(key)] : [])];
+  const capsFor = (mods, key) => [...[...mods].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)).map((x) => (isWin() ? WIN_MOD : MAC_MOD)[x]), ...(key ? [keyLabel(key)] : [])];
   const accelCaps = (accel) => { const parts = accel.split('+'); return capsFor(parts.slice(0, -1).map((p) => ACC_MOD[p]), parts.at(-1)); };
   const TRAY_SVG = '<svg class="trayicon" viewBox="0 0 36 36" aria-hidden="true" fill="currentColor"><rect x="30" y="3" width="2" height="2"/><rect x="27" y="6" width="2" height="2"/><rect x="30" y="6" width="2" height="2"/><rect x="33" y="6" width="2" height="2"/><rect x="30" y="9" width="2" height="2"/><rect x="6" y="12" width="2" height="2"/><rect x="9" y="12" width="2" height="2"/><rect x="12" y="12" width="2" height="2"/><rect x="15" y="12" width="2" height="2"/><rect x="3" y="15" width="2" height="2"/><rect x="6" y="15" width="2" height="2"/><rect x="9" y="15" width="2" height="2"/><rect x="12" y="15" width="2" height="2"/><rect x="15" y="15" width="2" height="2"/><rect x="18" y="15" width="2" height="2"/><rect x="0" y="18" width="2" height="2"/><rect x="3" y="18" width="2" height="2"/><rect x="9" y="18" width="2" height="2"/><rect x="12" y="18" width="2" height="2"/><rect x="18" y="18" width="2" height="2"/><rect x="21" y="18" width="2" height="2"/><rect x="0" y="21" width="2" height="2"/><rect x="3" y="21" width="2" height="2"/><rect x="9" y="21" width="2" height="2"/><rect x="12" y="21" width="2" height="2"/><rect x="18" y="21" width="2" height="2"/><rect x="21" y="21" width="2" height="2"/><rect x="0" y="24" width="2" height="2"/><rect x="3" y="24" width="2" height="2"/><rect x="6" y="24" width="2" height="2"/><rect x="9" y="24" width="2" height="2"/><rect x="12" y="24" width="2" height="2"/><rect x="15" y="24" width="2" height="2"/><rect x="18" y="24" width="2" height="2"/><rect x="21" y="24" width="2" height="2"/><rect x="3" y="27" width="2" height="2"/><rect x="6" y="27" width="2" height="2"/><rect x="9" y="27" width="2" height="2"/><rect x="12" y="27" width="2" height="2"/><rect x="15" y="27" width="2" height="2"/><rect x="18" y="27" width="2" height="2"/><rect x="6" y="30" width="2" height="2"/><rect x="9" y="30" width="2" height="2"/><rect x="12" y="30" width="2" height="2"/><rect x="15" y="30" width="2" height="2"/></svg>';
   const capsEl = (caps) => { const s = el('span', { className: 'caps' }); for (const c of caps) s.append(el('kbd', { className: 'px cap', textContent: c })); return s; };
@@ -142,6 +145,8 @@
     files: { Desktop: 'unknown', Documents: 'unknown', Downloads: 'unknown' },
     asked: {}, waiting: null, poll: null, since: 0, seen: new Set(),
     rows() {
+      // Windows has no permission prompt: the microphone is a privacy switch in Settings.
+      if (isWin()) return state?.voice ? [{ id: 'mic', title: 'Microphone', desc: 'So you can talk to me.', pane: 'Privacy_Microphone', settingsOnly: true }] : [];
       if (!isMac()) return [];
       return [
         { id: 'mic', title: 'Microphone', desc: 'So you can talk to me.', pane: 'Privacy_Microphone' },
@@ -160,6 +165,7 @@
     },
     done() { return this.rows().every((r) => this.status(r.id) === 'granted'); },
     async allow(r) {
+      if (r.settingsOnly) { this.asked[r.id] = true; invoke('open_settings', { pane: r.pane }); quip('Switch microphone access on!'); this.render(); return; }
       this.waiting = r.id; this.asked[r.id] = true; this.render();
       poseFn = POSE.point(1.7, -0.1);
       if (r.id === 'files') { quip('Click OK when it asks!'); send({ type: 'ob_files', request: true }); return; }
@@ -184,7 +190,7 @@
     render() {
       const list = $('perm-rows');
       const rows = this.rows();
-      $('perm-lead').textContent = isMac() ? 'Only used when you ask me something.' : 'Nothing to allow here. Just one choice below.';
+      $('perm-lead').textContent = rows.length ? 'Only used when you ask me something.' : 'Nothing to allow here. Just one choice below.';
       const firstPending = rows.find((r) => this.status(r.id) !== 'granted');
       list.replaceChildren(...rows.map((r) => {
         const st = this.status(r.id);
@@ -355,7 +361,7 @@
       } else if (msg.type === 'state' && msg.state === 'idle') { voice.listening = false; if (poseFn) poseFn = null; }
       else if (msg.type === 'error') {
         voice.listening = false; poseFn = null;
-        heard.textContent = msg.code === 'permission' ? 'I need the Microphone (step 2) to hear you.' : msg.code === 'nothing_heard' ? "Didn't catch that. Try again?" : 'Something went wrong. Try again?';
+        heard.textContent = msg.code === 'permission' ? 'I need the Microphone (step 2) to hear you.' : msg.code === 'unavailable' ? 'My voice isn’t ready yet. Give me a moment.' : msg.code === 'nothing_heard' ? "Didn't catch that. Try again?" : 'Something went wrong. Try again?';
         quip(msg.code === 'permission' ? 'I can’t hear you yet' : 'Again?');
       }
     },
@@ -370,12 +376,15 @@
         const on = same(c, k.talk);
         const b = el('button', { className: 'px chord', type: 'button', role: 'radio', tabIndex: on ? 0 : -1 }, capsEl(capsFor(c)));
         b.setAttribute('aria-checked', String(on));
-        b.setAttribute('aria-label', `Hold ${c.map((x) => x[0].toUpperCase() + x.slice(1)).join(' and ')}`);
+        b.setAttribute('aria-label', `Hold ${c.map(MOD_NAME).join(' and ')}`);
         b.onclick = () => { if (!on) { send({ type: 'set_keys', talk: c }); quip('Ooh, fancy.'); } };
         return b;
       }));
       const tl = $('try-label');
-      tl.replaceChildren('Try it: hold ', capsEl(capsFor(k.talk)), ' and say hi');
+      const vm = state.voiceModel;
+      // Windows downloads the voice model on first enable; the test waits for it.
+      if (state.voice && vm && !vm.ready) tl.replaceChildren(vm.downloading ? `Getting my voice ready… ${vm.pct | 0}%` : vm.error ? 'My voice download failed. I’ll retry when you turn voice on again.' : 'Getting my voice ready…');
+      else tl.replaceChildren('Try it: hold ', capsEl(capsFor(k.talk)), ' and say hi');
       $('snap-line').hidden = !isMac() || !k.snap;
       for (const w of ['summon', 'snap']) if (keys.recording !== w && k[w]) fillCaps($(`${w}-caps`), accelCaps(k[w]));
       nav();
@@ -485,7 +494,7 @@
     STEPS[cur]?.onLeave?.();
     if (!reduced.matches) { sidekick.vanish('materialize'); await wait(700); }
     send({ type: 'ob_done' });
-    const talk = state?.voice && state.keys ? capsFor(state.keys.talk).join('') : null;
+    const talk = state?.voice && state.keys ? capsFor(state.keys.talk).join(isWin() ? '+' : '') : null;
     invoke('onboarding_finish', { text: talk ? `Here I am! Hold ${talk} to talk, or click my icon up here anytime.` : 'Here I am! Click my icon up here anytime.' });
   }
   $('next').addEventListener('click', () => (cur === STEPS.length - 1 ? finish() : go(cur + 1)));
@@ -522,6 +531,7 @@
         break;
       case 'say': quip(msg.text, 3); break;
       case 'voice': voice.on(msg); break;
+      case 'voice_model': if (state) { state.voiceModel = { ready: msg.ready, pct: msg.pct, downloading: msg.downloading, error: msg.error }; if (cur === 3) keys.render(); } break;
     }
   };
   // Move the window from the top strip; double-click does nothing (no zoom for a fixed-size guide).
@@ -543,6 +553,7 @@
     };
     let filesAsked = false;
     const reply = (m, ms = 0) => setTimeout(() => window.__onboard?.(m), ms);
+    if (st.platform === 'win32') { st.voiceModel = { ready: false, pct: 0, downloading: true, error: null }; const t = setInterval(() => { const vm = st.voiceModel; vm.pct = Math.min(100, vm.pct + 10); if (vm.pct === 100) { vm.ready = true; vm.downloading = false; clearInterval(t); } window.__onboard?.({ kind: 'voice_model', ...vm }); }, 700); }
     return async (cmd, args) => {
       if (cmd === 'perm_status') return { ...sys };
       if (cmd === 'perm_request') { await wait(600); if (args.kind !== 'screen') sys[args.kind] = 'granted'; else setTimeout(() => { sys.screen = 'granted'; }, 2500); return { ...sys }; }

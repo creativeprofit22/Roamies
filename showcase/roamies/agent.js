@@ -717,6 +717,23 @@
           get closed() { return h.closed; },
         };
       },
+      // A status bubble (e.g. download progress): set() replaces the text in place; it stays up until close().
+      status: (text) => {
+        ensureShown();
+        const h = open('speech', text, { stream: true });
+        const bb = b;
+        return {
+          set(t) {
+            if (bb.closing || t === bb.text) return this;
+            bb.text = t; bb.lines = wrap(t, MAX_COLS); bb.shown = t.length;
+            for (let i = 0; i < t.length; i++) bb.at[i] ??= now;
+            return this;
+          },
+          close() { if (b === bb) close(bb); },
+          get open() { return b === bb && !bb.closing; },
+          get closed() { return h.closed; },
+        };
+      },
       tool: (name, opts = {}) => {
         const def = R.agentTools?.[name];
         if (!def) throw new Error(`unknown tool ${name}`);

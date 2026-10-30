@@ -3,6 +3,8 @@
 // No Dock icon (LSUIElement + Accessory policy) and no taskbar entries on Windows/Linux.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dictation;
+
 use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
@@ -24,6 +26,8 @@ static ONBOARDING: AtomicBool = AtomicBool::new(false);
 static SUMMON_ID: AtomicU32 = AtomicU32::new(0);
 /// Id of the registered "ask about an area" hotkey.
 static SNAP_ID: AtomicU32 = AtomicU32::new(0);
+/// Voice Mode is Dictation: a final transcript is pasted into the app in front instead of going to the agent.
+static DICTATION: AtomicBool = AtomicBool::new(false);
 const ONBOARDING_LABEL: &str = "onboarding";
 
 struct Sidecar(Mutex<Option<ChildStdin>>);
@@ -32,6 +36,8 @@ struct Roster(Mutex<Vec<String>>);
 struct Voice(Mutex<Option<Child>>, AtomicUsize);
 /// Talk chord passed to the voice helper, e.g. ["control", "option"].
 struct TalkChord(Mutex<Vec<String>>);
+/// Where the sidecar installed the voice model (Windows Moonshine); None until it says.
+struct VoiceModel(Mutex<Option<String>>);
 
 thread_local! {
     // The hotkey manager must live on the main thread; it also owns the current show/hide hotkey.
@@ -111,7 +117,7 @@ fn set_typing(app: AppHandle, window: WebviewWindow, on: bool) {
 /// Runs the voice helper in a one-shot permission mode and returns what it printed.
 fn helper_perms(args: &[&str]) -> Value {
     let Some(bin) = voice_binary() else { return json!({ "type": "perms", "unsupported": true }) };
-    let out = Command::new(bin).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output();
+    let out = helper_command(bin).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output();
     out.ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|t| t.lines().rev().find_map(|l| serde_json::from_str::<Value>(l).ok()))
@@ -135,6 +141,10 @@ fn accessibility(prompt: bool) -> &'static str {
 
 #[tauri::command]
 async fn perm_status() -> Value {
+    if cfg!(windows) {
+        // Only the microphone privacy switch applies on Windows; the helper reads it.
+        return tauri::async_runtime::spawn_blocking(|| helper_perms(&["--perms"])).await.unwrap_or(Value::Null);
+    }
     if !cfg!(target_os = "macos") {
         return json!({ "type": "perms", "unsupported": true });
     }
@@ -150,6 +160,10 @@ async fn perm_status() -> Value {
 /// Shows the system prompt for one permission (mic waits for the answer), then returns the new state.
 #[tauri::command]
 async fn perm_request(kind: String) -> Value {
+    if cfg!(windows) && kind == "mic" {
+        // Windows has no mic prompt for desktop apps; the guide opens Settings and re-checks.
+        return tauri::async_runtime::spawn_blocking(|| helper_perms(&["--perms"])).await.unwrap_or(Value::Null);
+    }
     if !cfg!(target_os = "macos") || !["mic", "speech", "screen", "accessibility"].contains(&kind.as_str()) {
         return json!({ "type": "perms", "unsupported": true });
     }
@@ -171,6 +185,10 @@ async fn perm_request(kind: String) -> Value {
 #[tauri::command]
 fn open_settings(pane: String) {
     const PANES: [&str; 6] = ["Privacy_Microphone", "Privacy_SpeechRecognition", "Privacy_ScreenCapture", "Privacy_FilesAndFolders", "Privacy_AllFiles", "Privacy_Accessibility"];
+    if cfg!(windows) && pane == "Privacy_Microphone" {
+        let _ = Command::new("explorer").arg("ms-settings:privacy-microphone").spawn();
+        return;
+    }
     if !cfg!(target_os = "macos") || !PANES.contains(&pane.as_str()) {
         return;
     }
@@ -495,8 +513,16 @@ fn find_node() -> Option<PathBuf> {
     dirs.into_iter().map(|d| d.join(exe)).find(|p| p.is_file())
 }
 
+// Tauri's resource_dir is a verbatim `\\?\C:\...` path on Windows, which Node can't load as a script.
+fn plain_path(p: PathBuf) -> PathBuf {
+    match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => p,
+    }
+}
+
 fn sidecar_script(app: &AppHandle) -> PathBuf {
-    let bundled = app.path().resource_dir().map(|d| d.join("sidecar").join("sidekick.mjs"));
+    let bundled = app.path().resource_dir().map(|d| plain_path(d.join("sidecar").join("sidekick.mjs")));
     match bundled {
         Ok(p) if p.is_file() => p,
         _ => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../sidecar/sidekick.mjs")),
@@ -543,7 +569,7 @@ fn spawn_sidecar(app: &AppHandle) {
     });
 }
 
-// ---------- voice helper (macOS: ⌃⌥ + Apple speech) ----------
+// ---------- voice helper (macOS: ⌃⌥ + Apple speech; Windows: Ctrl+Alt + Moonshine) ----------
 
 /// A bundled helper next to the app binary (Contents/MacOS on macOS).
 fn helper_binary(name: &str) -> Option<PathBuf> {
@@ -554,6 +580,35 @@ fn helper_binary(name: &str) -> Option<PathBuf> {
 
 fn voice_binary() -> Option<PathBuf> {
     helper_binary("roamies-voice")
+}
+
+/// A helper command that doesn't flash a console window on Windows.
+fn helper_command(bin: PathBuf) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(bin);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// Engine options for the Windows helper: Moonshine small with the bundled runtime next to the exe
+/// and the model the sidecar downloaded. Without a model dir the helper reports `unavailable`.
+fn voice_engine_args(bin: &std::path::Path, model_dir: Option<&str>) -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let mut args: Vec<String> = ["--engine", "moonshine", "--moonshine-size", "small"].map(String::from).to_vec();
+    if let Some(dir) = bin.parent() {
+        args.extend(["--moonshine-lib".into(), dir.join("moonshine.dll").to_string_lossy().into_owned()]);
+    }
+    if let Some(m) = model_dir.filter(|m| !m.is_empty()) {
+        args.extend(["--model-dir".into(), m.to_owned()]);
+    }
+    args
 }
 
 fn log_stdio(name: &str) -> Stdio {
@@ -575,7 +630,9 @@ fn start_voice(app: &AppHandle) {
         return;
     };
     let chord = app.state::<TalkChord>().0.lock().unwrap().join(",");
-    let mut child = match Command::new(bin).arg("--chord").arg(chord).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(log_stdio("sidekick-voice.log")).spawn() {
+    let model = app.state::<VoiceModel>().0.lock().unwrap().clone();
+    let engine = voice_engine_args(&bin, model.as_deref());
+    let mut child = match helper_command(bin).arg("--chord").arg(chord).args(engine).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(log_stdio("sidekick-voice.log")).spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("voice helper failed to start: {e}");
@@ -721,7 +778,11 @@ fn handle_voice(app: &AppHandle, msg: Value) {
         Some("partial") | Some("level") => to_overlays(app, &ui),
         Some("final") => {
             to_overlays(app, &ui);
-            to_sidecar(app, &json!({ "type": "voice", "text": msg.get("text") }));
+            if DICTATION.load(Ordering::Relaxed) {
+                dictation::on_final(app, msg.get("text").and_then(Value::as_str).unwrap_or(""));
+            } else {
+                to_sidecar(app, &json!({ "type": "voice", "text": msg.get("text") }));
+            }
         }
         Some("error") => {
             let mut m = msg.clone();
@@ -861,7 +922,29 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
         }
         // Listen right away, hands-free (after an area snap: snap, then just talk).
         Some("listen") => to_voice(app, &json!({ "cmd": "listen" })),
+        Some("dictation_paste") | Some("dictation_copy") => {
+            let text = msg.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+            if msg.get("type").and_then(Value::as_str) == Some("dictation_paste") {
+                dictation::paste(app, text);
+            } else {
+                dictation::copy_only(app, text);
+            }
+        }
         Some("voice_config") => {
+            DICTATION.store(msg.get("mode").and_then(Value::as_str) == Some("dictation"), Ordering::Relaxed);
+            if let Some(dir) = msg.get("modelDir").and_then(Value::as_str) {
+                let state = app.state::<VoiceModel>();
+                let changed = {
+                    let mut slot = state.0.lock().unwrap();
+                    let changed = slot.as_deref() != Some(dir);
+                    *slot = Some(dir.to_owned());
+                    changed
+                };
+                // The helper reads its model at launch, so pick up a new one (e.g. just downloaded).
+                if changed {
+                    stop_voice(app);
+                }
+            }
             if msg.get("enabled").and_then(Value::as_bool) == Some(true) {
                 app.state::<Voice>().1.store(0, Ordering::Relaxed);
                 start_voice(app);
@@ -900,6 +983,7 @@ fn main() {
         .manage(Roster(Mutex::new(vec!["sidekick".into()])))
         .manage(Voice(Mutex::new(None), AtomicUsize::new(0)))
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
+        .manage(VoiceModel(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![set_hot, sidecar_send, set_typing, perm_status, perm_request, open_settings, onboarding_finish, relaunch, focus_guide, drag_window])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),
@@ -943,4 +1027,17 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run Roamies");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn plain_path_strips_verbatim_drive_prefix_only() {
+        assert_eq!(plain_path(PathBuf::from(r"\\?\E:\app\sidekick.mjs")), PathBuf::from(r"E:\app\sidekick.mjs"));
+        assert_eq!(plain_path(PathBuf::from(r"\\?\UNC\srv\share")), PathBuf::from(r"\\?\UNC\srv\share"));
+        assert_eq!(plain_path(PathBuf::from("/Applications/Roamies.app")), PathBuf::from("/Applications/Roamies.app"));
+    }
 }

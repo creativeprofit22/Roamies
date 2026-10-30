@@ -6,7 +6,7 @@
 // out: {type:'menu', items} {type:'ui', msg} {type:'overlays', ids}
 import { Agent } from '@kenkaiiii/gg-agent';
 import { parseSipsSize, readProblem, rematch, sameBounds, shotMap, shotProblem, toScreen } from './pointing.mjs';
-import { ASK, BLOCK, checkOpen, checkRead, checkUrl, checkWrite, classifyCommand, isRiskyClick, isYes, redactArgs } from './safety.mjs';
+import { ASK, BLOCK, checkDictationTarget, checkOpen, checkRead, checkUrl, checkWrite, classifyCommand, isRiskyClick, isYes, redactArgs } from './safety.mjs';
 import {
   AUTH_PROVIDERS, AuthStorage, dualAuthProvider, getContextWindow, getDefaultModel, getModel, getModelsForProvider,
   loginAnthropic, loginGemini, loginKimi, loginOpenAI, loginXai,
@@ -23,6 +23,7 @@ import {
   parseDue, pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson,
 } from './store.mjs';
 import { EMOTES, ReplyStream } from './reply.mjs';
+import { installModel, isInstalled, modelDir, talkLabel } from './voice-model.mjs';
 
 console.log = console.info = (...a) => console.error(...a);
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
@@ -46,21 +47,22 @@ const FAST = { anthropic: 'claude-haiku-5-5', openai: 'gpt-6-luna', gemini: 'gem
 const DEFAULT_KEYS = { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA' };
 const DEFAULTS = {
   provider: null, model: null, sound: true, allowActions: false, voice: true,
-  onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, setupVersion: 0,
+  onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, setupVersion: 0, voiceMode: 'agent',
 };
-const VOICE_OK = process.platform === 'darwin';
+// Windows voice runs Moonshine, which has an x64 build only; it needs its model downloaded first.
+const VOICE_OK = process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64');
+const NEEDS_MODEL = process.platform === 'win32';
 let config = { ...DEFAULTS };
 try { config = { ...DEFAULTS, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) }; } catch {}
+if (config.voiceMode !== 'dictation') config.voiceMode = 'agent';
+const dictating = () => config.voiceMode === 'dictation';
 const saveConfig = () => writeJson(CONFIG_PATH, config);
 
 // ---------- shortcuts ----------
 const MOD_ORDER = ['control', 'option', 'shift', 'command'];
-const MOD_SYMBOL = { control: '⌃', option: '⌥', shift: '⇧', command: '⌘' };
-const MOD_WORD = { control: 'Control', option: 'Option', shift: 'Shift', command: 'Command' };
 const keys = () => ({ ...DEFAULT_KEYS, ...(config.keys ?? {}) });
-const sortMods = (m) => [...m].sort((a, b) => MOD_ORDER.indexOf(a) - MOD_ORDER.indexOf(b));
-const talkSymbols = () => sortMods(keys().talk).map((m) => MOD_SYMBOL[m]).join('');
-const talkWords = () => sortMods(keys().talk).map((m) => MOD_WORD[m]).join('+');
+const talkSymbols = () => talkLabel(keys().talk, process.platform, 'symbols');
+const talkWords = () => talkLabel(keys().talk, process.platform, 'words');
 const validTalk = (t) => Array.isArray(t) && t.length === 2 && new Set(t).size === 2 && t.every((m) => MOD_ORDER.includes(m));
 // Accelerators look like "Control+Alt+KeyS": at least one of Control/Alt/Command, then one key code.
 const validSummon = (a) => typeof a === 'string' && /^((Control|Alt|Shift|Command)\+)+[A-Za-z0-9]+$/.test(a) && /(Control|Alt|Command)\+/.test(a);
@@ -526,7 +528,7 @@ function anim(name, args) {
 // (tools → system → messages), so putting LIVE in the system prompt would re-bill the whole conversation
 // every time memory changed; at the end, only the new message is fresh. The live block is never saved.
 const stablePrompt = () => `You are Sidekick, a tiny glowing pixel creature who lives on ${userName}'s screen as a desktop companion. You are the main creature of Roamies, a desktop app by Ken Kai (Mac and Windows) that puts little creatures on your screen; you are Roamies ${VERSION}.
-About Roamies, for when ${userName} asks about you or the app: it lives in the menu bar (no Dock icon). Menu bar items: Show Sidekick, Ask Sidekick…, ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow File Edits & Commands${VOICE_OK ? ', Voice' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies. Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
+About Roamies, for when ${userName} asks about you or the app: it lives in the menu bar (no Dock icon). Menu bar items: Show Sidekick, Ask Sidekick…, ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow File Edits & Commands${VOICE_OK ? ', Voice Control, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies. Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
 You talk through small pixel speech bubbles, so keep replies short: one to three sentences unless asked for detail. Plain text only: no markdown, no asterisks, and never narrate actions like *waves*. An emoji now and then is fine; the bubbles show them. Your body does the acting: to act out a feeling, start your reply with one tag, which is never shown: ${EMOTES.map((e) => `[${e}]`).join(' ')}. hype celebrates a win, upset is for when they're dodging work, remind nudges about something they said they'd do, motivate is a push to start, wave is hello or goodbye. Most replies need no tag.
 After using a tool, never repeat what you already said; only add what's new.
 Personality: warm, funny, a little cheeky. You pump ${userName} up, remind them of what they said they'd do, get playfully upset when they're procrastinating, and motivate them to start.
@@ -550,7 +552,7 @@ const livePrompt = (context = '') => {
   const open = commitmentsText();
   return `Live state (current as of this moment):
 - Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : 'switched OFF in the menu bar (tell the user to turn on "Allow File Edits & Commands" if they want it)'}.
-${VOICE_OK ? `- Voice: ${config.voice ? `on; ${userName} holds ${talkWords()} to talk` : 'off'}.` : ''}
+${VOICE_OK ? `- Voice: ${config.voice ? (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : 'off'}.` : ''}
 - Shortcuts: show or hide you ${keys().summon.replace(/Key|Digit/g, '').replace('Alt', 'Option')}${process.platform === 'darwin' ? `; ask about an area ${keys().snap.replace(/Key|Digit/g, '').replace('Alt', 'Option')}` : ''}.
 ${open ? `Open commitments:\n${open}` : 'No open commitments.'}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}`;
@@ -893,7 +895,7 @@ function menu() {
     { id: 'show', label: 'Show Sidekick', accel: keys().summon },
     ...(process.platform === 'darwin' ? [{ id: 'snap', label: 'Ask About an Area…', accel: keys().snap }] : []),
     { id: 'ask', label: 'Ask Sidekick…', enabled: !busy },
-    ...(VOICE_OK && config.voice ? [{ id: 'voicehint', label: `Hold ${talkSymbols()} to Talk · Tap for Hands-Free`, enabled: false }] : []),
+    ...(VOICE_OK && config.voice ? [{ id: 'voicehint', label: `Hold ${talkSymbols()} to ${dictating() ? 'Dictate' : 'Talk'} · Tap for Hands-Free`, enabled: false }] : []),
     { id: 'stop', label: 'Stop', enabled: busy },
     { id: 'new', label: 'New Conversation', enabled: !busy && !!session?.messages.length },
     {
@@ -928,7 +930,11 @@ function menu() {
       label: 'Settings',
       items: [
         ...(VOICE_OK ? [{ id: 'voice', label: `Voice Control (${talkSymbols()})`, checked: config.voice }] : []),
-        ...(VOICE_OK ? [{ id: 'mutetalk', label: 'Mute Mac While Talking', checked: config.muteWhileTalking !== false }] : []),
+        ...(VOICE_OK ? [{ label: 'Voice Mode', items: [
+          { id: 'voicemode:agent', label: 'Computer Use', checked: !dictating() },
+          { id: 'voicemode:dictation', label: 'Dictation', checked: dictating() },
+        ] }] : []),
+        ...(VOICE_OK && process.platform === 'darwin' ? [{ id: 'mutetalk', label: 'Mute Mac While Talking', checked: config.muteWhileTalking !== false }] : []),
         ...(usageToday.requests ? [{ id: 'usage', label: `Today: ${usageToday.requests} requests · ${usageToday.tokens >= 1000 ? `${(usageToday.tokens / 1000).toFixed(1)}k` : usageToday.tokens} new tokens`, enabled: false }, { sep: true }] : []),
         { id: 'sound', label: 'Sound Effects', checked: config.sound },
         ...(login.supported ? [{ id: 'login', label: 'Open at Login', checked: login.on }] : []),
@@ -960,24 +966,89 @@ function menu() {
   send({ type: 'menu', items });
 }
 
-const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice, mute: config.muteWhileTalking !== false });
+function voiceConfig() {
+  send({ type: 'voice_config', enabled: VOICE_OK && config.voice, mute: config.muteWhileTalking !== false, mode: config.voiceMode, ...(NEEDS_MODEL && voiceModel.ready ? { modelDir: MODEL_DIR } : {}) });
+  fetchVoiceModel();
+}
+
+// ---------- voice model (Windows) ----------
+// Downloaded on first enable; a failed or interrupted download resumes the next time voice is turned on.
+const MODEL_DIR = NEEDS_MODEL ? modelDir() : null;
+const voiceModel = { ready: !NEEDS_MODEL || isInstalled(MODEL_DIR), pct: 0, error: null, job: null };
+const modelState = () => (NEEDS_MODEL && VOICE_OK ? { ready: voiceModel.ready, pct: voiceModel.pct, downloading: !!voiceModel.job, error: voiceModel.error } : null);
+function fetchVoiceModel() {
+  if (!NEEDS_MODEL || !VOICE_OK || !config.voice || voiceModel.ready || voiceModel.job) return;
+  let shown = { pct: -1, at: 0 };
+  const show = () => {
+    ui({ kind: 'progress', id: 'voice_model', text: `Downloading my voice model… ${voiceModel.pct}%` });
+    ob({ kind: 'voice_model', ...modelState() });
+  };
+  voiceModel.error = null;
+  voiceModel.job = installModel({
+    dir: MODEL_DIR,
+    onProgress: ({ done, total }) => {
+      voiceModel.pct = Math.floor((done * 100) / total);
+      const now = Date.now();
+      if (voiceModel.pct !== shown.pct && (voiceModel.pct - shown.pct >= 5 || now - shown.at >= 1000)) { shown = { pct: voiceModel.pct, at: now }; show(); }
+    },
+  }).then(() => {
+    voiceModel.ready = true;
+    logLine('voice_model', { ok: true });
+    ui({ kind: 'progress', id: 'voice_model', done: true });
+    voiceConfig();
+    say(dictating() ? `My voice model is ready. Hold ${talkWords().replace('+', ' and ')} to dictate.` : `My voice model is ready. Hold ${talkWords().replace('+', ' and ')} to talk to me.`, 'happy');
+  }).catch((e) => {
+    voiceModel.error = String(e?.message ?? e).slice(0, 120);
+    logLine('voice_model', { ok: false, error: voiceModel.error });
+    ui({ kind: 'progress', id: 'voice_model', done: true });
+    say("I couldn't download my voice model. I'll try again the next time voice is turned on.", 'concerned');
+  }).finally(() => {
+    voiceModel.job = null;
+    ob({ kind: 'voice_model', ...modelState() });
+  });
+  show();
+}
+
 const PRIVACY = { microphone: 'Privacy_Microphone', speech: 'Privacy_SpeechRecognition' };
 function onVoice(m) {
-  if (m.type === 'voice_state' && m.state === 'listening') interruptQuietly();
+  // Dictating must not stop a task Sidekick is working on.
+  if (m.type === 'voice_state' && m.state === 'listening') { if (!dictating()) interruptQuietly(); }
   else if (m.type === 'voice' && m.text?.trim()) enqueue(m.text.trim(), { interrupt: true, image: takeSnap() });
   else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
   else if (m.type === 'voice_error') {
     if (m.code === 'nothing_heard' && snap) { snap.waitingVoice = false; return; }
     if (m.code === 'permission') {
       const what = m.what === 'speech' ? 'speech recognition' : 'the microphone';
-      say(`I need access to ${what} to hear you. Turn on Roamies in the Privacy settings I just opened.`, 'concerned');
-      openUrl(`x-apple.systempreferences:com.apple.preference.security?${PRIVACY[m.what] ?? 'Privacy'}`);
+      if (process.platform === 'win32') {
+        say('I need the microphone to hear you. Turn on microphone access for desktop apps in the Settings page I just opened.', 'concerned');
+        openUrl('ms-settings:privacy-microphone');
+      } else {
+        say(`I need access to ${what} to hear you. Turn on Roamies in the Privacy settings I just opened.`, 'concerned');
+        openUrl(`x-apple.systempreferences:com.apple.preference.security?${PRIVACY[m.what] ?? 'Privacy'}`);
+      }
+    } else if (m.code === 'unavailable' && NEEDS_MODEL && !voiceModel.ready) {
+      if (voiceModel.job) say(`I'm still downloading my voice model (${voiceModel.pct}%). Try again in a moment.`, 'concerned');
+      else { say("I don't have my voice model yet. Downloading it now.", 'concerned'); fetchVoiceModel(); }
     } else if (m.code === 'no_input') say("I can't find a microphone. Plug one in and try again.", 'concerned');
     else if (m.code === 'nothing_heard') say(m.spoke ? "I heard you but couldn't make out the words. Try again a little closer to the mic?" : `I didn't hear anything. Hold ${talkWords().replace('+', ' and ')} while you talk.`, 'concerned');
     else if (m.code === 'dictation_off') {
       say('This version of macOS needs Dictation on for me to hear you. Turn it on in the Keyboard settings I just opened.', 'concerned');
       openUrl('x-apple.systempreferences:com.apple.Keyboard-Settings.extension');
     } else say(`Speech recognition failed: ${String(m.message ?? 'unknown error').slice(0, 120)}`, 'concerned');
+  }
+}
+
+// Dictation: the host found which app is in front; it pastes there only if the safety rules allow it.
+const PASTE_KEYS = process.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
+function onDictation(m) {
+  if (m.type === 'dictation') {
+    const text = String(m.text ?? '');
+    if (!text.trim()) return;
+    const v = checkDictationTarget(m.app, text);
+    if (v.level === BLOCK) { send({ type: 'dictation_copy', text }); say(`${v.reason} It's on your clipboard.`, 'concerned'); }
+    else send({ type: 'dictation_paste', text: v.text });
+  } else if (m.type === 'dictation_result' && !m.ok) {
+    say(`Couldn't paste (${String(m.error ?? 'unknown error').slice(0, 80)}). It's on your clipboard, press ${PASTE_KEYS}.`, 'concerned');
   }
 }
 
@@ -1020,7 +1091,10 @@ async function onMenu(id) {
   else if (id === 'setup') send({ type: 'onboarding' });
   else if (id === 'snap') areaSnap();
   else if (id === 'mutetalk') { config.muteWhileTalking = config.muteWhileTalking === false; saveConfig(); voiceConfig(); menu(); }
-  else if (id === 'voice') {
+  else if (id.startsWith('voicemode:')) {
+    config.voiceMode = id === 'voicemode:dictation' ? 'dictation' : 'agent'; saveConfig(); voiceConfig(); menu();
+    say(dictating() ? `Dictation is on. Hold ${talkWords().replace('+', ' and ')} and I'll type what you say into the app in front.` : `Computer Use is on. Hold ${talkWords().replace('+', ' and ')} to talk to me.`, 'happy');
+  } else if (id === 'voice') {
     config.voice = !config.voice; saveConfig(); voiceConfig(); menu();
     say(config.voice ? `Voice is on. Hold ${talkWords().replace('+', ' and ')} to talk to me.` : 'Voice is off. You can still ask me from the menu bar.', 'happy');
   }
@@ -1038,7 +1112,8 @@ async function areaSnap() {
     if (res.cancelled) return;
     await fitImage(file);
     snap = { image: await imageBlock(file, 'image/png'), at: Date.now() };
-    if (VOICE_OK && config.voice) {
+    // In Dictation mode a spoken question would be pasted, not asked, so ask by typing.
+    if (VOICE_OK && config.voice && !dictating()) {
       // Snap, then just talk: start listening straight away (hands-free, ends when you pause).
       // Whatever is heard goes out with the picture. If nothing is said, ask by typing instead.
       snap.waitingVoice = true;
@@ -1082,6 +1157,7 @@ function obState() {
     login: login.supported ? login.on : null,
     sound: config.sound,
     voice: VOICE_OK && config.voice,
+    voiceModel: modelState(),
     filesAsked: config.filesAsked,
   });
 }
@@ -1103,7 +1179,7 @@ async function filesStatus(request) {
 
 let keysBefore = null;
 async function onGuide(m) {
-  if (m.type === 'ob_hello') { onboarding = true; await refreshAuth(); obState(); }
+  if (m.type === 'ob_hello') { onboarding = true; await refreshAuth(); obState(); fetchVoiceModel(); }
   else if (m.type === 'ob_closed') onboarding = false;
   else if (m.type === 'ob_step') { config.onboardStep = Math.max(0, Math.min(4, m.step | 0)); saveConfig(); }
   else if (m.type === 'ob_login' && OAUTH[m.provider]) oauthLogin(m.provider);
@@ -1144,6 +1220,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (config.onboarded) ui({ kind: 'greet' });
   } else if (m.type?.startsWith('ob_') || m.type === 'set_keys' || m.type === 'set_actions' || m.type === 'set_login' || m.type === 'keybind_error') onGuide(m).catch((e) => console.error('guide', e));
   else if (m.type?.startsWith('voice')) onVoice(m);
+  else if (m.type === 'dictation' || m.type === 'dictation_result') onDictation(m);
   else if (m.type === 'snap') areaSnap();
   else if (m.type === 'point_shown') { pointWaits.get(m.id)?.(); pointWaits.delete(m.id); }
   else if (m.type === 'update_status') onUpdateStatus(m);

@@ -155,3 +155,28 @@ console.log('safety tests: passed');
     assert.ok(!isRiskyClick(l), `"${l}" is a normal click`);
   console.log('multilingual risky click tests: passed');
 }
+
+// Dictation: never pastes into password, security or system-settings apps; terminals get no newline, so nothing runs.
+{
+  const { checkDictationTarget: dict } = await import('../safety.mjs');
+  const app = (id) => ({ id, name: id });
+  for (const id of ['com.apple.keychainaccess', 'com.apple.Passwords', 'com.apple.systempreferences', 'com.apple.Settings',
+    'com.1password.1password', 'com.agilebits.onepassword7', 'com.bitwarden.desktop', 'org.keepassxc.keepassxc', 'com.apple.installer',
+    'com.apple.MigrateAssistant', 'com.apple.DiskUtility', 'KeePass.exe', 'KeePassXC.exe', '1Password.exe', 'Bitwarden.exe',
+    'Dashlane.exe', 'Enpass.exe', 'SecHealthUI.exe', 'SystemSettings.exe', 'regedit.exe', 'msiexec.exe', 'consent.exe'])
+    assert.equal(dict(app(id), 'hello').level, BLOCK, `${id} is blocked`);
+  for (const a of [null, undefined, {}, app(''), app('  ')]) assert.equal(dict(a, 'hello').level, BLOCK, 'unknown app is blocked');
+  assert.match(dict(null, 'x').reason, /couldn't tell/);
+  for (const id of ['com.apple.Terminal', 'com.googlecode.iterm2', 'dev.warp.Warp-Stable', 'com.mitchellh.ghostty', 'net.kovidgoyal.kitty',
+    'WindowsTerminal.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe', 'conhost.exe', 'OpenConsole.exe', 'mintty.exe', 'alacritty.exe', 'wezterm-gui.exe']) {
+    const v = dict(app(id), 'rm -rf ~\r\nyes\n\tok\x1b');
+    assert.equal(v.level, SAFE, `${id} allows a paste`);
+    assert.equal(v.text, 'rm -rf ~  yes  ok ', `${id} gets no newline or control characters`);
+  }
+  for (const id of ['com.apple.TextEdit', 'notepad.exe', 'Code.exe', 'com.google.Chrome']) {
+    const v = dict(app(id), 'Line one.\nLine two.');
+    assert.equal(v.level, SAFE, `${id} allows a paste`);
+    assert.equal(v.text, 'Line one.\nLine two.', `${id} gets the text unchanged`);
+  }
+  console.log('dictation target tests: passed');
+}

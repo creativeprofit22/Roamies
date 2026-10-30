@@ -9,6 +9,8 @@ cp ../desktop.html dist/
 cp -R ../roamies ../onboarding dist/
 ../tauri/sidecar/bundle.sh
 cd src-tauri
+# Windows: the voice helper's Moonshine runtime and MSVC CRT are bundled; no-op once fetched.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) bash voice-rs/fetch-moonshine.sh --runtime ;; esac
 # macOS signing: APPLE_SIGNING_IDENTITY if set, else the first Developer ID Application certificate in
 # the keychain, else ad-hoc. A stable identity keeps macOS permissions across rebuilds.
 if [ "$(uname)" = "Darwin" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then

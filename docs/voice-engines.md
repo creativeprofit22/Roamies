@@ -20,7 +20,9 @@ cargo run --release -- --chord ctrl,alt
 
 `fetch-moonshine.sh` downloads the pinned `v0.1.5` Windows runtime (sha256-checked). It links the static libs into
 `models/moonshine-runtime/moonshine.dll` with MSVC `link.exe`, so Visual Studio Build Tools are needed. It then
-downloads each model's files into `models/moonshine-<size>/`, also sha256-checked.
+downloads each model's files into `models/moonshine-<size>/`. The tiny and small model files are sha256-pinned and
+checked. Medium downloads unverified, with a `warning: no pinned sha256` line per file, until its hashes are pinned in
+`SHA` in `fetch-moonshine.sh`.
 
 Moonshine publishes no Windows arm64 build, so arm64 is a packaging follow-up. Our `moonshine.dll` is built `/MD`
 and needs the MSVC runtime (`vcruntime140.dll`, `msvcp140.dll`) on the target machine. Packaging must ship it or

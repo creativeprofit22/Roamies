@@ -536,7 +536,8 @@ fn spawn_sidecar(app: &AppHandle) {
     };
     let script = sidecar_script(app);
     let stderr = log_stdio("sidekick.log");
-    let mut cmd = Command::new(node);
+    // Node is a console app: without this, Windows opens a console window for it.
+    let mut cmd = helper_command(node);
     cmd.arg(&script)
         .env("ROAMIES_VERSION", app.package_info().version.to_string())
         .env("ROAMIES_HANDS", helper_binary("roamies-hands").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
@@ -583,7 +584,7 @@ fn voice_binary() -> Option<PathBuf> {
 }
 
 /// A helper command that doesn't flash a console window on Windows.
-fn helper_command(bin: PathBuf) -> Command {
+fn helper_command(bin: impl AsRef<std::ffi::OsStr>) -> Command {
     #[allow(unused_mut)]
     let mut cmd = Command::new(bin);
     #[cfg(windows)]
@@ -823,7 +824,7 @@ fn login_item(app: &AppHandle, set: Option<bool>) {
     let (supported, on, approval) = {
         // The per-user Run key: what Task Manager's Startup apps lists and can switch off.
         const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-        let reg = |args: &[&str]| Command::new("reg").args(args).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+        let reg = |args: &[&str]| helper_command("reg").args(args).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
         if !installed {
             (false, false, false)
         } else {

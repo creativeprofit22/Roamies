@@ -1243,8 +1243,17 @@ dependencies = [
  "cpal",
  "hound",
  "parakeet-rs",
+ "roamies-voice-core",
  "serde_json",
  "windows-sys",
+]
+
+[[package]]
+name = "roamies-voice-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

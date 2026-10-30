@@ -105,7 +105,8 @@ jobs:
           echo "$out"
           echo "$out" | grep '"type":"final"' | grep -q nightfall
 
-  # The Parakeet helper (voice-win). Its unit tests need no model download.
+  # The Parakeet helper (voice-win) and the voice-core crate both helpers share. The CLI tests
+  # (short-clip regression, --wav event order, missing/corrupt model) need the Parakeet model.
   voice-parakeet-windows:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -120,7 +121,25 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: showcase/tauri/src-tauri/voice-win -> target
+          workspaces: |
+            showcase/tauri/src-tauri/voice-win -> target
+            showcase/tauri/src-tauri/voice-core -> target
+
+      - name: Test voice-core
+        working-directory: showcase/tauri/src-tauri/voice-core
+        run: cargo test --locked
+
+      - name: Lint voice-core
+        working-directory: showcase/tauri/src-tauri/voice-core
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - uses: actions/cache@v6
+        with:
+          path: showcase/tauri/src-tauri/voice-win/models/parakeet
+          key: parakeet-${{ hashFiles('showcase/tauri/src-tauri/voice-win/fetch-model.sh') }}
+
+      - name: Fetch Parakeet
+        run: bash fetch-model.sh
 
       - name: Test voice helper
         run: cargo test --locked

@@ -686,8 +686,7 @@ function onVoice(m) {
   else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
   else if (m.type === 'voice_error') {
     if (m.code === 'nothing_heard' && snap) { snap.waitingVoice = false; return; }
-    if (m.code === 'model_missing') startVoiceDownload();
-    else if (m.code === 'permission' && !MAC) {
+    if (m.code === 'permission' && !MAC) {
       say('Windows is blocking the microphone. In the Privacy settings I just opened, turn on microphone access and "Let desktop apps access your microphone".', 'concerned');
       openUrl('ms-settings:privacy-microphone');
     } else if (m.code === 'permission') {

@@ -4,9 +4,10 @@ Roamies: a Tauri 2 desktop app (Rust shell in `showcase/tauri/src-tauri`), a Nod
 agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, macOS Swift helpers built by
 `src-tauri/build.rs`, and two Windows voice helpers, also built by `src-tauri/build.rs` for Windows targets:
 `src-tauri/voice-rs` (`roamies-voice-moonshine`, Rust + Moonshine, the default the host launches; see
-`docs/voice-engines.md`) and `src-tauri/voice-win` (`roamies-voice-parakeet`, Rust + Parakeet). Both compile
-elsewhere too, to test speech without a Windows PC: `--wav <wav>` for voice-rs, `--transcribe <wav>` and
-`--test-audio <wav>` for voice-win (see the top of its `main.rs`).
+`docs/voice-engines.md`) and `src-tauri/voice-win` (`roamies-voice-parakeet`, Rust + Parakeet). They share
+`src-tauri/voice-core` (protocol, session and chord state machine). Both compile elsewhere too, to test speech
+without a Windows PC: `--wav <wav>` runs one clip, `--bench <dir>` scores wav+txt pairs (models come from each
+crate's `fetch-*.sh`).
 
 ## Commands
 

@@ -9,6 +9,23 @@
 
 The `ready` event reports what loaded, for example `{"type":"ready","engine":"moonshine","model":"small-streaming-en"}`.
 
+`roamies-voice-parakeet` (`showcase/tauri/src-tauri/voice-win`) runs **NVIDIA Parakeet TDT 0.6B v3** (int8 ONNX,
+through `parakeet-rs`). It is finish-only: no live partial text, the whole take is read when it ends. Its `ready` is
+`{"type":"ready","engine":"parakeet","model":"tdt-0.6b-v3-int8"}`.
+
+### Layout
+
+Both helpers share `showcase/tauri/src-tauri/voice-core` (`roamies-voice-core`), so the host sees one protocol:
+
+- `protocol`: the stdout events, stdin commands, error codes (`unavailable`, `no_input`, `nothing_heard`,
+  `permission`) and `MicStatus`.
+- `engine`: the `SpeechEngine` trait. `streaming()` is `false` for Parakeet.
+- `chord` / `session`: the chord and hands-free state machine and the loop that emits events. For a finish-only
+  engine, hands-free ends 1.5 s after the voice pauses and cancels if no voice comes.
+- `level`, `score`: the mic level meter and the bench's WER helpers (`normalize`, `word_edits`).
+
+Each helper keeps only its own engine, mic capture, key polling, permission check and bench.
+
 ## Setup
 
 ```sh
@@ -34,6 +51,9 @@ require it.
 ./fetch-testset.sh              # first 200 LibriSpeech test-clean utterances -> bench-data/librispeech
 cargo run --release -- --record bench-data/own   # read bench-prompts.txt aloud, one clip each
 ./bench.sh bench-data/own       # zipformer, moonshine tiny, moonshine small; appends to bench-data/results.log
+
+cd ../voice-win && ./fetch-model.sh                      # Parakeet int8, sha256-checked
+cargo run --release -- --bench ../voice-rs/bench-data/own
 ```
 
 `bench-data/` is gitignored, so recordings of the user's voice are never committed.
@@ -57,6 +77,7 @@ Test machine: Intel i7-8700 @ 3.20 GHz (6 cores / 12 threads), 24 GB RAM, Window
 | Zipformer int8 | 31.7 % | 1.61 / 1.96 s | 0.03 s | 0.10 | 157 MiB |
 | Moonshine tiny streaming | 17.3 % | 1.23 / 1.78 s | 0.19 s | 0.64 | 152 MiB |
 | **Moonshine small streaming** | **8.6 %** | 1.49 / 2.20 s | 0.19 s | 1.16 | 299 MiB |
+| Parakeet TDT 0.6B v3 int8 | 4.9 % | n/a (finish-only) | 0.56 s | 0.13 | 808 MiB |
 
 ### LibriSpeech test-clean (first 200 utterances, 1818.5 s; CC BY 4.0, openslr SLR12)
 
@@ -65,6 +86,10 @@ Test machine: Intel i7-8700 @ 3.20 GHz (6 cores / 12 threads), 24 GB RAM, Window
 | Zipformer int8 | 3.04 % | 1.29 / 1.61 s | 0.03 s | 0.11 | 154 MiB |
 | Moonshine tiny streaming | 4.92 % | 1.19 / 1.28 s | 0.19 s | 0.55 | 175 MiB |
 | **Moonshine small streaming** | **2.91 %** | 1.35 / 1.94 s | 0.38 s | 1.03 | 356 MiB |
+| Parakeet TDT 0.6B v3 int8 | 1.99 % | n/a (finish-only) | 1.97 s | 0.25 | 1073 MiB |
+
+Parakeet's WER uses the same normalisation (`voice-core` `score::normalize`). Its finish time is the whole
+transcription, since nothing runs during the take. Model load takes about 7 s, once per helper start.
 
 ### Size on disk
 
@@ -73,8 +98,24 @@ Test machine: Intel i7-8700 @ 3.20 GHz (6 cores / 12 threads), 24 GB RAM, Window
 | Zipformer int8 | 67.6 MiB | 18.8 MiB (helper exe with sherpa + ONNX Runtime) |
 | Moonshine tiny streaming | 43.1 MiB | 22.7 MiB (`moonshine.dll` + `onnxruntime.dll`) |
 | Moonshine small streaming | 135.7 MiB | 22.7 MiB |
+| Parakeet TDT 0.6B v3 int8 | 639.4 MiB | 23.4 MiB (helper exe with ONNX Runtime; uses the system `DirectML.dll`) |
 
-For comparison, Parakeet's int8 model alone is about 600 MB or more.
+### Parakeet: blank text on short clips
+
+Unpadded, Parakeet returned empty text for 12 of the 25 own-voice clips, nearly all short commands. Probing showed:
+
+- The mel features (`parakeet-rs`) match NeMo's preprocessor, and the TDT greedy decode loop is correct.
+  It is not a `parakeet-rs` bug and not frame alignment.
+- The int8 encoder emits only blanks when speech starts right at the first frame. It needs some low-energy
+  context first. The whole-clip feature normalisation plays a smaller part.
+- Silence only at the end does not help. Silence at the end also made long takes (16-21 s) stop after the first
+  sentence. Low-level noise as padding made things much worse.
+
+The fix (`pad_for_parakeet` in `voice-win/src/engine.rs`) puts 1.5 s of zeros before each take and nothing after.
+A sweep of 0.25-2 s lead (on own-voice clips, mixed short/long takes and LibriSpeech) found 1.5 s the only value
+with no blanks and the lowest WER; 1 s each side scored 4.1 % on LibriSpeech with one blank and cut long takes.
+`transcribe-rs` pads 250 ms the same way. `voice-win/tests/cli.rs` `short_clip_is_not_blank` reads a 1.9 s clip that
+comes back blank without the fix.
 
 On the user's voice, Zipformer (trained only on LibriSpeech) breaks down on conversational commands. For example,
 "Open my downloads folder" became "OPEN MY DULLNESS FULLER", and "in Lisbon this weekend" became "ELIZABETH WAKINS".
@@ -103,6 +144,11 @@ and "25" vs "twenty five". The real miss rate is lower than 8.6 %.
 - **Text-to-speech and grapheme-to-phoneme models.** Moonshine's MIT default doesn't cover these, but we don't use
   them.
 - **Zipformer and sherpa-onnx.** Both are Apache-2.0.
+- **Parakeet.** NVIDIA `parakeet-tdt-0.6b-v3` weights are **CC BY 4.0**, so attribution must ship. We use the ONNX
+  int8 export `istupakov/parakeet-tdt-0.6b-v3-onnx` at revision `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`
+  (conversion and quantisation by istupakov, nothing else changed). The notice is
+  `voice-win/licenses/parakeet-NOTICE.txt`, bundled as `licenses/parakeet/` and opened from the tray's "Licences…".
+  `parakeet-rs` is MIT/Apache-2.0.
 
 ## Decision
 
@@ -127,7 +173,7 @@ stays available but is not shipped by default.
 
 ## Packaging (Windows)
 
-- **Helper:** `src-tauri/build.rs` builds `voice-rs` for `x86_64-pc-windows-msvc` into `binaries/roamies-voice-moonshine-<triple>.exe`, and upstream's Parakeet helper (`voice-win`) into `binaries/roamies-voice-parakeet-<triple>.exe`; `tauri.windows.conf.json` ships both as `externalBin`. The host launches Moonshine until runtime engine selection lands. Other Windows targets are refused: there is no published arm64 Moonshine build, so the sidecar only turns voice on for win32 x64.
+- **Helper:** `src-tauri/build.rs` builds `voice-rs` for `x86_64-pc-windows-msvc` into `binaries/roamies-voice-moonshine-<triple>.exe`, and the Parakeet helper (`voice-win`) into `binaries/roamies-voice-parakeet-<triple>.exe`; `tauri.windows.conf.json` ships both as `externalBin`. The host launches Moonshine until runtime engine selection lands. Other Windows targets are refused: there is no published arm64 Moonshine build, so the sidecar only turns voice on for win32 x64.
 - **Runtime (bundled):** `moonshine.dll`, its `onnxruntime.dll`, the app-local MSVC runtime (`vcruntime140*.dll`, `msvcp140*.dll`, the set `dumpbin` reports) and the licences (`licenses/moonshine/`) are Tauri resources installed next to the app. `./build.sh` fetches them with `voice-rs/fetch-moonshine.sh --runtime`.
 - **Model (downloaded):** Moonshine small (135.7 MiB) is over the ~80 MB bundling limit, so the sidecar (`sidecar/voice-model.mjs`) downloads it on first enable into `%LOCALAPPDATA%\Roamies\models\moonshine-small`. Each file is checked against the sha256 pinned in `fetch-moonshine.sh` (a test keeps the two in sync), downloads resume with HTTP Range, and the folder is renamed into place only when complete. Progress shows in a bubble and in the setup guide; until the model is there the helper reports `unavailable`.
 - **Microphone:** `roamies-voice-moonshine --perms` reads the Windows microphone privacy setting; the setup guide's Microphone row opens `ms-settings:privacy-microphone`.

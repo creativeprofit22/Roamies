@@ -221,5 +221,6 @@ fn perms_prints_one_mic_line() {
         assert_eq!(ev.len(), 1, "{ev:?}");
         assert_eq!(ev[0]["type"], "perms");
         assert!(["granted", "denied"].contains(&ev[0]["mic"].as_str().unwrap()), "{}", ev[0]);
+        assert!(ev[0]["input"].is_boolean(), "{}", ev[0]);
     }
 }

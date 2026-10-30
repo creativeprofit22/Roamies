@@ -64,6 +64,7 @@ pub enum Event {
     },
     Perms {
         mic: crate::perms::Status,
+        input: bool,
     },
 }
 
@@ -168,7 +169,14 @@ mod tests {
             js(&Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone") }),
             json!({"type":"error","code":"permission","what":"microphone"})
         );
-        assert_eq!(js(&Event::Perms { mic: crate::perms::Status::Denied }), json!({"type":"perms","mic":"denied"}));
+        assert_eq!(
+            js(&Event::Perms { mic: crate::perms::Status::Denied, input: false }),
+            json!({"type":"perms","mic":"denied","input":false})
+        );
+        assert_eq!(
+            js(&Event::Perms { mic: crate::perms::Status::Granted, input: true }),
+            json!({"type":"perms","mic":"granted","input":true})
+        );
     }
 
     #[test]

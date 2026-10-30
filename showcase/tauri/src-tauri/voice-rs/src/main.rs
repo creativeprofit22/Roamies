@@ -140,7 +140,7 @@ fn main() -> ExitCode {
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
     let args = parse_args();
     if args.perms {
-        let _ = Emitter::new(io::stdout()).emit(&Event::Perms { mic: perms::mic() });
+        let _ = Emitter::new(io::stdout()).emit(&Event::Perms { mic: perms::mic(), input: audio::has_input() });
         return ExitCode::SUCCESS;
     }
     if let Some(dir) = &args.record {

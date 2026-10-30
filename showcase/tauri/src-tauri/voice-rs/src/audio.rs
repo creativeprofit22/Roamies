@@ -33,6 +33,17 @@ pub fn pick_host() -> cpal::Host {
     cpal::default_host()
 }
 
+/// Whether a default mic exists, for the setup guide's "no microphone" row (same as voice-win).
+#[cfg(target_os = "windows")]
+pub fn has_input() -> bool {
+    pick_host().default_input_device().is_some()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn has_input() -> bool {
+    false
+}
+
 /// Averages interleaved frames of any sample format into mono f32.
 pub fn downmix<T>(data: &[T], channels: usize) -> Vec<f32>
 where

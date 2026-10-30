@@ -152,7 +152,9 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         match self.machine.phase() {
             Phase::Idle => {}
             Phase::Armed => self.mic_down = true,
-            _ => {
+            // The tail can't be cancelled; deliver what was heard and stop retrying the mic.
+            Phase::Finishing { .. } => self.mic_down = true,
+            Phase::Holding | Phase::HandsFree => {
                 self.emit(&Event::error(ErrorCode::NoInput));
                 self.cancel();
             }
@@ -535,6 +537,25 @@ mod tests {
         assert!(s.wants_audio(), "retried once it's a talk");
         s.audio_failed();
         assert_eq!(kinds(&s), ["listening", "error:no_input", "idle"]);
+    }
+
+    #[test]
+    fn mic_failure_while_finishing_still_delivers_without_error() {
+        let mut s = session(FakeEngine::new(&["hello"]));
+        let t = drive(&mut s, &mut ca(), &LOUD, 4, 0.0);
+        let mut t = t;
+        while !matches!(s.machine.phase(), Phase::Finishing { .. }) {
+            assert!(t < 1.0, "the release should start the tail");
+            s.tick(t, &mut Held(Mods::NONE));
+            t += 0.01;
+        }
+        s.audio_failed();
+        s.audio_failed();
+        assert!(!kinds(&s).iter().any(|k| k == "error:no_input"));
+        assert!(!s.wants_audio(), "no retry spin during the tail");
+        s.tick(t + 0.31, &mut Held(Mods::NONE));
+        assert_eq!(kinds(&s), ["listening", "partial", "processing", "final", "idle"]);
+        assert!(events(&s).contains(&json!({"type":"final","text":"hello"})));
     }
 
     #[test]

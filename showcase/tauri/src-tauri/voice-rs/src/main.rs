@@ -1,8 +1,10 @@
 //! roamies-voice: Windows voice helper. Wiring only; see the modules for behaviour.
 
 mod audio;
+mod chord;
 mod engine;
 mod engines;
+mod keys_windows;
 mod protocol;
 mod session;
 
@@ -64,7 +66,7 @@ fn main() -> ExitCode {
     let dry_run = args.wav.is_some();
     session.emit(&Event::Ready { engine: session.engine_name(), dry_run });
     if !args.chord.is_empty() {
-        log(&format!("talk chord: {}", args.chord.join("+")));
+        session.set_chord(&args.chord);
     }
     match args.wav {
         Some(path) => run_wav(&mut session, &path),
@@ -103,7 +105,7 @@ fn run_wav(session: &mut Live, path: &Path) -> ExitCode {
         t += c.len() as f64 / SAMPLE_RATE as f64;
     }
     session.finish(t);
-    session.tick(t + 1.0);
+    session.tick(t + 1.0, &mut chord::NoKeys);
     ExitCode::SUCCESS
 }
 
@@ -154,19 +156,27 @@ fn run_live(session: &mut Live) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    session.prepare();
+    #[cfg(windows)]
+    let mut keys = keys_windows::WinKeys;
+    #[cfg(not(windows))]
+    let mut keys = chord::NoKeys;
+    // ~100 Hz key polling; a tap is 0.25 s and the release debounce 0.09 s.
+    let every = Duration::from_millis(10);
+    let mut next_tick = Instant::now();
     let clock = Instant::now();
     let now = || clock.elapsed().as_secs_f64();
     let mut mic: Option<(MicCapture, Resampler16k)> = None;
     // Chunks from a mic closed earlier are dropped by generation.
     let mut generation = 0u64;
     loop {
-        match rx.recv_timeout(Duration::from_millis(16)) {
+        match rx.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
             Ok(Msg::Line(line)) => match parse_command(&line) {
                 Some(Command::Listen) => {
                     let _ = session.listen(now);
                 }
                 Some(Command::Cancel) => session.cancel(),
-                Some(Command::Chord { mods }) => log(&format!("talk chord: {}", mods.join("+"))),
+                Some(Command::Chord { mods }) => session.set_chord(&mods),
                 Some(Command::Mute { on }) => log(&format!("mute while talking: {on}")),
                 None => {}
             },
@@ -186,7 +196,12 @@ fn run_live(session: &mut Live) -> ExitCode {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        session.tick(now());
+        if Instant::now() >= next_tick {
+            session.tick(now(), &mut keys);
+            next_tick += every;
+            // After a stall (model load, slow stdout) don't burst to catch up.
+            next_tick = next_tick.max(Instant::now());
+        }
 
         if session.wants_audio() && mic.is_none() {
             generation += 1;

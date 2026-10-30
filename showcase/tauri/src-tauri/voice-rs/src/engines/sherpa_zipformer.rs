@@ -52,11 +52,12 @@ pub struct SherpaZipformer {
     /// Text of segments sherpa already closed at an endpoint this session.
     done: Vec<String>,
     last: String,
+    endpointed: bool,
 }
 
 impl SherpaZipformer {
     pub fn new(model_dir: PathBuf) -> Self {
-        SherpaZipformer { model_dir, recognizer: None, stream: None, done: Vec::new(), last: String::new() }
+        SherpaZipformer { model_dir, recognizer: None, stream: None, done: Vec::new(), last: String::new(), endpointed: false }
     }
 
     fn recognizer(&mut self) -> Result<&OnlineRecognizer, EngineError> {
@@ -89,6 +90,7 @@ impl SherpaZipformer {
             let seg = segment_text(rec, stream);
             if !seg.is_empty() {
                 self.done.push(seg);
+                self.endpointed = true;
             }
             rec.reset(stream);
         }
@@ -124,6 +126,7 @@ impl SpeechEngine for SherpaZipformer {
         self.stream = Some(stream);
         self.done.clear();
         self.last.clear();
+        self.endpointed = false;
         Ok(())
     }
 
@@ -163,6 +166,15 @@ impl SpeechEngine for SherpaZipformer {
         self.stream = None;
         self.done.clear();
         self.last.clear();
+        self.endpointed = false;
+    }
+
+    fn prepare(&mut self) -> Result<(), EngineError> {
+        self.recognizer().map(|_| ())
+    }
+
+    fn endpoint(&mut self) -> bool {
+        std::mem::take(&mut self.endpointed)
     }
 }
 
@@ -207,6 +219,8 @@ mod tests {
         assert!(matches!(eng.start(), Err(EngineError::Unavailable(_))));
         assert_eq!(eng.partial(), None);
         assert_eq!(eng.finish(), "");
+        assert!(eng.prepare().is_err());
+        assert!(!eng.endpoint());
         let _ = fs::remove_dir_all(&dir);
     }
 }

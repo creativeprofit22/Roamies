@@ -1082,6 +1082,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sherpa-onnx",
+ "windows",
 ]
 
 [[package]]

@@ -29,4 +29,12 @@ pub trait SpeechEngine {
     /// Ends the utterance and returns its full text (empty when nothing was heard).
     fn finish(&mut self) -> String;
     fn cancel(&mut self);
+    /// Loads whatever `start` needs ahead of time, so arming never waits on a model load.
+    fn prepare(&mut self) -> Result<(), EngineError> {
+        Ok(())
+    }
+    /// True once after the engine closed a nonempty segment at a pause (its endpoint rule).
+    fn endpoint(&mut self) -> bool {
+        false
+    }
 }

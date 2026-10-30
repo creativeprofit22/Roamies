@@ -15,6 +15,7 @@ pub enum SessionState {
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     Handsfree,
+    Hold,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -128,6 +129,10 @@ mod tests {
         assert_eq!(
             js(&Event::State { state: SessionState::Listening, mode: Some(Mode::Handsfree), cancelled: None }),
             json!({"type":"state","state":"listening","mode":"handsfree"})
+        );
+        assert_eq!(
+            js(&Event::State { state: SessionState::Listening, mode: Some(Mode::Hold), cancelled: None }),
+            json!({"type":"state","state":"listening","mode":"hold"})
         );
         assert_eq!(js(&Event::state(SessionState::Processing)), json!({"type":"state","state":"processing"}));
         assert_eq!(js(&Event::state(SessionState::Idle)), json!({"type":"state","state":"idle"}));

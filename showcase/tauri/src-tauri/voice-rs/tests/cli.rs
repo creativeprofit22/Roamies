@@ -193,3 +193,21 @@ fn bench_scores_a_wav_txt_pair() {
         assert!(summary["peakRamBytes"].as_u64().is_some_and(|b| b > 0), "{summary}");
     }
 }
+
+#[test]
+fn moonshine_defaults_find_fetched_models_without_paths() {
+    let out = bin()
+        .args(["--moonshine-size", "tiny"])
+        .arg("--wav")
+        .arg(crate_dir().join("tests/fixtures/en-short.wav"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "exit {:?}: {stderr} (run ./fetch-moonshine.sh tiny first)", out.status);
+    let ev = events(&out.stdout);
+    assert_eq!(ev[0]["type"], "ready");
+    assert_eq!(ev[0]["model"], "tiny-streaming-en", "{}", ev[0]);
+    let fin = ev.iter().find(|e| e["type"] == "final").expect("no final event");
+    assert!(fin["text"].as_str().unwrap().to_lowercase().contains("nightfall"), "final: {fin}");
+}

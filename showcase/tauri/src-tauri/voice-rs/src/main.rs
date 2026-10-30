@@ -85,10 +85,20 @@ fn moonshine_lib_name() -> &'static str {
     }
 }
 
+// Packaged builds ship models/ next to the exe; dev builds use the crate's fetched models/.
+fn models_root() -> PathBuf {
+    let packaged = exe_dir().join("models");
+    if packaged.is_dir() {
+        packaged
+    } else {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("models")
+    }
+}
+
 // Next to the exe when packaged; fetch-moonshine.sh puts it under models/moonshine-runtime.
 fn default_moonshine_lib() -> PathBuf {
     let next_to_exe = exe_dir().join(moonshine_lib_name());
-    let fetched = exe_dir().join("models").join("moonshine-runtime").join(moonshine_lib_name());
+    let fetched = models_root().join("moonshine-runtime").join(moonshine_lib_name());
     if !next_to_exe.is_file() && fetched.is_file() {
         fetched
     } else {
@@ -99,7 +109,7 @@ fn default_moonshine_lib() -> PathBuf {
 fn build_engine(args: &Args) -> Result<(Box<dyn SpeechEngine>, bench::BenchInfo), String> {
     match args.engine.as_str() {
         "zipformer" => {
-            let dir = args.model_dir.clone().unwrap_or_else(|| exe_dir().join("models").join("zipformer"));
+            let dir = args.model_dir.clone().unwrap_or_else(|| models_root().join("zipformer"));
             // sherpa-onnx and its ONNX Runtime are linked into the exe.
             let runtime = std::env::current_exe().into_iter().collect();
             Ok((Box::new(SherpaZipformer::new(dir.clone())), bench::BenchInfo { model_dir: dir, runtime }))
@@ -107,7 +117,7 @@ fn build_engine(args: &Args) -> Result<(Box<dyn SpeechEngine>, bench::BenchInfo)
         "moonshine" => {
             let size = Size::parse(&args.moonshine_size)
                 .ok_or_else(|| format!("unknown --moonshine-size {} (tiny, small or medium)", args.moonshine_size))?;
-            let dir = args.model_dir.clone().unwrap_or_else(|| exe_dir().join("models").join(format!("moonshine-{}", size.as_str())));
+            let dir = args.model_dir.clone().unwrap_or_else(|| models_root().join(format!("moonshine-{}", size.as_str())));
             let lib = args.moonshine_lib.clone().unwrap_or_else(default_moonshine_lib);
             let ort = lib.with_file_name(if cfg!(windows) { "onnxruntime.dll" } else { "libonnxruntime.so" });
             let info = bench::BenchInfo { model_dir: dir.clone(), runtime: vec![lib.clone(), ort] };

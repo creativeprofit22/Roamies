@@ -11,6 +11,7 @@ name = "roamies-voice-moonshine"
 path = "src/main.rs"
 
 [dependencies]
+roamies-voice-core = { path = "../voice-core" }
 sherpa-onnx = "=2.0.1"
 cpal = "=0.18.2"
 rubato = "=5.0.1"

@@ -18,6 +18,14 @@ pub enum Mode {
     Hold,
 }
 
+/// Microphone access as the OS reports it (`--perms`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MicStatus {
+    Granted,
+    Denied,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -63,7 +71,7 @@ pub enum Event {
         what: Option<&'static str>,
     },
     Perms {
-        mic: crate::perms::Status,
+        mic: MicStatus,
         input: bool,
     },
 }
@@ -170,11 +178,11 @@ mod tests {
             json!({"type":"error","code":"permission","what":"microphone"})
         );
         assert_eq!(
-            js(&Event::Perms { mic: crate::perms::Status::Denied, input: false }),
+            js(&Event::Perms { mic: MicStatus::Denied, input: false }),
             json!({"type":"perms","mic":"denied","input":false})
         );
         assert_eq!(
-            js(&Event::Perms { mic: crate::perms::Status::Granted, input: true }),
+            js(&Event::Perms { mic: MicStatus::Granted, input: true }),
             json!({"type":"perms","mic":"granted","input":true})
         );
     }

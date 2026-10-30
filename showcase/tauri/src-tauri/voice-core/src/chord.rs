@@ -106,6 +106,7 @@ pub struct SessionMachine {
     prev_chord: bool,
     has_text: bool,
     endpointed: bool,
+    finish_only: bool,
 }
 
 impl Default for SessionMachine {
@@ -128,7 +129,14 @@ impl SessionMachine {
             prev_chord: false,
             has_text: false,
             endpointed: false,
+            finish_only: false,
         }
+    }
+
+    /// For engines with no live text: hands-free ends 1.5 s after the voice stops, and is
+    /// cancelled when no voice came at all.
+    pub fn set_finish_only(&mut self, on: bool) {
+        self.finish_only = on;
     }
 
     pub fn phase(&self) -> Phase {
@@ -198,10 +206,11 @@ impl SessionMachine {
                 } else {
                     // After an engine endpoint, background noise no longer holds the session open.
                     let last = if self.endpointed { self.heard_at } else { self.heard_at.max(self.voice_at) };
-                    if self.has_text && now - last > PAUSE_ENDS {
+                    let has_text = if self.finish_only { self.spoke() } else { self.has_text };
+                    if has_text && now - last > PAUSE_ENDS {
                         self.end("pause", now);
                         self.finish(now, &mut out);
-                    } else if !self.has_text && now - self.listen_at > NOTHING_HEARD_CANCEL {
+                    } else if !has_text && now - self.listen_at > NOTHING_HEARD_CANCEL {
                         self.end("nothing heard", now);
                         self.cancel(&mut out);
                     } else if now - self.listen_at > MAX_SESSION {
@@ -581,6 +590,48 @@ mod tests {
         assert!(m.finish_now(5.0).is_empty());
         assert!(m.tick(5.2, &mut NoKeys).is_empty());
         assert_eq!(m.tick(5.31, &mut NoKeys), [Finalize]);
+    }
+
+    fn finish_only() -> Run {
+        let mut r = Run::new();
+        r.m.set_finish_only(true);
+        r
+    }
+
+    fn voice(r: &mut Run, ms: u64) {
+        for _ in 0..ms / 10 {
+            let now = r.now();
+            r.m.on_voice(now);
+            r.up(10);
+        }
+    }
+
+    #[test]
+    fn finish_only_ends_on_a_pause_after_voice() {
+        let mut r = finish_only();
+        r.hold(100).up(500);
+        voice(&mut r, 2000);
+        r.up(1400);
+        assert_eq!(r.actions(), [Arm, Listen(Mode::Handsfree)], "1.5 s isn't over yet");
+        r.up(200);
+        assert_eq!(r.actions(), [Arm, Listen(Mode::Handsfree), SHOWN]);
+    }
+
+    #[test]
+    fn finish_only_cancels_when_no_voice_came() {
+        let mut r = finish_only();
+        r.hold(100).up(7900);
+        assert_eq!(r.actions(), [Arm, Listen(Mode::Handsfree)]);
+        r.up(300);
+        assert_eq!(r.actions(), [Arm, Listen(Mode::Handsfree), Cancel]);
+    }
+
+    #[test]
+    fn finish_only_long_speech_is_not_cut_short() {
+        let mut r = finish_only();
+        r.hold(100).up(100);
+        voice(&mut r, 20_000);
+        assert_eq!(r.m.phase(), Phase::HandsFree, "no text never ends a talk that's still going");
     }
 
     #[test]

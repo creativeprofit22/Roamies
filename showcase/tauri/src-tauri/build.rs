@@ -45,6 +45,10 @@ fn build_rust_helpers() {
         println!("cargo:rerun-if-changed=voice-rs/models/moonshine-runtime/{f}");
         assert!(runtime.join(f).exists(), "missing {}: run voice-rs/fetch-moonshine.sh --runtime", runtime.join(f).display());
     }
+    // Both helpers share voice-core (protocol, session, chord) by path.
+    for p in ["src", "Cargo.toml", "Cargo.lock"] {
+        println!("cargo:rerun-if-changed=voice-core/{p}");
+    }
     build_rust_helper(&root, &target, "voice-rs", "roamies-voice-moonshine");
     build_rust_helper(&root, &target, "voice-win", "roamies-voice-parakeet");
 }

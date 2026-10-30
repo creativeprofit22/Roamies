@@ -1,7 +1,7 @@
 //! Windows microphone privacy state (Settings > Privacy & security > Microphone), read from the
 //! CapabilityAccessManager consent store. Desktop apps get no prompt: it's either allowed or not.
 
-use serde::Serialize;
+pub use roamies_voice_core::protocol::MicStatus as Status;
 
 const STORE: &str = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
 
@@ -9,13 +9,6 @@ const STORE: &str = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccess
 pub enum Hive {
     LocalMachine,
     CurrentUser,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Status {
-    Granted,
-    Denied,
 }
 
 /// Denied if any switch is off: the device-wide one, "Microphone access" or "Let desktop apps access

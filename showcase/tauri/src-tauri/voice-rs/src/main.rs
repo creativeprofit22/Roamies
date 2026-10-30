@@ -2,14 +2,12 @@
 
 mod audio;
 mod bench;
-mod chord;
-mod engine;
 mod engines;
 mod keys_windows;
 mod perms;
-mod protocol;
 mod record;
-mod session;
+
+use roamies_voice_core::{chord, engine, protocol, session};
 
 use audio::{MicCapture, Resampler16k};
 use engine::{SpeechEngine, SAMPLE_RATE};

@@ -1,7 +1,7 @@
 //! Runs the talk session: `chord::SessionMachine` decides, this executes its actions on the engine
 //! and emits events. Time is passed in so tests and `--wav` runs are deterministic.
 
-use crate::audio;
+use crate::level::level;
 use crate::chord::{Action, KeySource, Mods, Phase, SessionMachine};
 use crate::engine::{EngineError, SpeechEngine};
 use crate::protocol::{Emitter, ErrorCode, Event, Mode, SessionState};
@@ -24,10 +24,12 @@ pub struct Session<E: SpeechEngine, W: Write> {
 
 impl<E: SpeechEngine, W: Write> Session<E, W> {
     pub fn new(engine: E, out: Emitter<W>) -> Self {
+        let mut machine = SessionMachine::new();
+        machine.set_finish_only(!engine.streaming());
         Session {
             engine,
             out,
-            machine: SessionMachine::new(),
+            machine,
             best: String::new(),
             level_at: f64::NEG_INFINITY,
             engine_ok: false,
@@ -125,7 +127,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         if self.machine.phase() == Phase::Idle || samples.is_empty() {
             return;
         }
-        let v = audio::level(samples);
+        let v = level(samples);
         if v > VOICE_LEVEL {
             self.machine.on_voice(now);
         }
@@ -299,7 +301,7 @@ mod tests {
             Ok(())
         }
         fn accept(&mut self, samples: &[f32]) {
-            if self.started && audio::level(samples) > VOICE_LEVEL {
+            if self.started && level(samples) > VOICE_LEVEL {
                 self.loud += samples.len();
             }
         }
@@ -496,6 +498,50 @@ mod tests {
         s.listen(|| clock.get()).unwrap();
         s.tick(12.1, &mut NoKeys);
         assert!(s.wants_audio(), "the 8 s timer starts after loading, not before");
+    }
+
+    /// Like the Parakeet engine: no partials, the text only comes from `finish`.
+    struct FinishOnly(FakeEngine);
+
+    impl SpeechEngine for FinishOnly {
+        fn name(&self) -> &str {
+            "finish-only"
+        }
+        fn start(&mut self) -> Result<(), EngineError> {
+            self.0.start()
+        }
+        fn accept(&mut self, samples: &[f32]) {
+            self.0.accept(samples)
+        }
+        fn partial(&mut self) -> Option<String> {
+            None
+        }
+        fn finish(&mut self) -> String {
+            self.0.finish()
+        }
+        fn cancel(&mut self) {
+            self.0.cancel()
+        }
+        fn streaming(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn finish_only_engine_ends_on_a_voice_pause_and_delivers() {
+        let mut s = Session::new(FinishOnly(FakeEngine::new(&["hello", "there"])), Emitter::new(Vec::new()));
+        s.listen(|| 0.0).unwrap();
+        let mut t = 0.0;
+        for chunk in [&LOUD; 3].into_iter().chain([&QUIET; 22]) {
+            s.audio(chunk, t);
+            s.tick(t, &mut NoKeys);
+            t += 0.1;
+        }
+        let out = String::from_utf8_lossy(s.output()).to_string();
+        let ev: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert!(!ev.iter().any(|e| e["type"] == "partial"));
+        assert!(ev.contains(&json!({"type":"final","text":"hello there"})), "{out}");
+        assert_eq!(ev.last().unwrap(), &json!({"type":"state","state":"idle"}));
     }
 
     const CA: [&str; 2] = ["control", "option"];

@@ -1089,11 +1089,20 @@ dependencies = [
  "cpal",
  "hound",
  "libloading",
+ "roamies-voice-core",
  "rubato",
  "serde",
  "serde_json",
  "sherpa-onnx",
  "windows",
+]
+
+[[package]]
+name = "roamies-voice-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

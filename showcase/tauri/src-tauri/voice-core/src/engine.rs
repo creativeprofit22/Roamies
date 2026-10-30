@@ -41,6 +41,11 @@ pub trait SpeechEngine {
     fn endpoint(&mut self) -> bool {
         false
     }
+    /// False for engines that only produce text in `finish` (no partials): hands-free then ends on
+    /// a pause in the voice instead of a pause in the text.
+    fn streaming(&self) -> bool {
+        true
+    }
 }
 
 impl<T: SpeechEngine + ?Sized> SpeechEngine for Box<T> {
@@ -70,5 +75,8 @@ impl<T: SpeechEngine + ?Sized> SpeechEngine for Box<T> {
     }
     fn endpoint(&mut self) -> bool {
         (**self).endpoint()
+    }
+    fn streaming(&self) -> bool {
+        (**self).streaming()
     }
 }

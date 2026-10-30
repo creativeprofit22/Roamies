@@ -607,13 +607,13 @@
     const st = {
       kind: 'state', platform: q.get('platform') || 'darwin', step: +(q.get('step') || 0), sound: true, voice: true, actions: false, login: true, filesAsked: false,
       keys: q.get('platform') === 'win32' ? { talk: ['control', 'option'], summon: 'Control+Shift+KeyS', snap: 'Control+Shift+KeyA' } : { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA' }, connected: null,
-      voiceModel: win ? { status: q.get('model') || 'missing', done: q.get('model') === 'downloading' ? 281601575 : 0, total: 670479942, error: q.get('model') === 'error' ? "Couldn't download it. Check your internet connection and try again." : null, size: '670 MB' } : null,
+      voiceModel: win ? { status: q.get('model') || 'missing', done: q.get('model') === 'downloading' ? 60000000 : 0, total: 142300974, error: q.get('model') === 'error' ? "Couldn't download it. Check your internet connection and try again." : null, size: '142 MB' } : null,
       oauth: [['anthropic', 'Claude', 'Anthropic'], ['openai', 'ChatGPT', 'OpenAI'], ['gemini', 'Gemini', 'Google'], ['xai', 'Grok', 'xAI'], ['moonshot', 'Kimi', 'Moonshot']].map(([id, name, company]) => ({ id, name, company, connected: false })),
       apikey: [['openrouter', 'OpenRouter'], ['deepseek', 'DeepSeek'], ['glm', 'Z.AI (GLM)']].map(([id, name]) => ({ id, name, connected: false })),
     };
     let filesAsked = false;
     const reply = (m, ms = 0) => setTimeout(() => window.__onboard?.(m), ms);
-    if (st.platform === 'win32') { st.voiceModel = { status: 'downloading', done: 0, total: 1e8, error: null, size: '100 MB' }; const t = setInterval(() => { const vm = st.voiceModel; vm.done = Math.min(vm.total, vm.done + 1e7); if (vm.done === vm.total) { vm.status = 'ready'; clearInterval(t); } window.__onboard?.({ kind: 'voice_model', ...vm }); }, 700); }
+    if (st.platform === 'win32' && !q.get('model')) { st.voiceModel = { status: 'downloading', done: 0, total: 142300974, error: null, size: '142 MB' }; const t = setInterval(() => { const vm = st.voiceModel; vm.done = Math.min(vm.total, vm.done + 15e6); if (vm.done === vm.total) { vm.status = 'ready'; clearInterval(t); } window.__onboard?.({ kind: 'voice_model', ...vm }); }, 700); }
     return async (cmd, args) => {
       if (cmd === 'perm_status') return { ...sys };
       if (cmd === 'perm_request') { await wait(600); if (args.kind !== 'screen') sys[args.kind] = 'granted'; else setTimeout(() => { sys.screen = 'granted'; }, 2500); return { ...sys }; }

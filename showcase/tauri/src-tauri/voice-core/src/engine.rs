@@ -3,6 +3,8 @@
 use std::fmt;
 
 pub const SAMPLE_RATE: u32 = 16_000;
+/// Mic level (see `level::level`) above which a chunk counts as voice.
+pub const VOICE_LEVEL: f64 = 0.2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineError {
@@ -46,6 +48,11 @@ pub trait SpeechEngine {
     fn streaming(&self) -> bool {
         true
     }
+    /// Mic level that counts as voice; a finish-only engine returns the level it reads takes at, so
+    /// hands-free never cancels a take the engine would have read.
+    fn voice_level(&self) -> f64 {
+        VOICE_LEVEL
+    }
 }
 
 impl<T: SpeechEngine + ?Sized> SpeechEngine for Box<T> {
@@ -78,5 +85,8 @@ impl<T: SpeechEngine + ?Sized> SpeechEngine for Box<T> {
     }
     fn streaming(&self) -> bool {
         (**self).streaming()
+    }
+    fn voice_level(&self) -> f64 {
+        (**self).voice_level()
     }
 }

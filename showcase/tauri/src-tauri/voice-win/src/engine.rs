@@ -136,6 +136,9 @@ impl SpeechEngine for Parakeet {
     fn streaming(&self) -> bool {
         false
     }
+    fn voice_level(&self) -> f64 {
+        SPEECH_LEVEL
+    }
 }
 
 fn log(s: &str) {

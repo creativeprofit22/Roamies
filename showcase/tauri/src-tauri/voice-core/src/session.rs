@@ -4,11 +4,12 @@
 use crate::level::level;
 use crate::chord::{Action, KeySource, Mods, Phase, SessionMachine};
 use crate::engine::{EngineError, SpeechEngine};
+#[cfg(test)]
+use crate::engine::VOICE_LEVEL;
 use crate::protocol::{Emitter, ErrorCode, Event, Mode, SessionState};
 use std::io::Write;
 
 const LEVEL_EVERY: f64 = 0.05;
-const VOICE_LEVEL: f64 = 0.2;
 
 pub struct Session<E: SpeechEngine, W: Write> {
     engine: E,
@@ -128,7 +129,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
             return;
         }
         let v = level(samples);
-        if v > VOICE_LEVEL {
+        if v > self.engine.voice_level() {
             self.machine.on_voice(now);
         }
         // Armed may still turn out to be a shortcut, so nothing shows until it's a talk.
@@ -542,6 +543,58 @@ mod tests {
         assert!(!ev.iter().any(|e| e["type"] == "partial"));
         assert!(ev.contains(&json!({"type":"final","text":"hello there"})), "{out}");
         assert_eq!(ev.last().unwrap(), &json!({"type":"state","state":"idle"}));
+    }
+
+    /// Like Parakeet: reads a take once its peak level reaches 0.15, below the default voice level.
+    struct QuietReader {
+        peak: f64,
+    }
+
+    impl SpeechEngine for QuietReader {
+        fn name(&self) -> &str {
+            "quiet-reader"
+        }
+        fn start(&mut self) -> Result<(), EngineError> {
+            self.peak = 0.0;
+            Ok(())
+        }
+        fn accept(&mut self, samples: &[f32]) {
+            self.peak = self.peak.max(level(samples));
+        }
+        fn partial(&mut self) -> Option<String> {
+            None
+        }
+        fn finish(&mut self) -> String {
+            if self.peak >= 0.15 { "quiet words".into() } else { String::new() }
+        }
+        fn cancel(&mut self) {
+            self.peak = 0.0;
+        }
+        fn streaming(&self) -> bool {
+            false
+        }
+        fn voice_level(&self) -> f64 {
+            0.15
+        }
+    }
+
+    #[test]
+    fn finish_only_quiet_speaker_ends_on_a_pause_instead_of_nothing_heard() {
+        // About level 0.17: above the engine's speech level, below the default voice level.
+        let soft = [0.0039f32; 1600];
+        assert!((0.15..VOICE_LEVEL).contains(&level(&soft)));
+        let mut s = Session::new(QuietReader { peak: 0.0 }, Emitter::new(Vec::new()));
+        s.listen(|| 0.0).unwrap();
+        let mut t = 0.0;
+        for chunk in [&soft; 20].into_iter().chain([&QUIET; 70]) {
+            s.audio(chunk, t);
+            s.tick(t, &mut NoKeys);
+            t += 0.1;
+        }
+        let out = String::from_utf8_lossy(s.output()).to_string();
+        let ev: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert!(ev.contains(&json!({"type":"final","text":"quiet words"})), "{out}");
+        assert!(!ev.iter().any(|e| e["cancelled"] == true), "{out}");
     }
 
     const CA: [&str; 2] = ["control", "option"];

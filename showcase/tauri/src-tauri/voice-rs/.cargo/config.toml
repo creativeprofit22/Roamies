@@ -1,0 +1,3 @@
+# sherpa-onnx's static Windows libs are built with /MT, so link the static CRT to match.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

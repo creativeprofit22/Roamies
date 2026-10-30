@@ -1,0 +1,25 @@
+[package]
+name = "roamies-voice"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Roamies on-device voice helper (Windows): mic capture, streaming speech-to-text, JSON lines on stdout"
+publish = false
+
+[[bin]]
+name = "roamies-voice"
+path = "src/main.rs"
+
+[dependencies]
+sherpa-onnx = "=2.0.1"
+cpal = "=0.18.2"
+rubato = "=5.0.1"
+hound = "=3.5.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+[dev-dependencies]
+serde_json = "=1.0.154"
+
+# Standalone: not part of the Tauri app's build.
+[workspace]

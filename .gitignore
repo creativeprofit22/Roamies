@@ -16,3 +16,5 @@ node_modules/
 *.tmp
 .vscode/
 .idea/
+showcase/tauri/src-tauri/voice-rs/target/
+showcase/tauri/src-tauri/voice-rs/models/

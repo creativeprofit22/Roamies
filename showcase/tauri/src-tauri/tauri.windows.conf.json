@@ -12,7 +12,8 @@
       "voice-rs/models/moonshine-runtime/msvcp140_1.dll": "msvcp140_1.dll",
       "voice-rs/models/moonshine-runtime/vcruntime140.dll": "vcruntime140.dll",
       "voice-rs/models/moonshine-runtime/vcruntime140_1.dll": "vcruntime140_1.dll",
-      "voice-rs/models/moonshine-runtime/licenses/": "licenses/moonshine/"
+      "voice-rs/models/moonshine-runtime/licenses/": "licenses/moonshine/",
+      "voice-win/licenses/": "licenses/parakeet/"
     }
   }
 }

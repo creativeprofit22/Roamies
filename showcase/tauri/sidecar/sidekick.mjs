@@ -16,6 +16,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import {
   clearFacts, clearFinished, fitContext, flushWrites, forgetFact, listItems, listFacts, nextDue, pickFacts, touchFacts, forDisk, forProvider, isStale, loadLatestSession, newSession, openCommitments,
   pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson,
@@ -35,6 +36,8 @@ const ob = (msg) => send({ type: 'onboard', msg });
 const say = (text, mood) => (onboarding ? ob({ kind: 'say', text, mood }) : ui({ kind: 'say', text, mood }));
 
 const VERSION = process.env.ROAMIES_VERSION || '0.0.0';
+// Bundled third-party notices (speech models, runtimes); resources/licenses next to resources/sidecar. Absent in dev.
+const LICENSES = fileURLToPath(new URL('../licenses', import.meta.url));
 const UPDATE_REPO = 'KenKaiii/Roamies';
 const HOME = os.homedir();
 // ROAMIES_DATA_DIR (tests and benchmarks): config, sessions and memory go there instead; sign-in stays in ~/.gg.
@@ -633,6 +636,7 @@ function menu() {
       ? { id: 'install_update', label: update.installing ? `Installing ${update.available}…` : `Install Update ${update.available} and Restart`, enabled: !update.installing }
       : { id: 'update', label: 'Check for Updates…' },
     { id: 'about', label: `Roamies ${VERSION}`, enabled: false },
+    ...(existsSync(LICENSES) ? [{ id: 'licenses', label: 'Licences…' }] : []),
     { id: 'quit', label: 'Quit Roamies' },
   ];
   send({ type: 'menu', items });
@@ -749,6 +753,7 @@ async function onMenu(id) {
   } else if (id === 'update') checkUpdates(true);
   else if (id === 'install_update') installUpdate();
   else if (id === 'login') setLogin(!login.on);
+  else if (id === 'licenses') { if (existsSync(LICENSES)) openUrl(LICENSES); }
   else if (id === 'logs') fs.mkdir(LOG_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(LOG_DIR)).catch(() => {});
   else if (id === 'setup') send({ type: 'onboarding' });
   else if (id === 'snap') areaSnap();

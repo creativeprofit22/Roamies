@@ -1,0 +1,22 @@
+Speech model used by Roamies voice on Windows (roamies-voice-parakeet)
+=======================================================================
+
+Model:    NVIDIA Parakeet TDT 0.6B v3 (nvidia/parakeet-tdt-0.6b-v3)
+          https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+Author:   NVIDIA Corporation
+Licence:  Creative Commons Attribution 4.0 International (CC BY 4.0)
+          https://creativecommons.org/licenses/by/4.0/
+
+Roamies downloads an ONNX export of these weights, not NVIDIA's original checkpoint:
+
+Export:   istupakov/parakeet-tdt-0.6b-v3-onnx, revision 8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce
+          https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx
+Files:    encoder-model.int8.onnx, decoder_joint-model.int8.onnx, vocab.txt
+
+Changes:  istupakov converted the model to ONNX and quantised it to int8. Roamies makes no further
+          changes to the weights; it downloads the files above unmodified and checks their SHA-256.
+
+No warranties are given. See the licence text at the link above.
+
+Inference code: parakeet-rs (https://github.com/altunenes/parakeet-rs) and ort
+(https://github.com/pykeio/ort), both MIT OR Apache-2.0, built into roamies-voice-parakeet.

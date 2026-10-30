@@ -80,3 +80,13 @@ await assert.rejects(downloadModel(path.join(TMP, 'e'), { ...opts, model: { ...m
 
 server.close();
 console.log('voice model download tests: passed');
+
+// The shipped manifest pins exactly what voice-win/fetch-model.sh pins (revision and every file hash).
+{
+  const { MODEL } = await import('../voicemodel.mjs');
+  const sh = fs.readFileSync(new URL('../../src-tauri/voice-win/fetch-model.sh', import.meta.url), 'utf8');
+  const rev = /^REV=(\w+)$/m.exec(sh)?.[1];
+  assert.ok(rev && MODEL.base.includes(`/resolve/${rev}/`), 'revision differs from fetch-model.sh');
+  const pinned = Object.fromEntries([...sh.matchAll(/^\s+"(\S+) ([0-9a-f]{64})"$/gm)].map((m) => [m[1], m[2]]));
+  assert.deepEqual(pinned, Object.fromEntries(MODEL.files.map((f) => [f.name, f.sha256])));
+}

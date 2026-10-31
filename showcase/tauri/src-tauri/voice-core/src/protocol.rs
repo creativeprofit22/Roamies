@@ -74,6 +74,10 @@ pub enum Event {
         mic: MicStatus,
         input: bool,
     },
+    /// One schema v1 telemetry event (docs/telemetry.md); the host forwards it to the sidecar.
+    Telemetry {
+        event: serde_json::Value,
+    },
 }
 
 impl Event {
@@ -94,9 +98,15 @@ impl Event {
 #[serde(tag = "cmd", rename_all = "lowercase")]
 pub enum Command {
     Cancel,
-    Listen,
+    Listen {
+        #[serde(default)]
+        request_id: Option<String>,
+    },
     Chord { mods: Vec<String> },
     Mute { on: bool },
+    /// The id for the next talk-chord session.
+    Request { request_id: String },
+    Telemetry { on: bool },
 }
 
 /// Unknown or malformed lines are ignored, like the Mac helper does.
@@ -185,6 +195,10 @@ mod tests {
             js(&Event::Perms { mic: MicStatus::Granted, input: true }),
             json!({"type":"perms","mic":"granted","input":true})
         );
+        assert_eq!(
+            js(&Event::Telemetry { event: json!({"schema":1}) }),
+            json!({"type":"telemetry","event":{"schema":1}})
+        );
     }
 
     #[test]
@@ -198,18 +212,27 @@ mod tests {
     #[test]
     fn parses_host_commands() {
         assert_eq!(parse_command(r#"{"cmd":"cancel"}"#), Some(Command::Cancel));
-        assert_eq!(parse_command(r#"{"cmd":"listen"}"#), Some(Command::Listen));
+        assert_eq!(parse_command(r#"{"cmd":"listen"}"#), Some(Command::Listen { request_id: None }));
+        assert_eq!(
+            parse_command(r#"{"cmd":"listen","request_id":"0123456789abcdef0123456789abcdef"}"#),
+            Some(Command::Listen { request_id: Some("0123456789abcdef0123456789abcdef".into()) })
+        );
+        assert_eq!(
+            parse_command(r#"{"cmd":"request","request_id":"ab"}"#),
+            Some(Command::Request { request_id: "ab".into() })
+        );
+        assert_eq!(parse_command(r#"{"cmd":"telemetry","on":false}"#), Some(Command::Telemetry { on: false }));
         assert_eq!(
             parse_command(r#"{"cmd":"chord","mods":["ctrl","alt"]}"#),
             Some(Command::Chord { mods: vec!["ctrl".into(), "alt".into()] })
         );
         assert_eq!(parse_command(r#"{"cmd":"mute","on":false}"#), Some(Command::Mute { on: false }));
-        assert_eq!(parse_command("  {\"cmd\":\"listen\",\"extra\":1}\r"), Some(Command::Listen));
+        assert_eq!(parse_command("  {\"cmd\":\"listen\",\"extra\":1}\r"), Some(Command::Listen { request_id: None }));
     }
 
     #[test]
     fn ignores_bad_lines() {
-        for line in ["", "nope", "{}", r#"{"cmd":"dance"}"#, r#"{"cmd":"mute"}"#, r#"{"cmd":"chord","mods":"ctrl"}"#, "[1,2]"] {
+        for line in ["", "nope", "{}", r#"{"cmd":"dance"}"#, r#"{"cmd":"mute"}"#, r#"{"cmd":"chord","mods":"ctrl"}"#, r#"{"cmd":"request"}"#, r#"{"cmd":"telemetry"}"#, "[1,2]"] {
             assert_eq!(parse_command(line), None, "{line}");
         }
     }

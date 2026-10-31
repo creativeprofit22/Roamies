@@ -21,11 +21,20 @@ fn model_dir() -> PathBuf {
     dir
 }
 
-fn events(stdout: &[u8]) -> Vec<Value> {
+fn all_lines(stdout: &[u8]) -> Vec<Value> {
     String::from_utf8_lossy(stdout)
         .lines()
         .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON: {l} ({e})")))
         .collect()
+}
+
+// Protocol events without the interleaved telemetry lines (checked separately by `telemetry`).
+fn events(stdout: &[u8]) -> Vec<Value> {
+    all_lines(stdout).into_iter().filter(|e| e["type"] != "telemetry").collect()
+}
+
+fn telemetry(stdout: &[u8]) -> Vec<Value> {
+    all_lines(stdout).into_iter().filter(|e| e["type"] == "telemetry").map(|e| e["event"].clone()).collect()
 }
 
 fn wav_run(model: &PathBuf) -> Output {
@@ -67,6 +76,11 @@ fn wav_run_event_order() {
     assert_eq!(ev[n - 3], json!({"type":"state","state":"processing"}));
     assert_eq!(ev[n - 2]["type"], "final");
     assert_eq!(ev[n - 1], json!({"type":"state","state":"idle"}));
+    let tel = telemetry(&out.stdout);
+    let session: Vec<_> = tel.iter().filter(|e| e["step"] == "voice.session").collect();
+    assert_eq!(session.len(), 2, "{tel:?}");
+    assert_eq!(session[1]["outcome"], "ok");
+    assert!(session.iter().all(|e| e["request_id"] == session[0]["request_id"] && e["component"] == "voice"));
     assert!(!ev.iter().any(|e| e["type"] == "partial"), "Parakeet has no live text");
 }
 

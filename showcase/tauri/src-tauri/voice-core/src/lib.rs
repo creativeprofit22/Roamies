@@ -7,3 +7,4 @@ pub mod level;
 pub mod protocol;
 pub mod score;
 pub mod session;
+pub mod telemetry;

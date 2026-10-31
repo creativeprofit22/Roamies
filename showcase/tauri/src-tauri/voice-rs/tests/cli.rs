@@ -11,11 +11,20 @@ fn crate_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn events(stdout: &[u8]) -> Vec<Value> {
+fn all_lines(stdout: &[u8]) -> Vec<Value> {
     String::from_utf8_lossy(stdout)
         .lines()
         .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON: {l} ({e})")))
         .collect()
+}
+
+// Protocol events without the interleaved telemetry lines (checked separately by `telemetry`).
+fn events(stdout: &[u8]) -> Vec<Value> {
+    all_lines(stdout).into_iter().filter(|e| e["type"] != "telemetry").collect()
+}
+
+fn telemetry(stdout: &[u8]) -> Vec<Value> {
+    all_lines(stdout).into_iter().filter(|e| e["type"] == "telemetry").map(|e| e["event"].clone()).collect()
 }
 
 #[test]
@@ -48,6 +57,11 @@ fn wav_dry_run_transcribes_the_fixture() {
     let text = ev[fin]["text"].as_str().unwrap().to_lowercase();
     assert!(text.contains("after early nightfall"), "final: {text}");
     assert_eq!(ev.last().unwrap(), &serde_json::json!({"type":"state","state":"idle"}));
+    let tel = telemetry(&out.stdout);
+    let session: Vec<_> = tel.iter().filter(|e| e["step"] == "voice.session").collect();
+    assert_eq!(session.len(), 2, "{tel:?}");
+    assert_eq!(session[1]["outcome"], "ok");
+    assert!(session.iter().all(|e| e["request_id"] == session[0]["request_id"] && e["component"] == "voice"));
 }
 
 #[test]

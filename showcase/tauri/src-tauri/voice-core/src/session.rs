@@ -7,7 +7,10 @@ use crate::engine::{EngineError, SpeechEngine};
 #[cfg(test)]
 use crate::engine::VOICE_LEVEL;
 use crate::protocol::{Emitter, ErrorCode, Event, Mode, SessionState};
+use crate::telemetry::{is_request_id, new_request_id, Attrs, Outcome, Step, Telemetry};
+use serde_json::json;
 use std::io::Write;
+use std::time::Duration;
 
 const LEVEL_EVERY: f64 = 0.05;
 
@@ -21,6 +24,14 @@ pub struct Session<E: SpeechEngine, W: Write> {
     /// The mic failed while armed: stay quiet (it may be a shortcut) and don't retry until it's a talk.
     mic_down: bool,
     shown: bool,
+    tel: Telemetry,
+    /// The host's id for the next chord talk, bound when a press becomes a talk.
+    pending_rid: Option<String>,
+    armed_at: Option<f64>,
+    audio_samples: usize,
+    session_step: Option<Step>,
+    listen_step: Option<Step>,
+    fail_code: Option<&'static str>,
 }
 
 impl<E: SpeechEngine, W: Write> Session<E, W> {
@@ -36,7 +47,26 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
             engine_ok: false,
             mic_down: false,
             shown: false,
+            tel: Telemetry::default(),
+            pending_rid: None,
+            armed_at: None,
+            audio_samples: 0,
+            session_step: None,
+            listen_step: None,
+            fail_code: None,
         }
+    }
+
+    /// `{"cmd":"request"}`: the id for the next chord talk; malformed ids are ignored.
+    pub fn set_request_id(&mut self, id: &str) {
+        if is_request_id(id) {
+            self.pending_rid = Some(id.to_string());
+        }
+    }
+
+    /// `{"cmd":"telemetry"}`.
+    pub fn set_telemetry(&mut self, on: bool) {
+        self.tel.set_enabled(on);
     }
 
     pub fn emit(&mut self, event: &Event) {
@@ -77,11 +107,21 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
     /// Starts a hands-free session (the `listen` command). Ignored unless idle.
     /// `now` is read after the engine starts: the first start loads the model, which can take seconds.
     pub fn listen(&mut self, now: impl FnOnce() -> f64) -> Result<(), EngineError> {
+        self.listen_with(None, now)
+    }
+
+    /// `listen` for a request the host already has an id for; without one a fresh id is minted, so
+    /// the chord's pending id is kept.
+    pub fn listen_with(&mut self, request_id: Option<String>, now: impl FnOnce() -> f64) -> Result<(), EngineError> {
         if self.machine.phase() != Phase::Idle {
             return Ok(());
         }
         self.best.clear();
         self.mic_down = false;
+        self.armed_at = None;
+        self.audio_samples = 0;
+        let rid = request_id.filter(|r| is_request_id(r)).unwrap_or_else(new_request_id);
+        self.begin(Mode::Handsfree, 0.0, Some(rid));
         if let Err(e) = self.engine.start() {
             log(&e.to_string());
             self.unavailable();
@@ -128,6 +168,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         if self.machine.phase() == Phase::Idle || samples.is_empty() {
             return;
         }
+        self.audio_samples += samples.len();
         let v = level(samples);
         if v > self.engine.voice_level() {
             self.machine.on_voice(now);
@@ -156,15 +197,18 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
 
     /// The mic couldn't open or died: same as the Mac helper's `no_input` once it's a talk.
     pub fn audio_failed(&mut self) {
-        self.fail_audio(Event::error(ErrorCode::NoInput));
+        self.fail_audio(Event::error(ErrorCode::NoInput), "no_input");
     }
 
     /// The mic is off in Windows privacy settings: like `audio_failed`, but the host can point there.
     pub fn mic_denied(&mut self) {
-        self.fail_audio(Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone") });
+        self.fail_audio(
+            Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone") },
+            "permission",
+        );
     }
 
-    fn fail_audio(&mut self, event: Event) {
+    fn fail_audio(&mut self, event: Event, code: &'static str) {
         match self.machine.phase() {
             Phase::Idle => {}
             Phase::Armed => self.mic_down = true,
@@ -172,6 +216,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
             Phase::Finishing { .. } => self.mic_down = true,
             Phase::Holding | Phase::HandsFree => {
                 self.emit(&event);
+                self.fail_code = Some(code);
                 self.cancel();
             }
         }
@@ -183,6 +228,8 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
                 Action::Arm => {
                     self.best.clear();
                     self.mic_down = false;
+                    self.armed_at = Some(now);
+                    self.audio_samples = 0;
                     self.engine_ok = match self.engine.start() {
                         Ok(()) => true,
                         Err(e) => {
@@ -194,6 +241,9 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
                 Action::Listen(mode) => self.show(mode, now)?,
                 Action::Finish { shown } => {
                     self.shown = shown;
+                    if let Some(step) = self.listen_step.take() {
+                        self.tel.end(&mut self.out, step, Outcome::Ok, None, Attrs::new());
+                    }
                     if shown {
                         self.emit(&Event::state(SessionState::Processing));
                     }
@@ -203,13 +253,20 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
                     self.engine.cancel();
                     self.mic_down = false;
                     self.emit(&Event::State { state: SessionState::Idle, mode: None, cancelled: Some(true) });
+                    match self.fail_code.take() {
+                        Some(code) => self.end_session(Outcome::Error, Some(code), None),
+                        None => self.end_session(Outcome::Cancelled, None, None),
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    fn show(&mut self, mode: Mode, _now: f64) -> Result<(), EngineError> {
+    fn show(&mut self, mode: Mode, now: f64) -> Result<(), EngineError> {
+        // The session started when the chord went down, before it was known to be a talk.
+        let ago = self.armed_at.take().map_or(0.0, |a| now - a);
+        self.begin(mode, ago, None);
         if !self.engine_ok {
             if let Err(e) = self.engine.start() {
                 log(&e.to_string());
@@ -222,6 +279,11 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         // It's a talk now, so a mic that failed while armed is retried and reported for real.
         self.mic_down = false;
         self.level_at = f64::NEG_INFINITY;
+        let mut a = Attrs::new();
+        a.insert("mode".into(), json!(mode));
+        let parent = self.session_step.as_ref();
+        let rid = parent.and_then(|p| p.request_id.clone());
+        self.listen_step = Some(self.tel.start(&mut self.out, "voice.listen", rid.as_deref(), parent, a));
         self.emit(&Event::State { state: SessionState::Listening, mode: Some(mode), cancelled: None });
         if !self.best.is_empty() {
             let text = self.best.clone();
@@ -234,10 +296,46 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         self.mic_down = false;
         self.emit(&Event::error(ErrorCode::Unavailable));
         self.emit(&Event::State { state: SessionState::Idle, mode: None, cancelled: Some(true) });
+        self.end_session(Outcome::Error, Some("unavailable"), None);
+    }
+
+    /// Opens `voice.session` (once per talk), binding the request id.
+    fn begin(&mut self, mode: Mode, ago: f64, request_id: Option<String>) {
+        if self.session_step.is_some() {
+            return;
+        }
+        let rid = request_id.or_else(|| self.pending_rid.take()).unwrap_or_else(new_request_id);
+        let mut a = Attrs::new();
+        a.insert("engine".into(), json!(self.engine.name()));
+        a.insert("mode".into(), json!(mode));
+        a.insert("streaming".into(), json!(self.engine.streaming()));
+        let ago = Duration::from_secs_f64(ago.clamp(0.0, 3600.0));
+        self.session_step = Some(self.tel.start_ago(&mut self.out, "voice.session", Some(&rid), None, a, ago));
+    }
+
+    fn end_session(&mut self, outcome: Outcome, code: Option<&str>, chars: Option<usize>) {
+        if let Some(step) = self.listen_step.take() {
+            self.tel.end(&mut self.out, step, outcome, code, Attrs::new());
+        }
+        let Some(step) = self.session_step.take() else { return };
+        let mut a = Attrs::new();
+        a.insert("audio_ms".into(), json!(self.audio_samples / 16));
+        if let Some(n) = chars {
+            a.insert("chars".into(), json!(n));
+        }
+        self.tel.end(&mut self.out, step, outcome, code, a);
     }
 
     fn finalize(&mut self) {
+        let parent = self.session_step.as_ref();
+        let rid = parent.and_then(|p| p.request_id.clone());
+        let step = parent.map(|p| self.tel.start(&mut self.out, "voice.finalize", rid.as_deref(), Some(p), Attrs::new()));
         let heard = self.engine.finish();
+        if let Some(step) = step {
+            let mut a = Attrs::new();
+            a.insert("chars".into(), json!(heard.trim().chars().count()));
+            self.tel.end(&mut self.out, step, Outcome::Ok, None, a);
+        }
         let heard = heard.trim();
         let text = if heard.is_empty() { self.best.trim().to_string() } else { heard.to_string() };
         if !text.is_empty() {
@@ -247,6 +345,12 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         if text.is_empty() && self.shown {
             let spoke = self.machine.spoke();
             self.emit(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(spoke), message: None, what: None });
+        }
+        let chars = Some(text.chars().count());
+        match (text.is_empty(), self.shown) {
+            (false, _) => self.end_session(Outcome::Ok, None, chars),
+            (true, true) => self.end_session(Outcome::Error, Some("nothing_heard"), chars),
+            (true, false) => self.end_session(Outcome::Cancelled, None, chars),
         }
     }
 
@@ -322,8 +426,26 @@ mod tests {
         Session::new(engine, Emitter::new(Vec::new()))
     }
 
+    fn all_lines(out: &[u8]) -> Vec<Value> {
+        String::from_utf8_lossy(out).lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    /// Protocol events without telemetry.
+    fn plain(out: &[u8]) -> Vec<Value> {
+        all_lines(out).into_iter().filter(|e| e["type"] != "telemetry").collect()
+    }
+
     fn events(s: &Session<FakeEngine, Vec<u8>>) -> Vec<Value> {
-        String::from_utf8_lossy(s.output()).lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+        plain(s.output())
+    }
+
+    fn tele(s: &Session<FakeEngine, Vec<u8>>) -> Vec<Value> {
+        all_lines(s.output()).into_iter().filter(|e| e["type"] == "telemetry").map(|e| e["event"].clone()).collect()
+    }
+
+    /// Telemetry events as `kind:step`.
+    fn tele_kinds(s: &Session<FakeEngine, Vec<u8>>) -> Vec<String> {
+        tele(s).iter().map(|e| format!("{}:{}", e["kind"].as_str().unwrap(), e["step"].as_str().unwrap())).collect()
     }
 
     /// Event types, with the state name for `state` events.
@@ -539,7 +661,7 @@ mod tests {
             t += 0.1;
         }
         let out = String::from_utf8_lossy(s.output()).to_string();
-        let ev: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let ev = plain(s.output());
         assert!(!ev.iter().any(|e| e["type"] == "partial"));
         assert!(ev.contains(&json!({"type":"final","text":"hello there"})), "{out}");
         assert_eq!(ev.last().unwrap(), &json!({"type":"state","state":"idle"}));
@@ -592,7 +714,7 @@ mod tests {
             t += 0.1;
         }
         let out = String::from_utf8_lossy(s.output()).to_string();
-        let ev: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let ev = plain(s.output());
         assert!(ev.contains(&json!({"type":"final","text":"quiet words"})), "{out}");
         assert!(!ev.iter().any(|e| e["cancelled"] == true), "{out}");
     }
@@ -705,5 +827,117 @@ mod tests {
         assert!(s.wants_audio());
         s.set_chord(&CA.map(String::from));
         assert_eq!(events(&s).last().unwrap(), &json!({"type":"state","state":"idle","cancelled":true}));
+    }
+
+    const RID: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn chord_talk_binds_the_pending_id_and_back_dates_the_session() {
+        let mut s = session(FakeEngine::new(&["hello"]));
+        s.set_request_id(RID);
+        let t = drive(&mut s, &mut ca(), &LOUD, 4, 0.0);
+        drive(&mut s, &mut Held(Mods::NONE), &QUIET, 6, t);
+        assert_eq!(
+            tele_kinds(&s),
+            [
+                "start:voice.session",
+                "start:voice.listen",
+                "end:voice.listen",
+                "start:voice.finalize",
+                "end:voice.finalize",
+                "end:voice.session"
+            ]
+        );
+        let ev = tele(&s);
+        assert!(ev.iter().all(|e| e["request_id"] == RID && e["component"] == "voice"));
+        assert_eq!(all_lines(s.output())[0]["type"], "telemetry", "session start precedes `listening` so the host can take its id");
+        let end = ev.last().unwrap();
+        assert_eq!(end["step_id"], ev[0]["step_id"]);
+        assert_eq!(end["outcome"], "ok");
+        assert_eq!(end["attrs"]["chars"], 5);
+        assert!(end["attrs"]["audio_ms"].as_u64().unwrap() >= 400);
+        assert!(end["duration_ms"].as_f64().unwrap() >= 250.0, "back-dated to the chord going down");
+        assert_eq!(ev[0]["attrs"]["mode"], "hold");
+        assert_eq!(ev[0]["attrs"]["engine"], "fake");
+        assert_eq!(ev[1]["parent_step_id"], ev[0]["step_id"]);
+        // The pending id is used up; the next talk mints its own.
+        drive(&mut s, &mut ca(), &LOUD, 4, 5.0);
+        let rid2 = tele(&s).iter().rev().find(|e| e["step"] == "voice.session").unwrap()["request_id"].clone();
+        assert_ne!(rid2, RID);
+        assert_eq!(rid2.as_str().unwrap().len(), 32);
+    }
+
+    #[test]
+    fn shortcut_press_emits_no_telemetry_and_keeps_the_id() {
+        let mut s = session(FakeEngine::new(&["hello"]));
+        s.set_request_id(RID);
+        struct ChordPlusKey;
+        impl KeySource for ChordPlusKey {
+            fn mods(&mut self) -> Mods {
+                Mods::CONTROL.union(Mods::ALT)
+            }
+            fn other_key_down(&mut self) -> bool {
+                true
+            }
+        }
+        s.tick(0.0, &mut ca());
+        s.audio(&LOUD, 0.02);
+        s.tick(0.03, &mut ChordPlusKey);
+        s.tick(0.5, &mut ChordPlusKey);
+        s.tick(1.0, &mut Held(Mods::NONE));
+        assert!(!s.wants_audio());
+        assert!(tele(&s).is_empty(), "{:?}", tele_kinds(&s));
+        assert_eq!(s.pending_rid.as_deref(), Some(RID));
+    }
+
+    #[test]
+    fn listen_command_uses_its_own_id_and_reports_nothing_heard() {
+        let mut s = session(FakeEngine::new(&[]));
+        s.set_request_id("ffffffffffffffffffffffffffffffff");
+        s.listen_with(Some(RID.into()), || 0.0).unwrap();
+        let t = feed(&mut s, &QUIET, 3, 0.0);
+        s.finish(t);
+        s.tick(t + 0.31, &mut NoKeys);
+        let ev = tele(&s);
+        assert!(ev.iter().all(|e| e["request_id"] == RID));
+        let end = ev.last().unwrap();
+        assert_eq!((end["step"].as_str(), end["outcome"].as_str()), (Some("voice.session"), Some("error")));
+        assert_eq!(end["error_code"], "nothing_heard");
+        assert_eq!(s.pending_rid.as_deref(), Some("ffffffffffffffffffffffffffffffff"), "the chord id is kept");
+    }
+
+    #[test]
+    fn failures_and_cancels_end_the_session_with_codes() {
+        let mut s = session(FakeEngine::new(&[]));
+        s.listen(|| 0.0).unwrap();
+        s.mic_denied();
+        let end = tele(&s).last().unwrap().clone();
+        assert_eq!((end["outcome"].as_str(), end["error_code"].as_str()), (Some("error"), Some("permission")));
+
+        let mut s = session(FakeEngine::new(&["hi"]));
+        s.listen(|| 0.0).unwrap();
+        s.cancel();
+        let end = tele(&s).last().unwrap().clone();
+        assert_eq!((end["step"].as_str(), end["outcome"].as_str()), (Some("voice.session"), Some("cancelled")));
+        assert!(end["error_code"].is_null());
+
+        let mut fake = FakeEngine::new(&[]);
+        fake.available = false;
+        let mut s = session(fake);
+        let _ = s.listen(|| 0.0);
+        assert_eq!(tele_kinds(&s), ["start:voice.session", "end:voice.session"]);
+        assert_eq!(tele(&s)[1]["error_code"], "unavailable");
+    }
+
+    #[test]
+    fn telemetry_off_emits_nothing() {
+        let mut s = session(FakeEngine::new(&["hello"]));
+        s.set_telemetry(false);
+        s.listen(|| 0.0).unwrap();
+        let t = feed(&mut s, &LOUD, 2, 0.0);
+        s.finish(t);
+        s.tick(t + 0.31, &mut NoKeys);
+        assert!(tele(&s).is_empty());
+        assert!(events(&s).contains(&json!({"type":"final","text":"hello"})));
     }
 }

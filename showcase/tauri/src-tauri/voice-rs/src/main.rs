@@ -265,9 +265,11 @@ fn run_live(session: &mut Live) -> ExitCode {
     loop {
         match rx.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
             Ok(Msg::Line(line)) => match parse_command(&line) {
-                Some(Command::Listen) => {
-                    let _ = session.listen(now);
+                Some(Command::Listen { request_id }) => {
+                    let _ = session.listen_with(request_id, now);
                 }
+                Some(Command::Request { request_id }) => session.set_request_id(&request_id),
+                Some(Command::Telemetry { on }) => session.set_telemetry(on),
                 Some(Command::Cancel) => session.cancel(),
                 Some(Command::Chord { mods }) => session.set_chord(&mods),
                 Some(Command::Mute { on }) => log(&format!("mute while talking: {on}")),

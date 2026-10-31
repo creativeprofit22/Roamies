@@ -10,12 +10,16 @@ agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, macOS
 without a Windows PC: `--wav <wav>` runs one clip, `--bench <dir>` scores wav+txt pairs (models come from each
 crate's `fetch-*.sh`).
 
+Telemetry (one request id across host, voice helper, sidecar and webview; written only by the sidecar,
+local only): see `docs/telemetry.md`. Each layer has its own `telemetry` module with the same start/end/record API.
+
 ## Commands
 
 ```sh
 cd showcase/tauri/sidecar && npm ci     # install sidecar deps
 npm test                                # sidecar tests (reply stream, storage, pointing, safety, voice model download)
 npm run build                           # bundle the sidecar into dist/
+npm run bench:telemetry                 # telemetry overhead (p95, memory)
 cd .. && ./build.sh dev                 # web files + sidecar + debug `cargo build`
 ./build.sh                              # release bundle for this OS (signs on macOS if a Developer ID is in the keychain)
 ```

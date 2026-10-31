@@ -19,12 +19,13 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import {
   clearFacts, clearFinished, fitContext, flushWrites, forgetFact, listItems, listFacts, nextDue, pickFacts, touchFacts, forDisk, forProvider, isStale, loadLatestSession, newSession, openCommitments,
-  pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson,
+  pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson, DIR,
 } from './store.mjs';
 import { EMOTES, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, talkLabel, totalBytes } from './voice-model.mjs';
 import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor } from './voice-engines.mjs';
 import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
+import { createTelemetry, newRequestId } from './telemetry.mjs';
 
 console.log = console.info = (...a) => console.error(...a);
 // gg-ai's StreamResult.response rejects unobserved when a stream fails; prompt() already reports it, so don't die.
@@ -56,7 +57,7 @@ const DEFAULT_KEYS = process.platform === 'win32'
 const DEFAULTS = {
   provider: null, model: null, sound: true, allowActions: false, voice: true,
   onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, setupVersion: 0, voiceMode: 'agent',
-  voiceEngine: DEFAULT_ENGINE,
+  voiceEngine: DEFAULT_ENGINE, telemetry: true, telemetryText: false,
 };
 // Windows voice runs a speech engine on the PC (x64 build only), one helper per engine in voice-engines.json.
 // Each engine's model is downloaded once: from the setup guide, when it's first chosen, or when voice is used.
@@ -76,6 +77,19 @@ if (config.voiceMode !== 'dictation') config.voiceMode = 'agent';
 if (!engine(config.voiceEngine)) config.voiceEngine = DEFAULT_ENGINE;
 const dictating = () => config.voiceMode === 'dictation';
 const saveConfig = () => writeJson(CONFIG_PATH, config);
+
+// Local telemetry (docs/telemetry.md): this process writes every layer's events to DIR/telemetry.
+const TELEMETRY_DIR = path.join(DIR, 'telemetry');
+const tel = createTelemetry({ dir: TELEMETRY_DIR, version: VERSION, includeText: config.telemetryText === true, enabled: config.telemetry !== false });
+const telemetryConfig = () => send({ type: 'telemetry_config', on: tel.enabled });
+const rid = (v) => (typeof v === 'string' && /^[0-9a-f]{32}$/.test(v) ? v : null);
+const errorCode = (err, aborted) => {
+  if (aborted) return 'aborted';
+  const m = String(err?.message ?? err);
+  if (/not logged in|NotLoggedIn|401|unauthori/i.test(m)) return 'auth';
+  if (/usage|quota|rate.?limit|429/i.test(m)) return 'rate_limited';
+  return 'failed';
+};
 
 // ---------- shortcuts ----------
 const MOD_ORDER = ['control', 'option', 'shift', 'command'];
@@ -165,7 +179,7 @@ function anim(name, args) {
 // (tools → system → messages), so putting LIVE in the system prompt would re-bill the whole conversation
 // every time memory changed; at the end, only the new message is fresh. The live block is never saved.
 const stablePrompt = () => `You are Sidekick, a tiny glowing pixel creature who lives on ${userName}'s screen as a desktop companion. You are the main creature of Roamies, a desktop app by Ken Kai (Mac and Windows) that puts little creatures on your screen; you are Roamies ${VERSION}.
-About Roamies, for when ${userName} asks about you or the app: ${MAC ? 'it lives in the menu bar at the top of the screen (no Dock icon)' : 'it lives in the system tray at the bottom right of the taskbar (no taskbar button); Windows may tuck the icon behind the ^ arrow next to the clock, and dragging it onto the taskbar keeps it in view'}. ${MAC ? 'Menu bar' : 'Tray'} menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow File Edits & Commands${VOICE_OK ? ', Voice, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies. Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
+About Roamies, for when ${userName} asks about you or the app: ${MAC ? 'it lives in the menu bar at the top of the screen (no Dock icon)' : 'it lives in the system tray at the bottom right of the taskbar (no taskbar button); Windows may tuck the icon behind the ^ arrow next to the clock, and dragging it onto the taskbar keeps it in view'}. ${MAC ? 'Menu bar' : 'Tray'} menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow File Edits & Commands, Telemetry (a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder)${VOICE_OK ? ', Voice, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies. Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
 You talk through small pixel speech bubbles, so keep replies short: one to three sentences unless asked for detail. Plain text only: no markdown, no asterisks, and never narrate actions like *waves*. An emoji now and then is fine; the bubbles show them. Your body does the acting: to act out a feeling, start your reply with one tag, which is never shown: ${EMOTES.map((e) => `[${e}]`).join(' ')}. hype celebrates a win, upset is for when they're dodging work, remind nudges about something they said they'd do, motivate is a push to start, wave is hello or goodbye. Most replies need no tag.
 After using a tool, never repeat what you already said; only add what's new.
 Several things in one request ("do x, then y, then z", numbered steps): do every one, in the order given. Steps that don't depend on each other can go in the same turn as parallel tool calls. If a step is blocked, refused or fails, still do the ones after it that don't depend on it, then say which step didn't happen and why. Before your final reply, check each step was really done (from the tool results) and never say a step is done when it isn't.
@@ -285,9 +299,12 @@ function makeAgent() {
 let credsBaseUrl;
 
 // One run at a time: a new request waits for (or interrupts) the current one.
-function enqueue(text, { interrupt = false, image = null } = {}) {
+function enqueue(text, { interrupt = false, image = null, requestId = null, source = 'typed' } = {}) {
   if (interrupt && busy) interruptQuietly();
-  running = running.then(() => prompt(text, image)).catch((e) => console.error('prompt', e));
+  const id = rid(requestId) ?? newRequestId();
+  const req = tel.start('agent.request', { requestId: id, attrs: { source, image: !!image, ...(tel.includeText ? { text } : {}) } });
+  const t = { rid: id, req, wait: tel.start('agent.queue_wait', { requestId: id, parent: req.id }) };
+  running = running.then(() => prompt(text, image, t)).catch((e) => console.error('prompt', e));
   return running;
 }
 function interruptQuietly() { if (busy) { quiet = true; controller?.abort(); } }
@@ -324,20 +341,22 @@ async function pruneLogs() {
 }
 const consoleError = console.error.bind(console);
 console.error = (...a) => { consoleError(...a); if (!String(a[0]).startsWith('[')) logLine('error', a.map((x) => (x instanceof Error ? x.stack : String(x))).join(' ').slice(0, 2000)); };
-// One line per request in ~/.gg/sidekick/usage.jsonl: token counts and timings only, never what was said.
-const USAGE_FILE = path.join(process.env.ROAMIES_DATA_DIR ? path.join(process.env.ROAMIES_DATA_DIR, 'sidekick') : path.join(HOME, '.gg', 'sidekick'), 'usage.jsonl');
+// Token counts per request go to telemetry (agent.request); this keeps the menu's "Today" line.
 const usageToday = { day: '', requests: 0, tokens: 0 };
 function logUsage(rec) {
   const day = new Date().toDateString();
   if (usageToday.day !== day) Object.assign(usageToday, { day, requests: 0, tokens: 0 });
   usageToday.requests++; usageToday.tokens += rec.in + rec.cacheWrite + rec.out;
-  fs.appendFile(USAGE_FILE, JSON.stringify(rec) + '\n', { mode: 0o600 }).catch(() => {});
   menu();
 }
-async function prompt(text, image = null) {
+async function prompt(text, image = null, t = {}) {
+  tel.end(t.wait);
   await resumed;
   await refreshAuth();
-  if (!ensureModel()) return say(`Sign in to an AI provider from the ${TRAY} menu first, then ask me again!`, 'concerned');
+  if (!ensureModel()) {
+    tel.end(t.req, { outcome: 'error', errorCode: 'not_signed_in' });
+    return say(`Sign in to an AI provider from the ${TRAY} menu first, then ask me again!`, 'concerned');
+  }
   if (isStale(session)) {
     // Quiet for two hours, or a new day: start fresh. The old one stays on disk.
     session = newSession(config.provider, config.model); liveBlocks.clear();
@@ -353,50 +372,76 @@ async function prompt(text, image = null) {
   busy = true; quiet = false; menu();
   controller = new AbortController();
   agent.setSignal(controller.signal);
-  ui({ kind: 'agent', e: { type: 'start' } });
+  ui({ kind: 'agent', e: { type: 'start', request_id: t.rid } });
+  const toolSteps = new Map(); // tool call id → telemetry step
+  let use = null;
+  let turnStep = tel.start('agent.turn', { requestId: t.rid, parent: t.req }), firstText = true, replyText = '';
   try {
     const reply = new ReplyStream((ev) => ui({ kind: 'agent', e: ev }));
     const turn = nextTurn();
     logLine('request', { turn, model: config.model, chars: text.length, image: !!image, session: session?.id });
-    const use = { t: Date.now(), model: config.model, calls: 0, tools: 0, in: 0, cacheRead: 0, cacheWrite: 0, out: 0 };
+    use = { t: Date.now(), model: config.model, calls: 0, tools: 0, in: 0, cacheRead: 0, cacheWrite: 0, out: 0 };
     const stamped = `[${stampNow()}] ${text}`;
     // An area snap rides along as an image in the same message.
     const content = image ? [{ type: 'text', text: `${stamped}\n(Attached: the area of the screen I selected.)` }, image] : stamped;
     for await (const e of agent.prompt(content)) {
-      if (e.type === 'text_delta') reply.push(e.text);
-      else if (e.type === 'turn_end') {
+      if (e.type === 'text_delta') {
+        reply.push(e.text);
+        if (firstText) { firstText = false; tel.record('agent.first_text', { requestId: t.rid, parent: t.req }); }
+        if (tel.includeText && replyText.length < 4000) replyText += e.text;
+      } else if (e.type === 'turn_end') {
         reply.endTurn();
         // Cache health, for the log: how much of each call was read from the prompt cache.
         const u = e.usage ?? {};
         use.calls++; use.in += u.inputTokens ?? 0; use.cacheRead += u.cacheRead ?? 0; use.cacheWrite += u.cacheWrite ?? 0; use.out += u.outputTokens ?? 0;
+        tel.end(turnStep, { attrs: { in: u.inputTokens ?? 0, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0, out: u.outputTokens ?? 0 } });
+        turnStep = null;
         if (process.env.ROAMIES_USAGE) console.error(`[usage] in=${u.inputTokens ?? '?'} cacheRead=${u.cacheRead ?? 0} cacheWrite=${u.cacheWrite ?? 0} out=${u.outputTokens ?? '?'}`);
       }
       else if (e.type === 'thinking_delta') ui({ kind: 'agent', e: { type: 'thinking', text: e.text } });
       else if (e.type === 'tool_call_start') {
         use.tools++;
         logLine('tool', { turn, id: e.toolCallId, name: e.name, args: redactArgs(e.name, e.args ?? {}) });
-        if (process.env.ROAMIES_USAGE) { toolT.set(e.toolCallId, Date.now()); console.error(`[tool] ${e.name} ${JSON.stringify(e.args ?? {}).slice(0, 160)}`); }
-        ui({ kind: 'agent', e: { type: 'tool', id: e.toolCallId, anim: anim(e.name, e.args ?? {}) } });
+        // Always timed for telemetry; ROAMIES_USAGE only adds the console lines.
+        toolT.set(e.toolCallId, Date.now());
+        if (process.env.ROAMIES_USAGE) console.error(`[tool] ${e.name} ${JSON.stringify(e.args ?? {}).slice(0, 160)}`);
+        const a = anim(e.name, e.args ?? {});
+        toolSteps.set(e.toolCallId, tel.start('agent.tool', { requestId: t.rid, parent: t.req, attrs: { name: String(e.name), ...(a ? { anim: a.tool, variant: a.variant } : {}) } }));
+        ui({ kind: 'agent', e: { type: 'tool', id: e.toolCallId, anim: a } });
       } else if (e.type === 'tool_call_end') {
         logLine(e.isError ? 'tool_error' : 'tool_done', { turn, id: e.toolCallId, ms: e.durationMs, result: String(e.result ?? '').replace(/\s+/g, ' ').slice(0, e.isError ? 1000 : 400) });
         if (process.env.ROAMIES_USAGE) console.error(`[tool_end] ${e.isError ? 'ERROR' : 'ok'} ${Date.now() - (toolT.get(e.toolCallId) ?? Date.now())}ms ${String(typeof e.result === 'string' ? e.result : JSON.stringify(e.result ?? '')).replace(/\s+/g, ' ').slice(0, 160)}`);
+        toolT.delete(e.toolCallId);
+        tel.end(toolSteps.get(e.toolCallId), e.isError ? { outcome: 'error', errorCode: 'tool_error' } : {});
+        toolSteps.delete(e.toolCallId);
+        // The next model call starts once the last tool has answered.
+        if (!toolSteps.size && !turnStep) turnStep = tel.start('agent.turn', { requestId: t.rid, parent: t.req });
         ui({ kind: 'agent', e: { type: 'tool_end', id: e.toolCallId, isError: e.isError } });
       }
-      else if (e.type === 'server_tool_call') ui({ kind: 'agent', e: { type: 'tool', id: e.id, anim: anim('web_search', {}) } });
-      else if (e.type === 'server_tool_result') ui({ kind: 'agent', e: { type: 'tool_end', id: e.toolUseId ?? e.id, isError: false } });
+      else if (e.type === 'server_tool_call') {
+        tel.record('agent.tool', { requestId: t.rid, parent: t.req, outcome: 'ok', attrs: { name: 'web_search', server: true } });
+        ui({ kind: 'agent', e: { type: 'tool', id: e.id, anim: anim('web_search', {}) } });
+      } else if (e.type === 'server_tool_result') ui({ kind: 'agent', e: { type: 'tool_end', id: e.toolUseId ?? e.id, isError: false } });
       else if (e.type === 'error') throw e.error;
     }
     reply.finish();
-    ui({ kind: 'agent', e: { type: 'done' } });
+    ui({ kind: 'agent', e: { type: 'done', request_id: t.rid } });
     logUsage({ ...use, ms: Date.now() - use.t });
+    tel.end(turnStep, { outcome: 'cancelled' });
+    tel.end(t.req, { attrs: { model: String(config.model), provider: String(config.provider), calls: use.calls, tools: use.tools, in: use.in, cacheRead: use.cacheRead, cacheWrite: use.cacheWrite, out: use.out, ...(replyText ? { reply: replyText } : {}) } });
     logLine('request_done', { turn, ms: Date.now() - use.t, calls: use.calls, tools: use.tools, in: use.in, cacheRead: use.cacheRead, cacheWrite: use.cacheWrite, out: use.out });
   } catch (err) {
-    if (controller.signal.aborted && quiet) ui({ kind: 'agent', e: { type: 'done' } });
+    const aborted = controller.signal.aborted;
+    if (aborted && quiet) ui({ kind: 'agent', e: { type: 'done', request_id: t.rid } });
     else {
-      const msg = controller.signal.aborted ? 'Okay, stopping.' : friendly(err);
+      const msg = aborted ? 'Okay, stopping.' : friendly(err);
       console.error('prompt failed', err);
-      ui({ kind: 'agent', e: { type: 'error', message: msg } });
+      ui({ kind: 'agent', e: { type: 'error', request_id: t.rid, message: msg } });
     }
+    const end = { outcome: aborted ? 'cancelled' : 'error', errorCode: errorCode(err, aborted) };
+    for (const h of toolSteps.values()) tel.end(h, end);
+    tel.end(turnStep, end);
+    tel.end(t.req, { ...end, attrs: { model: String(config.model), provider: String(config.provider), calls: use?.calls ?? 0, tools: use?.tools ?? 0 } });
   } finally {
     busy = false;
     syncSession();
@@ -413,16 +458,19 @@ const friendly = (err) => {
 // ---------- asking the user (input bubble in the overlay) ----------
 let askSeq = 0;
 const pending = new Map();
-function ask(opts, signal) {
+// askWithId also returns the request id the host stamped on the answer (typed requests).
+function askWithId(opts, signal) {
   const id = `a${++askSeq}`;
   const to = onboarding ? ob : ui;
   to({ kind: 'ask', id, ...opts });
-  return new Promise((resolve) => {
+  return new Promise((done) => {
+    const resolve = (text, requestId = null) => done({ text, requestId: rid(requestId) });
     pending.set(id, resolve);
     // Another route finished first (e.g. the OAuth callback server): close the input bubble.
     signal?.addEventListener('abort', () => { pending.delete(id); to({ kind: 'cancel_ask', id }); resolve(null); }, { once: true });
   });
 }
+function ask(opts, signal) { return askWithId(opts, signal).then((r) => r.text); }
 
 // ---------- logins ----------
 let loggingIn = null;
@@ -623,6 +671,12 @@ function menu() {
         { id: 'sound', label: 'Sound Effects', checked: config.sound },
         ...(login.supported ? [{ id: 'login', label: 'Open at Login', checked: login.on }] : []),
         { id: 'actions', label: 'Allow File Edits & Commands', checked: config.allowActions },
+        { label: 'Telemetry', items: [
+          { id: 'telemetry', label: 'Record Telemetry (stays on this computer)', checked: tel.enabled },
+          { id: 'telemetrytext', label: 'Include What Was Said', checked: tel.includeText, enabled: tel.enabled },
+          { sep: true },
+          { id: 'telemetryfolder', label: 'Open Telemetry Folder' },
+        ] },
       ],
     },
     {
@@ -689,15 +743,18 @@ async function getVoiceModel(id = activeEngine().id) {
   if (!NEEDS_MODEL || !voiceModel || voiceModel.status === 'ready' || voiceModel.status === 'downloading') return;
   Object.assign(voiceModel, { status: 'downloading', error: null });
   logLine('voice_model', { phase: 'start', engine: id, dir: voiceModel.dir });
+  const step = tel.start('voice_model.download', { attrs: { engine: id } });
   modelUpdate(true);
   try {
     await downloadModel(voiceModel.dir, { manifest: voiceModel.manifest, onProgress: ({ done, total }) => { voiceModel.done = done; voiceModel.total = total; modelUpdate(false); } });
     voiceModel.status = 'ready';
     logLine('voice_model', { phase: 'ready', engine: id });
+    tel.end(step, { attrs: { bytes: voiceModel.total } });
     voiceConfig(); // switches over if this is now the engine to use
     if (!onboarding && config.voice && activeEngine().id === id) say(`My voice is ready (${engineLabel(id)}). Hold ${talkWords().replace('+', ' and ')} to ${dictating() ? 'dictate' : 'talk to me'}.`, 'happy');
   } catch (e) {
     voiceModel.status = 'error';
+    tel.end(step, { outcome: 'error', errorCode: ['disk', 'checksum'].includes(e.code) ? e.code : 'download_failed' });
     voiceModel.error = e.code === 'disk' ? e.message : e.code === 'checksum' ? 'The download was damaged. Try again.' : "Couldn't download it. Check your internet connection and try again.";
     logLine('voice_model', { phase: 'error', code: e.code, message: String(e.message ?? e).slice(0, 200) });
     if (!onboarding) say(`I couldn't download my voice. ${voiceModel.error}`, 'concerned');
@@ -715,7 +772,10 @@ const PRIVACY = { microphone: 'Privacy_Microphone', speech: 'Privacy_SpeechRecog
 function onVoice(m) {
   // Dictating must not stop a task Sidekick is working on.
   if (m.type === 'voice_state' && m.state === 'listening') { if (!dictating()) interruptQuietly(); }
-  else if (m.type === 'voice' && m.text?.trim()) enqueue(m.text.trim(), { interrupt: true, image: takeSnap() });
+  else if (m.type === 'voice' && m.text?.trim()) {
+    const image = takeSnap();
+    enqueue(m.text.trim(), { interrupt: true, image, requestId: m.request_id, source: image ? 'snap' : 'voice' });
+  }
   else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
   else if (m.type === 'voice_error') {
     if (m.code === 'nothing_heard' && snap) { snap.waitingVoice = false; return; }
@@ -743,8 +803,10 @@ function onDictation(m) {
     const text = String(m.text ?? '');
     if (!text.trim()) return;
     const v = checkDictationTarget(m.app, text);
-    if (v.level === BLOCK) { send({ type: 'dictation_copy', text }); say(`${v.reason} It's on your clipboard.`, 'concerned'); }
-    else send({ type: 'dictation_paste', text: v.text });
+    const requestId = rid(m.request_id);
+    tel.record('dictation.check', { requestId, attrs: { level: v.level, chars: text.length, ...(tel.includeText ? { text } : {}) } });
+    if (v.level === BLOCK) { send({ type: 'dictation_copy', text, request_id: requestId }); say(`${v.reason} It's on your clipboard.`, 'concerned'); }
+    else send({ type: 'dictation_paste', text: v.text, request_id: requestId });
   } else if (m.type === 'dictation_result' && !m.ok) {
     say(`Couldn't paste (${String(m.error ?? 'unknown error').slice(0, 80)}). It's on your clipboard, press ${PASTE_KEYS}.`, 'concerned');
   }
@@ -755,8 +817,8 @@ const overlays = () => send({ type: 'overlays', ids: ['sidekick'] });
 async function onMenu(id) {
   if (id === 'show') ui({ kind: 'summon', show: true });
   else if (id === 'ask') {
-    const text = await ask({ placeholder: 'Ask me anything…' });
-    if (text?.trim()) enqueue(text.trim());
+    const { text, requestId } = await askWithId({ placeholder: 'Ask me anything…' });
+    if (text?.trim()) enqueue(text.trim(), { requestId, source: 'typed' });
   } else if (id === 'stop') controller?.abort();
   else if (id === 'new') {
     session = newSession(config.provider, config.model); liveBlocks.clear(); agent = null; pruneSessions(); menu();
@@ -787,6 +849,13 @@ async function onMenu(id) {
   else if (id === 'login') setLogin(!login.on);
   else if (id === 'licenses') { if (existsSync(LICENSES)) openUrl(LICENSES); }
   else if (id === 'logs') fs.mkdir(LOG_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(LOG_DIR)).catch(() => {});
+  else if (id === 'telemetryfolder') fs.mkdir(TELEMETRY_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(TELEMETRY_DIR)).catch(() => {});
+  else if (id === 'telemetry') {
+    config.telemetry = !tel.enabled; saveConfig(); tel.setEnabled(config.telemetry); telemetryConfig(); menu();
+  } else if (id === 'telemetrytext') {
+    config.telemetryText = !tel.includeText; saveConfig(); tel.setIncludeText(config.telemetryText); menu();
+    if (config.telemetryText) say("Okay, the telemetry log on this computer will include what you say and what I answer. Nothing is sent anywhere.", 'happy');
+  }
   else if (id === 'setup') send({ type: 'onboarding' });
   else if (id === 'snap') areaSnap();
   else if (id === 'list') showList({ seconds: 20 });
@@ -831,11 +900,11 @@ async function areaSnap() {
       if (!snap) return; // sent with what was said
       snap.waitingVoice = false;
     }
-    const q = await ask({ placeholder: 'What about this?' });
+    const { text: q, requestId } = await askWithId({ placeholder: 'What about this?' });
     if (!snap) return; // already sent by voice
     if (q === null) { snap = null; return; } // Escape: drop it
     const s = snap; snap = null;
-    enqueue(q.trim() || 'What is this? Explain it simply.', { image: s.image });
+    enqueue(q.trim() || 'What is this? Explain it simply.', { image: s.image, requestId, source: 'snap' });
   } catch (e) {
     say(String(e?.message ?? e).slice(0, 140), 'concerned');
   } finally { snapping = false; }
@@ -922,7 +991,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   let m;
   try { m = JSON.parse(line); } catch { return; }
   if (m.type === 'menu') onMenu(m.id).catch((e) => console.error('menu', e));
-  else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); }
+  else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null, m.request_id); pending.delete(m.id); }
+  else if (m.type === 'telemetry') tel.ingest(m.events);
   else if (m.type === 'ui_ready') {
     ui({ kind: 'sound', on: config.sound });
     if (config.onboarded) ui({ kind: 'greet' });
@@ -937,7 +1007,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.type === 'login_item_status') onLoginStatus(m);
 }).on('close', () => {
   // The app quit (or is restarting for an update): let the last saves land first, but never hang.
-  Promise.race([flushWrites(), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
+  Promise.race([Promise.all([flushWrites(), tel.close()]), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
 });
 
 await refreshAuth();
@@ -950,7 +1020,7 @@ async function remindTick() {
   menu(); showList({ flash: due[0].id, seconds: 6 });
   const list = due.map((c) => `- ${c.id}: ${c.text}${c.due ? ` (was due ${fmtWhen(c.due)})` : ''}${c.kind === 'reminder' ? ' [plain reminder: already cleared, nothing to mark done]' : ''}`).join('\n');
   if (signedIn.size && [...signedIn.values()].some(Boolean)) {
-    enqueue(`(System, not ${userName}: these commitments are due now. Nudge ${userName} about them in one or two sentences, in character. Start with the [remind] tag, or [upset] if it's well overdue.)\n${list}`);
+    enqueue(`(System, not ${userName}: these commitments are due now. Nudge ${userName} about them in one or two sentences, in character. Start with the [remind] tag, or [upset] if it's well overdue.)\n${list}`, { source: 'reminder' });
   } else {
     ui({ kind: 'agent', e: { type: 'emote', action: 'remind' } });
     say(`Reminder: ${due[0].text}`, 'concerned');
@@ -985,6 +1055,7 @@ midnightClean();
 setTimeout(() => checkUpdates(), 20_000);
 setInterval(() => checkUpdates(), 6 * 3600_000);
 voiceConfig();
+telemetryConfig();
 // First run (or setup never finished): open the guide.
 // v2 added the "Control apps" (Accessibility) permission: people who finished setup before that
 // get the guide once more, on the permissions step.

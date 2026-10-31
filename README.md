@@ -103,6 +103,7 @@ npm install @kenkaiiii/gg-ai @kenkaiiii/gg-agent
 | `showcase/tauri/sidecar/` | Sidekick's brain: the gg-framework agent, its tools, memory and tests |
 | `showcase/roamies/` | The creatures: physics, rendering, expressions, bubbles, tool animations, sounds |
 | `showcase/onboarding/` | The setup guide |
+| `docs/telemetry.md` | The local-only timing log: event schema, request ids, privacy and where the files live |
 
 ## License
 

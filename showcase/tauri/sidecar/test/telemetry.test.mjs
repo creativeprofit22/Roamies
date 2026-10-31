@@ -170,6 +170,17 @@ assert.equal(dayOf(T0), '2026-10-30');
   assert.deepEqual(fs.readdirSync(dir).sort(), ['2026-10-17.jsonl', '2026-10-30.jsonl', 'notes.txt']);
 }
 
+// retention also runs when telemetry is off or nothing was recorded
+for (const enabled of [false, true]) {
+  const dir = freshDir();
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of ['2026-09-30.jsonl', '2026-10-29.jsonl']) fs.writeFileSync(path.join(dir, f), '');
+  const t = createTelemetry({ dir, now: () => T0, timer: false, enabled });
+  await t.flush();
+  assert.deepEqual(fs.readdirSync(dir), ['2026-10-29.jsonl'], `enabled: ${enabled}`);
+  await t.close();
+}
+
 // size cap: stop writing that day, leave one telemetry.capped note
 {
   const dir = freshDir();

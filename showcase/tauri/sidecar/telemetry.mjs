@@ -140,12 +140,15 @@ export function createTelemetry({
     }
     for (const d of [...capped]) if (d < cutoff) capped.delete(d);
   }
+  // Retention holds even when off or idle; no ensureDir so an off switch never creates the folder.
+  async function sweep() { try { await prune(dayOf(now())); } catch {} }
 
   async function write() {
     for (const [reason, count] of Object.entries(lost)) {
       if (count) { lost[reason] = 0; queue.push({ ...base('telemetry.dropped', 'event', { attrs: { count, reason } }) }); }
     }
     const batch = queue; queue = [];
+    await sweep();
     if (!batch.length) return;
     const groups = new Map();
     for (const e of batch) {
@@ -155,7 +158,6 @@ export function createTelemetry({
       if (!groups.has(day)) groups.set(day, []);
       groups.get(day).push(JSON.stringify(c) + '\n');
     }
-    try { await ensureDir(); await prune(dayOf(now())); } catch {}
     for (const [day, lines] of groups) {
       if (capped.has(day)) { stats.capped += lines.length; continue; }
       let size, out = '', n = 0;
@@ -185,9 +187,10 @@ export function createTelemetry({
   }
   /** Writes what's queued; resolves when done. Never rejects. */
   function flush() {
-    chain = chain.then(() => (on ? write() : (queue = []))).catch(() => { stats.failures++; });
+    chain = chain.then(() => (on ? write() : ((queue = []), sweep()))).catch(() => { stats.failures++; });
     return chain;
   }
+  chain = chain.then(sweep);
   const iv = timer ? setInterval(flush, cfg.flushMs) : null;
   iv?.unref?.();
 

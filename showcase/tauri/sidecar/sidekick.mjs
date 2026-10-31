@@ -17,6 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { performance } from 'node:perf_hooks';
 import {
   clearFacts, clearFinished, fitContext, flushWrites, forgetFact, listItems, listFacts, nextDue, pickFacts, touchFacts, forDisk, forProvider, isStale, loadLatestSession, newSession, openCommitments,
   pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson, DIR,
@@ -35,7 +37,11 @@ const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 let onboarding = false;
 const ui = (msg) => send({ type: 'ui', msg });
 const ob = (msg) => send({ type: 'onboard', msg });
-const say = (text, mood) => (onboarding ? ob({ kind: 'say', text, mood }) : ui({ kind: 'say', text, mood }));
+// err ({ code, requestId }) marks an error bubble: it is also recorded as ui.error_shown.
+const say = (text, mood, err = null) => {
+  if (err) tel.record('ui.error_shown', { requestId: rid(err.requestId), outcome: 'error', errorCode: err.code });
+  return onboarding ? ob({ kind: 'say', text, mood }) : ui({ kind: 'say', text, mood });
+};
 
 const VERSION = process.env.ROAMIES_VERSION || '0.0.0';
 // Bundled third-party notices (speech models, runtimes); resources/licenses next to resources/sidecar. Absent in dev.
@@ -80,11 +86,34 @@ const saveConfig = () => writeJson(CONFIG_PATH, config);
 
 // Local telemetry (docs/telemetry.md): this process writes every layer's events to DIR/telemetry.
 const TELEMETRY_DIR = path.join(DIR, 'telemetry');
-const tel = createTelemetry({ dir: TELEMETRY_DIR, version: VERSION, includeText: config.telemetryText === true, enabled: config.telemetry !== false });
+// ROAMIES_TELEMETRY=off forces it off whatever the config or menu says (tests compare behaviour with it on and off).
+const TEL_OFF = process.env.ROAMIES_TELEMETRY === 'off';
+const tel = createTelemetry({ dir: TELEMETRY_DIR, version: VERSION, includeText: config.telemetryText === true, enabled: config.telemetry !== false && !TEL_OFF });
 const telemetryConfig = () => send({ type: 'telemetry_config', on: tel.enabled });
 const rid = (v) => (typeof v === 'string' && /^[0-9a-f]{32}$/.test(v) ? v : null);
+// Host → sidecar hand-off, back-dated to the host's send time (epoch ms). Skipped if missing, in the future or stale.
+function handoff(requestId, sentMs, parent = null) {
+  const now = Date.now();
+  if (typeof sentMs !== 'number' || !Number.isFinite(sentMs) || sentMs > now + 1000 || now - sentMs > 60_000) return;
+  tel.end(tel.start('agent.handoff', { requestId, parent, at: Math.min(sentMs, now) }));
+}
+// The last failed or cancelled request (or voice error): a new one within 10 s is tagged as its retry.
+const RETRY_MS = 10_000;
+let lastFail = null;
+const failed = (requestId) => { lastFail = { rid: rid(requestId), at: Date.now() }; };
+function retryAttrs() {
+  const f = lastFail;
+  lastFail = null;
+  if (!f || Date.now() - f.at > RETRY_MS) return {};
+  return { retry: true, retry_after_ms: Date.now() - f.at, ...(f.rid ? { retry_of: f.rid } : {}) };
+}
+// When the user was last active (request, voice, dictation): memory is sampled only then.
+let lastActive = 0;
+const active = () => { lastActive = Date.now(); };
+// Why the running request was aborted: user_stop (Stop menu) or interrupted (a new talk). Reset per request.
+let abortReason = null;
 const errorCode = (err, aborted) => {
-  if (aborted) return 'aborted';
+  if (aborted) return abortReason ?? 'aborted';
   const m = String(err?.message ?? err);
   if (/not logged in|NotLoggedIn|401|unauthori/i.test(m)) return 'auth';
   if (/usage|quota|rate.?limit|429/i.test(m)) return 'rate_limited';
@@ -132,13 +161,31 @@ const userName = (() => {
 })();
 
 // ---------- tools ----------
-const { tools, hands, pointWaits, nextTurn } = createTools({
-  allowActions: () => config.allowActions, ui, ask, openUrl, userName,
+// Telemetry: tool steps by call id (module-wide, so safety checks can find their parent through toolCtx).
+const toolSteps = new Map();
+const toolCtx = new AsyncLocalStorage();
+let current = null; // the running request's telemetry handles
+function onCheck({ check, level, ms }) {
+  const id = toolCtx.getStore()?.toolCallId, parent = toolSteps.get(id);
+  const h = tel.start('agent.safety', { requestId: parent?.requestId ?? current?.rid ?? null, parent: parent ?? current?.req ?? null, at: Date.now() - ms, attrs: { check, ...(parent || !id ? {} : { tool_call_id: String(id) }) } });
+  tel.end(h, { outcome: level === BLOCK ? 'error' : 'ok', errorCode: level === BLOCK ? 'safety_blocked' : null, attrs: { check, level } });
+}
+const { tools: rawTools, hands, pointWaits, nextTurn } = createTools({
+  allowActions: () => config.allowActions, ui, ask, openUrl, userName, onCheck,
   commitmentsText: () => [commitmentsText(), doneTodayText() && `Done today:\n${doneTodayText()}`].filter(Boolean).join('\n'),
   onCommitments: (c) => { menu(); scheduleReminders(); showList({ flash: c?.id, seconds: 6 }); },
   showList: () => showList({ seconds: 20 }),
   fmtWhen: (ms) => fmtWhen(ms),
 });
+// The agent may run a tool before its tool_call_start reaches the prompt loop: whichever comes first opens the step.
+function toolStep(id, name, a) {
+  if (!toolSteps.has(id)) toolSteps.set(id, tel.start('agent.tool', { requestId: current?.rid ?? null, parent: current?.req ?? null, attrs: { name: String(name), ...(a ? { anim: a.tool, variant: a.variant } : {}) } }));
+  return toolSteps.get(id);
+}
+const tools = rawTools.map((t) => ({ ...t, execute: (args, ctx) => {
+  if (ctx?.toolCallId && current) toolStep(ctx.toolCallId, t.name, anim(t.name, args ?? {}));
+  return toolCtx.run({ toolCallId: ctx?.toolCallId }, () => t.execute(args, ctx));
+} }));
 
 // Which animation each tool call plays, and what its label shows.
 const base = (p) => path.basename(String(p ?? ''));
@@ -299,15 +346,17 @@ function makeAgent() {
 let credsBaseUrl;
 
 // One run at a time: a new request waits for (or interrupts) the current one.
-function enqueue(text, { interrupt = false, image = null, requestId = null, source = 'typed' } = {}) {
+function enqueue(text, { interrupt = false, image = null, requestId = null, source = 'typed', sentMs = null } = {}) {
   if (interrupt && busy) interruptQuietly();
+  active();
   const id = rid(requestId) ?? newRequestId();
-  const req = tel.start('agent.request', { requestId: id, attrs: { source, image: !!image, ...(tel.includeText ? { text } : {}) } });
+  const req = tel.start('agent.request', { requestId: id, attrs: { source, image: !!image, ...retryAttrs(), ...(tel.includeText ? { text } : {}) } });
+  handoff(id, sentMs, req);
   const t = { rid: id, req, wait: tel.start('agent.queue_wait', { requestId: id, parent: req.id }) };
   running = running.then(() => prompt(text, image, t)).catch((e) => console.error('prompt', e));
   return running;
 }
-function interruptQuietly() { if (busy) { quiet = true; controller?.abort(); } }
+function interruptQuietly() { if (busy) { quiet = true; abortReason = 'interrupted'; controller?.abort(); } }
 
 // The live block is per-call state, not conversation: never save it.
 const withoutLive = (msgs) => msgs.map((m) => {
@@ -340,7 +389,14 @@ async function pruneLogs() {
   }
 }
 const consoleError = console.error.bind(console);
-console.error = (...a) => { consoleError(...a); if (!String(a[0]).startsWith('[')) logLine('error', a.map((x) => (x instanceof Error ? x.stack : String(x))).join(' ').slice(0, 2000)); };
+console.error = (...a) => {
+  consoleError(...a);
+  if (String(a[0]).startsWith('[')) return;
+  logLine('error', a.map((x) => (x instanceof Error ? x.stack : String(x))).join(' ').slice(0, 2000));
+  // The log label ("prompt failed", "menu") is the error code.
+  const label = typeof a[0] === 'string' && /^[a-z][a-z ]{0,40}$/.test(a[0]) ? a[0].replace(/ /g, '_') : 'unexpected';
+  tel.record('sidecar.error', { requestId: current?.rid ?? null, outcome: 'error', errorCode: label });
+};
 // Token counts per request go to telemetry (agent.request); this keeps the menu's "Today" line.
 const usageToday = { day: '', requests: 0, tokens: 0 };
 function logUsage(rec) {
@@ -355,7 +411,8 @@ async function prompt(text, image = null, t = {}) {
   await refreshAuth();
   if (!ensureModel()) {
     tel.end(t.req, { outcome: 'error', errorCode: 'not_signed_in' });
-    return say(`Sign in to an AI provider from the ${TRAY} menu first, then ask me again!`, 'concerned');
+    failed(t.rid);
+    return say(`Sign in to an AI provider from the ${TRAY} menu first, then ask me again!`, 'concerned', { code: 'sign_in_needed', requestId: t.rid });
   }
   if (isStale(session)) {
     // Quiet for two hours, or a new day: start fresh. The old one stays on disk.
@@ -369,13 +426,19 @@ async function prompt(text, image = null, t = {}) {
     try { credsBaseUrl = (await auth.resolveCredentials(config.provider)).baseUrl; } catch { credsBaseUrl = undefined; }
     makeAgent();
   }
-  busy = true; quiet = false; menu();
+  busy = true; quiet = false; abortReason = null; current = t; menu();
   controller = new AbortController();
   agent.setSignal(controller.signal);
   ui({ kind: 'agent', e: { type: 'start', request_id: t.rid } });
-  const toolSteps = new Map(); // tool call id → telemetry step
+  toolSteps.clear();
   let use = null;
-  let turnStep = tel.start('agent.turn', { requestId: t.rid, parent: t.req }), firstText = true, replyText = '';
+  // Per model call: start, first and last streamed token (text, thinking or tool arguments), in ms.
+  const reqT0 = performance.now(), llm = { model: String(config.model), provider: String(config.provider) };
+  let tt = null;
+  const newTurn = () => { tt = { t0: performance.now(), first: null, last: null }; return tel.start('agent.turn', { requestId: t.rid, parent: t.req }); };
+  const token = () => { const n = performance.now(); tt.first ??= n; tt.last = n; };
+  const turnAttrs = () => ({ ...llm, ...(tt.first != null ? { ttft_ms: tt.first - tt.t0, stream_ms: tt.last - tt.first } : {}) });
+  let turnStep = newTurn(), firstText = true, firstTextMs = null, replyText = '';
   try {
     const reply = new ReplyStream((ev) => ui({ kind: 'agent', e: ev }));
     const turn = nextTurn();
@@ -387,18 +450,20 @@ async function prompt(text, image = null, t = {}) {
     for await (const e of agent.prompt(content)) {
       if (e.type === 'text_delta') {
         reply.push(e.text);
-        if (firstText) { firstText = false; tel.record('agent.first_text', { requestId: t.rid, parent: t.req }); }
+        token();
+        if (firstText) { firstText = false; firstTextMs = performance.now() - reqT0; tel.record('agent.first_text', { requestId: t.rid, parent: t.req }); }
         if (tel.includeText && replyText.length < 4000) replyText += e.text;
       } else if (e.type === 'turn_end') {
         reply.endTurn();
         // Cache health, for the log: how much of each call was read from the prompt cache.
         const u = e.usage ?? {};
         use.calls++; use.in += u.inputTokens ?? 0; use.cacheRead += u.cacheRead ?? 0; use.cacheWrite += u.cacheWrite ?? 0; use.out += u.outputTokens ?? 0;
-        tel.end(turnStep, { attrs: { in: u.inputTokens ?? 0, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0, out: u.outputTokens ?? 0 } });
+        tel.end(turnStep, { attrs: { ...turnAttrs(), in: u.inputTokens ?? 0, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0, out: u.outputTokens ?? 0 } });
         turnStep = null;
         if (process.env.ROAMIES_USAGE) console.error(`[usage] in=${u.inputTokens ?? '?'} cacheRead=${u.cacheRead ?? 0} cacheWrite=${u.cacheWrite ?? 0} out=${u.outputTokens ?? '?'}`);
       }
-      else if (e.type === 'thinking_delta') ui({ kind: 'agent', e: { type: 'thinking', text: e.text } });
+      else if (e.type === 'thinking_delta') { token(); ui({ kind: 'agent', e: { type: 'thinking', text: e.text } }); }
+      else if (e.type === 'toolcall_delta') token();
       else if (e.type === 'tool_call_start') {
         use.tools++;
         logLine('tool', { turn, id: e.toolCallId, name: e.name, args: redactArgs(e.name, e.args ?? {}) });
@@ -406,7 +471,7 @@ async function prompt(text, image = null, t = {}) {
         toolT.set(e.toolCallId, Date.now());
         if (process.env.ROAMIES_USAGE) console.error(`[tool] ${e.name} ${JSON.stringify(e.args ?? {}).slice(0, 160)}`);
         const a = anim(e.name, e.args ?? {});
-        toolSteps.set(e.toolCallId, tel.start('agent.tool', { requestId: t.rid, parent: t.req, attrs: { name: String(e.name), ...(a ? { anim: a.tool, variant: a.variant } : {}) } }));
+        toolStep(e.toolCallId, e.name, a);
         ui({ kind: 'agent', e: { type: 'tool', id: e.toolCallId, anim: a } });
       } else if (e.type === 'tool_call_end') {
         logLine(e.isError ? 'tool_error' : 'tool_done', { turn, id: e.toolCallId, ms: e.durationMs, result: String(e.result ?? '').replace(/\s+/g, ' ').slice(0, e.isError ? 1000 : 400) });
@@ -415,7 +480,7 @@ async function prompt(text, image = null, t = {}) {
         tel.end(toolSteps.get(e.toolCallId), e.isError ? { outcome: 'error', errorCode: 'tool_error' } : {});
         toolSteps.delete(e.toolCallId);
         // The next model call starts once the last tool has answered.
-        if (!toolSteps.size && !turnStep) turnStep = tel.start('agent.turn', { requestId: t.rid, parent: t.req });
+        if (!toolSteps.size && !turnStep) turnStep = newTurn();
         ui({ kind: 'agent', e: { type: 'tool_end', id: e.toolCallId, isError: e.isError } });
       }
       else if (e.type === 'server_tool_call') {
@@ -427,8 +492,8 @@ async function prompt(text, image = null, t = {}) {
     reply.finish();
     ui({ kind: 'agent', e: { type: 'done', request_id: t.rid } });
     logUsage({ ...use, ms: Date.now() - use.t });
-    tel.end(turnStep, { outcome: 'cancelled' });
-    tel.end(t.req, { attrs: { model: String(config.model), provider: String(config.provider), calls: use.calls, tools: use.tools, in: use.in, cacheRead: use.cacheRead, cacheWrite: use.cacheWrite, out: use.out, ...(replyText ? { reply: replyText } : {}) } });
+    tel.end(turnStep, { outcome: 'cancelled', attrs: turnAttrs() });
+    tel.end(t.req, { attrs: { ...llm, ...(firstTextMs != null ? { first_text_ms: firstTextMs } : {}), calls: use.calls, tools: use.tools, in: use.in, cacheRead: use.cacheRead, cacheWrite: use.cacheWrite, out: use.out, ...(replyText ? { reply: replyText } : {}) } });
     logLine('request_done', { turn, ms: Date.now() - use.t, calls: use.calls, tools: use.tools, in: use.in, cacheRead: use.cacheRead, cacheWrite: use.cacheWrite, out: use.out });
   } catch (err) {
     const aborted = controller.signal.aborted;
@@ -440,10 +505,11 @@ async function prompt(text, image = null, t = {}) {
     }
     const end = { outcome: aborted ? 'cancelled' : 'error', errorCode: errorCode(err, aborted) };
     for (const h of toolSteps.values()) tel.end(h, end);
-    tel.end(turnStep, end);
-    tel.end(t.req, { ...end, attrs: { model: String(config.model), provider: String(config.provider), calls: use?.calls ?? 0, tools: use?.tools ?? 0 } });
+    tel.end(turnStep, { ...end, attrs: turnAttrs() });
+    tel.end(t.req, { ...end, attrs: { ...llm, calls: use?.calls ?? 0, tools: use?.tools ?? 0 } });
+    if (!(aborted && quiet)) failed(t.rid);
   } finally {
-    busy = false;
+    busy = false; current = null; toolSteps.clear();
     syncSession();
     menu();
   }
@@ -464,7 +530,7 @@ function askWithId(opts, signal) {
   const to = onboarding ? ob : ui;
   to({ kind: 'ask', id, ...opts });
   return new Promise((done) => {
-    const resolve = (text, requestId = null) => done({ text, requestId: rid(requestId) });
+    const resolve = (text, requestId = null, sentMs = null) => done({ text, requestId: rid(requestId), sentMs });
     pending.set(id, resolve);
     // Another route finished first (e.g. the OAuth callback server): close the input bubble.
     signal?.addEventListener('abort', () => { pending.delete(id); to({ kind: 'cancel_ask', id }); resolve(null); }, { once: true });
@@ -475,7 +541,7 @@ function ask(opts, signal) { return askWithId(opts, signal).then((r) => r.text);
 // ---------- logins ----------
 let loggingIn = null;
 async function oauthLogin(provider) {
-  if (loggingIn) return say(`Still finishing the ${PROVIDER_LABELS[loggingIn]} sign-in. One at a time!`, 'concerned');
+  if (loggingIn) return say(`Still finishing the ${PROVIDER_LABELS[loggingIn]} sign-in. One at a time!`, 'concerned', { code: 'login_busy' });
   loggingIn = provider; menu();
   try {
     const creds = await OAUTH[provider]({
@@ -506,7 +572,7 @@ async function oauthLogin(provider) {
     console.error('login failed', err);
     const msg = String(err?.message ?? err).slice(0, 120);
     if (onboarding) ob({ kind: 'login', provider, phase: 'error', error: msg });
-    else say(`${PROVIDER_LABELS[provider]} sign-in didn't work: ${msg}`, 'concerned');
+    else say(`${PROVIDER_LABELS[provider]} sign-in didn't work: ${msg}`, 'concerned', { code: 'login_failed' });
   } finally {
     loggingIn = null; menu();
   }
@@ -541,7 +607,7 @@ function onLoginStatus(m) {
     config.openAtLogin = true; saveConfig();
     if (!m.on) return send({ type: 'login_item', on: true });
   } else if (login.supported) { config.openAtLogin = login.on; saveConfig(); }
-  if (login.asked && m.approval) say('macOS wants your OK first: System Settings → General → Login Items, then switch Roamies on.', 'concerned');
+  if (login.asked && m.approval) say('macOS wants your OK first: System Settings → General → Login Items, then switch Roamies on.', 'concerned', { code: 'login_item_approval' });
   login.asked = false;
   menu(); if (onboarding) obState();
 }
@@ -575,9 +641,10 @@ function onUpdateStatus(m) {
   } else if (m.state === 'installed') {
     say(`Installed ${m.version}. Restarting!`, 'happy');
   } else if (m.state === 'error') {
+    const installing = update.installing;
     update.installing = false; update.manual = false; menu();
     const why = String(m.error ?? 'unknown error').slice(0, 120);
-    if (manual || update.available) say(`The update didn't work: ${why}. You can always grab it from github.com/${UPDATE_REPO}/releases.`, 'concerned');
+    if (manual || update.available) say(`The update didn't work: ${why}. You can always grab it from github.com/${UPDATE_REPO}/releases.`, 'concerned', { code: installing ? 'update_download_failed' : 'update_failed' });
     else console.error('update check', why);
   }
 }
@@ -672,7 +739,7 @@ function menu() {
         ...(login.supported ? [{ id: 'login', label: 'Open at Login', checked: login.on }] : []),
         { id: 'actions', label: 'Allow File Edits & Commands', checked: config.allowActions },
         { label: 'Telemetry', items: [
-          { id: 'telemetry', label: 'Record Telemetry (stays on this computer)', checked: tel.enabled },
+          { id: 'telemetry', label: 'Record Telemetry (stays on this computer)', checked: tel.enabled, enabled: !TEL_OFF },
           { id: 'telemetrytext', label: 'Include What Was Said', checked: tel.includeText, enabled: tel.enabled },
           { sep: true },
           { id: 'telemetryfolder', label: 'Open Telemetry Folder' },
@@ -754,10 +821,11 @@ async function getVoiceModel(id = activeEngine().id) {
     if (!onboarding && config.voice && activeEngine().id === id) say(`My voice is ready (${engineLabel(id)}). Hold ${talkWords().replace('+', ' and ')} to ${dictating() ? 'dictate' : 'talk to me'}.`, 'happy');
   } catch (e) {
     voiceModel.status = 'error';
-    tel.end(step, { outcome: 'error', errorCode: ['disk', 'checksum'].includes(e.code) ? e.code : 'download_failed' });
+    const code = ['disk', 'checksum'].includes(e.code) ? e.code : 'download_failed';
+    tel.end(step, { outcome: 'error', errorCode: code });
     voiceModel.error = e.code === 'disk' ? e.message : e.code === 'checksum' ? 'The download was damaged. Try again.' : "Couldn't download it. Check your internet connection and try again.";
     logLine('voice_model', { phase: 'error', code: e.code, message: String(e.message ?? e).slice(0, 200) });
-    if (!onboarding) say(`I couldn't download my voice. ${voiceModel.error}`, 'concerned');
+    if (!onboarding) say(`I couldn't download my voice. ${voiceModel.error}`, 'concerned', { code });
   }
   modelUpdate(true);
 }
@@ -771,28 +839,30 @@ const startVoiceDownload = (id = activeEngine().id) => {
 const PRIVACY = { microphone: 'Privacy_Microphone', speech: 'Privacy_SpeechRecognition' };
 function onVoice(m) {
   // Dictating must not stop a task Sidekick is working on.
-  if (m.type === 'voice_state' && m.state === 'listening') { if (!dictating()) interruptQuietly(); }
+  if (m.type === 'voice_state' && m.state === 'listening') { active(); if (!dictating()) interruptQuietly(); }
   else if (m.type === 'voice' && m.text?.trim()) {
     const image = takeSnap();
-    enqueue(m.text.trim(), { interrupt: true, image, requestId: m.request_id, source: image ? 'snap' : 'voice' });
+    enqueue(m.text.trim(), { interrupt: true, image, requestId: m.request_id, sentMs: m.sent_ms, source: image ? 'snap' : 'voice' });
   }
   else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
   else if (m.type === 'voice_error') {
+    failed(m.request_id);
+    const err = (code) => ({ code, requestId: m.request_id });
     if (m.code === 'nothing_heard' && snap) { snap.waitingVoice = false; return; }
     if (m.code === 'permission' && !MAC) {
-      say('Windows is blocking the microphone. In the Privacy settings I just opened, turn on microphone access and "Let desktop apps access your microphone".', 'concerned');
+      say('Windows is blocking the microphone. In the Privacy settings I just opened, turn on microphone access and "Let desktop apps access your microphone".', 'concerned', err('permission'));
       openUrl('ms-settings:privacy-microphone');
     } else if (m.code === 'permission') {
       const what = m.what === 'speech' ? 'speech recognition' : 'the microphone';
-      say(`I need access to ${what} to hear you. Turn on Roamies in the Privacy settings I just opened.`, 'concerned');
+      say(`I need access to ${what} to hear you. Turn on Roamies in the Privacy settings I just opened.`, 'concerned', err('permission'));
       openUrl(`x-apple.systempreferences:com.apple.preference.security?${PRIVACY[m.what] ?? 'Privacy'}`);
     } else if (m.code === 'unavailable' && NEEDS_MODEL && !voiceReady()) startVoiceDownload();
-    else if (m.code === 'no_input') say("I can't find a microphone. Plug one in and try again.", 'concerned');
-    else if (m.code === 'nothing_heard') say(m.spoke ? "I heard you but couldn't make out the words. Try again a little closer to the mic?" : `I didn't hear anything. Hold ${talkWords().replace('+', ' and ')} while you talk.`, 'concerned');
+    else if (m.code === 'no_input') say("I can't find a microphone. Plug one in and try again.", 'concerned', err('no_input'));
+    else if (m.code === 'nothing_heard') say(m.spoke ? "I heard you but couldn't make out the words. Try again a little closer to the mic?" : `I didn't hear anything. Hold ${talkWords().replace('+', ' and ')} while you talk.`, 'concerned', err('nothing_heard'));
     else if (m.code === 'dictation_off') {
-      say('This version of macOS needs Dictation on for me to hear you. Turn it on in the Keyboard settings I just opened.', 'concerned');
+      say('This version of macOS needs Dictation on for me to hear you. Turn it on in the Keyboard settings I just opened.', 'concerned', err('dictation_off'));
       openUrl('x-apple.systempreferences:com.apple.Keyboard-Settings.extension');
-    } else say(`Speech recognition failed: ${String(m.message ?? 'unknown error').slice(0, 120)}`, 'concerned');
+    } else say(`Speech recognition failed: ${String(m.message ?? 'unknown error').slice(0, 120)}`, 'concerned', err('stt_failed'));
   }
 }
 
@@ -802,13 +872,16 @@ function onDictation(m) {
   if (m.type === 'dictation') {
     const text = String(m.text ?? '');
     if (!text.trim()) return;
-    const v = checkDictationTarget(m.app, text);
+    active();
     const requestId = rid(m.request_id);
-    tel.record('dictation.check', { requestId, attrs: { level: v.level, chars: text.length, ...(tel.includeText ? { text } : {}) } });
-    if (v.level === BLOCK) { send({ type: 'dictation_copy', text, request_id: requestId }); say(`${v.reason} It's on your clipboard.`, 'concerned'); }
+    handoff(requestId, m.sent_ms);
+    const check = tel.start('dictation.check', { requestId, attrs: { chars: text.length, ...(tel.includeText ? { text } : {}) } });
+    const v = checkDictationTarget(m.app, text);
+    tel.end(check, { outcome: v.level === BLOCK ? 'error' : 'ok', errorCode: v.level === BLOCK ? 'dictation_blocked' : null, attrs: { level: v.level } });
+    if (v.level === BLOCK) { send({ type: 'dictation_copy', text, request_id: requestId }); say(`${v.reason} It's on your clipboard.`, 'concerned', { code: 'dictation_blocked', requestId }); }
     else send({ type: 'dictation_paste', text: v.text, request_id: requestId });
   } else if (m.type === 'dictation_result' && !m.ok) {
-    say(`Couldn't paste (${String(m.error ?? 'unknown error').slice(0, 80)}). It's on your clipboard, press ${PASTE_KEYS}.`, 'concerned');
+    say(`Couldn't paste (${String(m.error ?? 'unknown error').slice(0, 80)}). It's on your clipboard, press ${PASTE_KEYS}.`, 'concerned', { code: 'paste_failed', requestId: m.request_id });
   }
 }
 
@@ -817,9 +890,9 @@ const overlays = () => send({ type: 'overlays', ids: ['sidekick'] });
 async function onMenu(id) {
   if (id === 'show') ui({ kind: 'summon', show: true });
   else if (id === 'ask') {
-    const { text, requestId } = await askWithId({ placeholder: 'Ask me anything…' });
-    if (text?.trim()) enqueue(text.trim(), { requestId, source: 'typed' });
-  } else if (id === 'stop') controller?.abort();
+    const { text, requestId, sentMs } = await askWithId({ placeholder: 'Ask me anything…' });
+    if (text?.trim()) enqueue(text.trim(), { requestId, sentMs, source: 'typed' });
+  } else if (id === 'stop') { if (busy) abortReason = 'user_stop'; controller?.abort(); }
   else if (id === 'new') {
     session = newSession(config.provider, config.model); liveBlocks.clear(); agent = null; pruneSessions(); menu();
     say('Fresh start. What are we doing?', 'happy');
@@ -851,6 +924,7 @@ async function onMenu(id) {
   else if (id === 'logs') fs.mkdir(LOG_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(LOG_DIR)).catch(() => {});
   else if (id === 'telemetryfolder') fs.mkdir(TELEMETRY_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(TELEMETRY_DIR)).catch(() => {});
   else if (id === 'telemetry') {
+    if (TEL_OFF) return;
     config.telemetry = !tel.enabled; saveConfig(); tel.setEnabled(config.telemetry); telemetryConfig(); menu();
   } else if (id === 'telemetrytext') {
     config.telemetryText = !tel.includeText; saveConfig(); tel.setIncludeText(config.telemetryText); menu();
@@ -900,13 +974,13 @@ async function areaSnap() {
       if (!snap) return; // sent with what was said
       snap.waitingVoice = false;
     }
-    const { text: q, requestId } = await askWithId({ placeholder: 'What about this?' });
+    const { text: q, requestId, sentMs } = await askWithId({ placeholder: 'What about this?' });
     if (!snap) return; // already sent by voice
     if (q === null) { snap = null; return; } // Escape: drop it
     const s = snap; snap = null;
-    enqueue(q.trim() || 'What is this? Explain it simply.', { image: s.image, requestId, source: 'snap' });
+    enqueue(q.trim() || 'What is this? Explain it simply.', { image: s.image, requestId, sentMs, source: 'snap' });
   } catch (e) {
-    say(String(e?.message ?? e).slice(0, 140), 'concerned');
+    say(String(e?.message ?? e).slice(0, 140), 'concerned', { code: 'snap_failed' });
   } finally { snapping = false; }
 }
 let snapping = false;
@@ -991,7 +1065,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   let m;
   try { m = JSON.parse(line); } catch { return; }
   if (m.type === 'menu') onMenu(m.id).catch((e) => console.error('menu', e));
-  else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null, m.request_id); pending.delete(m.id); }
+  else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null, m.request_id, m.sent_ms); pending.delete(m.id); }
   else if (m.type === 'telemetry') tel.ingest(m.events);
   else if (m.type === 'ui_ready') {
     ui({ kind: 'sound', on: config.sound });
@@ -1005,6 +1079,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.type === 'point_shown') { pointWaits.get(m.id)?.(); pointWaits.delete(m.id); }
   else if (m.type === 'update_status') onUpdateStatus(m);
   else if (m.type === 'login_item_status') onLoginStatus(m);
+  else if (m.type === 'memory') { memoryWait?.(m); memoryWait = null; }
 }).on('close', () => {
   // The app quit (or is restarting for an update): let the last saves land first, but never hang.
   Promise.race([Promise.all([flushWrites(), tel.close()]), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
@@ -1064,3 +1139,21 @@ if (config.onboarded && (config.setupVersion ?? 0) < SETUP_VERSION) {
   config.onboarded = false; config.onboardStep = 1; saveConfig();
 }
 if (!config.onboarded) send({ type: 'onboarding' });
+
+// Start-up time: process start (performance.now() counts from it) to here.
+tel.end(tel.start('sidecar.boot', { at: Date.now() - performance.now() }));
+// Memory (RSS of host, sidecar and helper) once a minute, only while in use. The host answers memory_probe.
+let memoryWait = null;
+const mb = (b) => (typeof b === 'number' && b > 0 ? Math.round(b / 1048576 * 10) / 10 : null);
+async function sampleMemory() {
+  if (!tel.enabled || Date.now() - lastActive > 60_000) return;
+  const reply = new Promise((r) => { memoryWait = r; setTimeout(() => r(null), 2000).unref?.(); });
+  send({ type: 'memory_probe' });
+  const host = await reply;
+  memoryWait = null;
+  const mem = process.memoryUsage(), attrs = { sidecar_mb: mb(mem.rss), heap_mb: mb(mem.heapUsed) };
+  if (mb(host?.host) != null) attrs.host_mb = mb(host.host);
+  if (mb(host?.helper) != null) attrs.helper_mb = mb(host.helper);
+  tel.record('app.memory', { attrs });
+}
+setInterval(() => sampleMemory().catch(() => {}), 60_000).unref?.();

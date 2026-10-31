@@ -7,7 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { parseSipsSize, readProblem, rematch, sameBounds, shotMap, shotProblem, toScreen } from './pointing.mjs';
-import { ASK, BLOCK, checkOpen, checkRead, checkUrl, checkWrite, classifyCommand, isRiskyClick, isYes } from './safety.mjs';
+import { performance } from 'node:perf_hooks';
+import * as safety from './safety.mjs';
+import { ASK, BLOCK, SAFE, isYes } from './safety.mjs';
 import { addCommitment, addFact, forgetFact, parseDue, updateCommitment } from './store.mjs';
 
 const HOME = os.homedir();
@@ -56,7 +58,15 @@ export const imageBlock = async (file, mediaType) => {
 };
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null }) {
+  // Each safety check reports its verdict and time (telemetry agent.safety); the checks themselves are unchanged.
+  const timed = (check, fn) => (...a) => {
+    const t0 = performance.now(), v = fn(...a);
+    onCheck?.({ check, level: typeof v === 'boolean' ? (v ? ASK : SAFE) : v.level, ms: performance.now() - t0 });
+    return v;
+  };
+  const checkRead = timed('read', safety.checkRead), checkWrite = timed('write', safety.checkWrite), checkUrl = timed('url', safety.checkUrl);
+  const checkOpen = timed('open', safety.checkOpen), classifyCommand = timed('command', safety.classifyCommand), isRiskyClick = timed('click', safety.isRiskyClick);
   let axNudged = 0;
   const pointWaits = new Map(); // point_at call id → resolve, settled when the overlay has shown the step
   let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)

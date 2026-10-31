@@ -42,6 +42,14 @@ const code = await new Promise((r) => child.on('exit', r));
 clearTimeout(killer);
 const tdir = path.join(tmp, 'sidekick', 'telemetry');
 const files = fs.existsSync(tdir) ? fs.readdirSync(tdir).filter((f) => f.endsWith('.jsonl')) : [];
+// With telemetry forced off (npm run test:telemetry-off) the same session writes nothing.
+if (process.env.ROAMIES_TELEMETRY === 'off') {
+  assert.equal(files.length, 0, 'no day file with telemetry off');
+  assert.match(out, /Sign in to an AI provider/, 'same reply with telemetry off');
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log('telemetry propagation tests passed (telemetry off)');
+  process.exit(0);
+}
 assert.equal(files.length, 1, `one day file expected, got ${files} (exit ${code})`);
 const lines = fs.readFileSync(path.join(tdir, files[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const mine = lines.filter((e) => e.request_id === rid);

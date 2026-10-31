@@ -14,7 +14,7 @@ const HOME = os.homedir();
 export const expand = (p) => path.resolve(String(p).replace(/^~(?=$|\/|\\)/, HOME));
 const clip = (s, n) => (s.length > n ? s.slice(0, n) + `\n…(${s.length - n} more characters)` : s);
 // windowsHide: no console window flashing up for each command or screenshot on Windows.
-export const run = (cmd, args, opts = {}) => new Promise((res) => execFile(cmd, args, { maxBuffer: 8 << 20, timeout: 60_000, windowsHide: true, ...opts }, (err, stdout, stderr) => res({ err, stdout: String(stdout), stderr: String(stderr) })));
+export const run = (cmd, args, opts = {}) => new Promise((res) => execFile(cmd, args, { maxBuffer: 8 << 20, timeout: 60_000, ...opts, windowsHide: true }, (err, stdout, stderr) => res({ err, stdout: String(stdout), stderr: String(stderr) })));
 // Windows "open": Start-Process gets the target through an environment variable, so nothing in it is ever
 // parsed as a command (cmd's start split URLs at "&", and quotes in names broke it).
 export const winOpen = (target) => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:ROAMIES_OPEN'], { env: { ...process.env, ROAMIES_OPEN: target } });

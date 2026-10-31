@@ -110,7 +110,7 @@ function ensureModel() {
 const userName = (() => {
   try {
     if (process.platform === 'darwin') {
-      const full = String(execFileSync('id', ['-F'])).trim();
+      const full = String(execFileSync('id', ['-F'], { windowsHide: true })).trim();
       if (full) return full.split(/\s+/)[0];
     }
   } catch {}
@@ -480,7 +480,7 @@ async function apiKeyLogin(provider, given) {
 function openUrl(url) {
   if (process.platform === 'win32') return void winOpen(url);
   const [cmd, args] = process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
-  execFile(cmd, args, () => {});
+  execFile(cmd, args, { windowsHide: true }, () => {});
 }
 
 // ---------- updates ----------

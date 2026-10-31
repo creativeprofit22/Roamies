@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "./bundle.sh",
-    "test": "node test/reply.test.mjs && node test/store.test.mjs && node test/pointing.test.mjs && node test/safety.test.mjs && node test/voice-model.test.mjs && node test/voice-engines.test.mjs && node test/tools.test.mjs"
+    "test": "node test/reply.test.mjs && node test/store.test.mjs && node test/pointing.test.mjs && node test/safety.test.mjs && node test/voice-model.test.mjs && node test/voice-engines.test.mjs && node test/tools.test.mjs && node test/spawn.test.mjs"
   },
   "dependencies": {
     "@kenkaiiii/gg-agent": "5.87.2",

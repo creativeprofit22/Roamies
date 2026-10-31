@@ -130,10 +130,21 @@ mod mic {
                     tmp.extend(data.iter().map(|&s| s.to_sample::<f32>()));
                     on_chunk(downmix(&tmp, channels));
                 },
-                move |e: cpal::Error| on_error(e.to_string()),
+                move |e: cpal::Error| {
+                    if is_fatal(e.kind()) {
+                        on_error(e.to_string());
+                    } else {
+                        eprintln!("[voice] mic: {e}");
+                    }
+                },
                 None,
             )
             .map_err(|e| e.to_string())
+    }
+
+    /// Glitches and reroutes leave the stream running; only these other kinds end the session (same as voice-rs).
+    pub(super) fn is_fatal(kind: cpal::ErrorKind) -> bool {
+        !matches!(kind, cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied)
     }
 }
 
@@ -165,6 +176,15 @@ mod nomic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // An underrun used to end the take as "no microphone".
+    #[cfg(windows)]
+    #[test]
+    fn mic_glitches_are_not_fatal() {
+        assert!(!mic::is_fatal(cpal::ErrorKind::Xrun));
+        assert!(!mic::is_fatal(cpal::ErrorKind::DeviceChanged));
+        assert!(mic::is_fatal(cpal::ErrorKind::DeviceNotAvailable));
+    }
 
     #[test]
     fn resamples_48k_to_16k_in_any_chunking() {

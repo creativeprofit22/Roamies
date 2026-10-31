@@ -63,6 +63,10 @@
   let speech = null, thought = null, nextMood = null, listen = null, heard = null;
   const jobs = [];
   let current = null;
+  // Telemetry (roamies/telemetry.js): agent start → first text on screen, per request id.
+  const tel = window.RoamiesTelemetry;
+  let firstBubble = null;
+  const endFirstBubble = (outcome) => { if (firstBubble) { tel?.end(firstBubble, { outcome }); firstBubble = null; } };
   const MOODS = { hype: 'happy', wave: 'happy', upset: 'annoyed', remind: 'concerned', motivate: 'determined' };
   const endTalk = () => { speech?.end(); thought?.end(); speech = thought = null; };
 
@@ -92,6 +96,8 @@
     if (!a) return;
     switch (e.type) {
       case 'start':
+        endFirstBubble('cancelled');
+        firstBubble = tel?.start('ui.first_bubble', { requestId: e.request_id }) ?? null;
         heard = null;
         if (!listen?.open) thought = a.think('', { stream: true });
         break;
@@ -111,6 +117,7 @@
           thought = null;
           speech = a.say('', { stream: true, mood: nextMood });
           nextMood = null;
+          endFirstBubble('ok');
         }
         speech.append(text);
         break;
@@ -148,12 +155,14 @@
         a.act(e.action);
         break;
       case 'done':
+        endFirstBubble('cancelled'); // finished without showing any text
         endTalk();
         // A stopped turn ends with 'done' but no tool_end for the tool it cut off: stop its spinner.
         for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
         setTimeout(() => a.endGuide?.(), 6000);
         break;
       case 'error':
+        endFirstBubble('error');
         endTalk();
         for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
         a.say(e.message, { mood: 'concerned' });
@@ -176,6 +185,7 @@
         ? (m.mode === 'handsfree' ? 'Listening… tap again to send' : 'Listening…')
         : (m.mode === 'handsfree' ? "Listening… I'll write it out when you tap again" : "Listening… I'll write it out when you stop");
       listen = a.listen({ placeholder });
+      tel?.record('ui.listen_shown', { requestId: m.request_id, attrs: { mode: m.mode ?? 'hold' } });
     } else if (m.type === 'partial') { if (streaming) listen?.set(m.text); }
     else if (m.type === 'level') listen?.level(m.v);
     else if (m.type === 'state' && m.state === 'processing') { if (!streaming) listen?.hint('Writing it out…'); listen?.processing(); }
@@ -193,6 +203,7 @@
 
   window.__roamieHost = (m) => {
     if (m.kind === 'sound') { if (Roamie.sfx) Roamie.sfx.enabled = m.on; return; }
+    if (m.kind === 'telemetry') { tel?.setEnabled(m.on); return; }
     if (!getAgent()) return;
     if (m.kind === 'greet') { getAgent().act('wave'); return; }
     if (m.kind === 'intro') { getAgent().intro(m.x, m.text); return; }

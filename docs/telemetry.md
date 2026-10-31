@@ -82,6 +82,7 @@ by pairing events or subtracting `ts` (for example "chord down → first reply t
 | `ui.reply_paint` | webview | reply event reached the page → bubble painted (`performance.mark`/`measure`; "painted" is two `requestAnimationFrame`s later) | |
 | `telemetry.dropped` | sidecar | event: events dropped (queue full or write failed) | `count`, `reason` |
 | `telemetry.capped` | sidecar | event: day file hit the size cap | `bytes` |
+| `sidecar.error` | sidecar | event: a logged `console.error` (outcome `error`, code from its label), with the request id when one is running | |
 
 ### Error codes
 
@@ -122,6 +123,9 @@ No request id. Startup and restarts:
 | `host.helper_exit` | host | event: the helper exited on its own | `code`, `crashes`, `restart`; `helper_crashed` |
 | `host.update_check` / `host.update_download` | host | updater check / download and install | `found` |
 | `app.memory` | sidecar | event, every 60 s while there was a request, talk or dictation in the last 60 s | `host_mb`, `sidecar_mb`, `helper_mb`, `heap_mb` |
+| `host.shortcut` | host | event: a shortcut couldn't be registered | `which` |
+| `host.error` | host | event: a host failure that is otherwise only logged | |
+| `host.telemetry_backlog` | host | event: held host events were dropped before a sidecar was running | `dropped` |
 
 The helper is restarted after up to 3 crashes in a row; `ready` resets the count. Memory: the sidecar sends
 `{type:'memory_probe'}` and the host answers `{type:'memory', host, helper}` (RSS in bytes, or `null`); host

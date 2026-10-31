@@ -1,7 +1,7 @@
 // Builds the platform helpers into the sidecar paths Tauri bundles (externalBin):
 // macOS: the Swift roamies-voice (talk chord + speech) and roamies-hands (window capture, app control).
-// Windows x64: the Rust roamies-voice-moonshine (voice-rs; its Moonshine runtime ships as resources)
-// and roamies-voice-parakeet (voice-win).
+// Windows x64: one Rust helper per engine in voice-engines.json (roamies-voice-moonshine from voice-rs,
+// whose Moonshine runtime ships as resources, and roamies-voice-parakeet from voice-win).
 fn main() {
     #[cfg(target_os = "macos")]
     {
@@ -49,8 +49,13 @@ fn build_rust_helpers() {
     for p in ["src", "Cargo.toml", "Cargo.lock"] {
         println!("cargo:rerun-if-changed=voice-core/{p}");
     }
-    build_rust_helper(&root, &target, "voice-rs", "roamies-voice-moonshine");
-    build_rust_helper(&root, &target, "voice-win", "roamies-voice-parakeet");
+    println!("cargo:rerun-if-changed=voice-engines.json");
+    let text = std::fs::read_to_string(root.join("voice-engines.json")).expect("read voice-engines.json");
+    let registry: serde_json::Value = serde_json::from_str(&text).expect("parse voice-engines.json");
+    for e in registry["engines"].as_array().expect("voice-engines.json: engines") {
+        let field = |k: &str| e[k].as_str().unwrap_or_else(|| panic!("voice-engines.json: engine without {k}"));
+        build_rust_helper(&root, &target, field("crate"), field("helper"));
+    }
 }
 
 // Always a release build: a debug one is far too slow at reading speech.

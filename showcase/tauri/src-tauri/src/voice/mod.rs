@@ -1,10 +1,13 @@
-// Voice helper (macOS: Apple speech; Windows: Moonshine on the PC) and the global shortcuts.
+// Voice helper (macOS: Apple speech; Windows: the engine picked in the tray, see engines.rs) and the global shortcuts.
+
+pub(crate) mod engines;
 
 use super::*;
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Child;
 use std::sync::atomic::AtomicU32;
+use std::time::Instant;
 
 /// Id of the registered show/hide hotkey, read by the hotkey event handler.
 static SUMMON_ID: AtomicU32 = AtomicU32::new(0);
@@ -17,25 +20,44 @@ thread_local! {
     static HOTKEYS: RefCell<Option<(global_hotkey::GlobalHotKeyManager, [Option<global_hotkey::hotkey::HotKey>; 3])>> = const { RefCell::new(None) };
 }
 
-pub(crate) fn voice_binary() -> Option<PathBuf> {
-    // Windows ships two engines side by side; Moonshine stays the default until runtime selection lands.
-    helper_binary(if cfg!(windows) { "roamies-voice-moonshine" } else { "roamies-voice" })
+/// Whether the running helper streams partial text (tagged onto the `state` events the UIs get).
+static STREAMING: AtomicBool = AtomicBool::new(true);
+
+/// Which engine the sidecar wants and where its model is. `engine` is None on macOS (Apple speech).
+#[derive(Clone, Default, PartialEq)]
+pub(crate) struct Want {
+    pub engine: Option<String>,
+    pub model: Option<String>,
+    pub ready: bool,
 }
 
-/// Engine options for the Windows helper: Moonshine small with the bundled runtime next to the exe
-/// and the model the sidecar downloaded. Without a model dir the helper reports `unavailable`.
-fn voice_engine_args(bin: &std::path::Path, model_dir: Option<&str>) -> Vec<String> {
+/// The helper for an engine id (unknown or none: the registry default). macOS has one helper, no engines.
+fn voice_binary(engine: Option<&str>) -> Option<(PathBuf, Option<&'static engines::Engine>)> {
     if !cfg!(windows) {
-        return Vec::new();
+        return helper_binary("roamies-voice").map(|b| (b, None));
     }
-    let mut args: Vec<String> = ["--engine", "moonshine", "--moonshine-size", "small"].map(String::from).to_vec();
-    if let Some(dir) = bin.parent() {
-        args.extend(["--moonshine-lib".into(), dir.join("moonshine.dll").to_string_lossy().into_owned()]);
+    let e = engine.and_then(engines::get).or_else(|| engines::get(engines::default_id()))?;
+    helper_binary(&e.helper).map(|b| (b, Some(e)))
+}
+
+/// Any installed helper answers `--perms` (Windows: the first registry engine that's there).
+pub(crate) fn perms_binary() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return helper_binary("roamies-voice");
     }
-    if let Some(m) = model_dir.filter(|m| !m.is_empty()) {
-        args.extend(["--model-dir".into(), m.to_owned()]);
+    engines::all().iter().find_map(|e| helper_binary(&e.helper))
+}
+
+/// Start/stop lines in the helper's log, so an engine switch can be checked after the fact.
+fn voice_log(line: &str) {
+    let path = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| PathBuf::from(h).join(".gg").join("sidekick-voice.log"));
+    if let Some(mut f) = path.and_then(|p| OpenOptions::new().create(true).append(true).open(p).ok()) {
+        let _ = writeln!(f, "[host] {line}");
     }
-    args
+}
+
+fn is_current(app: &AppHandle, pid: u32) -> bool {
+    app.state::<Voice>().0.lock().unwrap().as_ref().map(Child::id) == Some(pid)
 }
 
 pub(crate) fn start_voice(app: &AppHandle) {
@@ -43,15 +65,21 @@ pub(crate) fn start_voice(app: &AppHandle) {
     if state.0.lock().unwrap().is_some() {
         return;
     }
-    let Some(bin) = voice_binary() else {
+    let want = app.state::<VoiceWant>().0.lock().unwrap().clone();
+    let Some((bin, engine)) = voice_binary(want.engine.as_deref()) else {
         eprintln!("voice helper not found next to the app binary");
         return;
     };
     let chord = app.state::<TalkChord>().0.lock().unwrap().join(",");
-    let model = app.state::<VoiceModel>().0.lock().unwrap().clone();
-    let engine = voice_engine_args(&bin, model.as_deref());
-    let mut cmd = Command::new(bin);
-    cmd.arg("--chord").arg(chord).args(engine);
+    // Without a verified model the helper still runs and reports `unavailable` on a press.
+    let model = want.model.as_deref().filter(|_| want.ready);
+    let args = match (engine, bin.parent()) {
+        (Some(e), Some(dir)) => engines::args(e, dir, model),
+        _ => Vec::new(),
+    };
+    STREAMING.store(engine.is_none_or(|e| e.streaming), Ordering::Relaxed);
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--chord").arg(chord).args(args);
     let mut child = match hide_console(&mut cmd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(log_stdio("sidekick-voice.log")).spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -62,10 +90,15 @@ pub(crate) fn start_voice(app: &AppHandle) {
     let stdout = child.stdout.take().expect("piped stdout");
     let pid = child.id();
     *state.0.lock().unwrap() = Some(child);
+    voice_log(&format!("start {} pid {pid} model {}", engine.map_or("apple", |e| e.id.as_str()), model.unwrap_or("-")));
     let app = app.clone();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+            // A helper being retired (engine switch, stop) must not send stale partials or finals.
+            if !is_current(&app, pid) {
+                continue;
+            }
             let app2 = app.clone();
             let _ = app.run_on_main_thread(move || handle_voice(&app2, msg));
         }
@@ -93,8 +126,24 @@ pub(crate) fn stop_voice(app: &AppHandle) {
     let state = app.state::<Voice>();
     let child = state.0.lock().unwrap().take();
     if let Some(mut c) = child {
-        let _ = c.kill();
-        let _ = c.wait();
+        // Closing stdin makes the helper leave its loop and release the mic; kill it only if it hangs.
+        drop(c.stdin.take());
+        let pid = c.id();
+        thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let clean = loop {
+                match c.try_wait() {
+                    Ok(Some(_)) => break true,
+                    Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+                    _ => break false,
+                }
+            };
+            if !clean {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            voice_log(&format!("stop pid {pid} {}", if clean { "exited" } else { "killed" }));
+        });
     }
     to_overlays(app, &json!({ "kind": "voice", "type": "state", "state": "idle" }));
 }
@@ -192,6 +241,9 @@ fn handle_voice(app: &AppHandle, msg: Value) {
     if ONBOARDING.load(Ordering::Relaxed) {
         to_onboarding(app, &ui);
         return;
+    }
+    if msg.get("type").and_then(Value::as_str) == Some("state") {
+        ui["streaming"] = json!(STREAMING.load(Ordering::Relaxed));
     }
     match msg.get("type").and_then(Value::as_str) {
         Some("state") => {

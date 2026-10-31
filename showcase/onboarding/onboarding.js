@@ -376,7 +376,7 @@
   const chords = () => (isMac() ? MAC_CHORDS : PC_CHORDS);
   const same = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
   const voice = {
-    level: 0, target: 0, bars: [], listening: false,
+    level: 0, target: 0, bars: [], listening: false, streaming: true,
     drawMeter(dt) {
       voice.level += (voice.target - voice.level) * Math.min(1, dt * (voice.target > voice.level ? 30 : 8));
       voice.target *= Math.exp(-dt * 3);
@@ -390,10 +390,12 @@
       if (cur !== 3) return;
       const heard = $('heard');
       if (msg.type === 'state' && msg.state === 'listening') {
-        voice.listening = true; heard.textContent = 'Listening…'; poseFn = POSE.listen(); sfx('listen');
+        // Engines that don't stream (Parakeet) send no partials, so say the text comes at the end.
+        voice.streaming = msg.streaming !== false;
+        voice.listening = true; heard.textContent = voice.streaming ? 'Listening…' : "Listening… I'll write it out when you stop"; poseFn = POSE.listen(); sfx('listen');
       } else if (msg.type === 'level') voice.target = clamp(msg.v, 0, 1);
-      else if (msg.type === 'partial') heard.textContent = msg.text;
-      else if (msg.type === 'state' && msg.state === 'processing') { voice.listening = false; }
+      else if (msg.type === 'partial') { if (voice.streaming) heard.textContent = msg.text; }
+      else if (msg.type === 'state' && msg.state === 'processing') { voice.listening = false; if (!voice.streaming) heard.textContent = 'Writing it out…'; }
       else if (msg.type === 'final') {
         voice.listening = false; poseFn = null;
         heard.textContent = `“${msg.text}”`;
@@ -585,7 +587,7 @@
       case 'voice': voice.on(msg); break;
       case 'voice_model':
         if (!state) break;
-        state.voiceModel = { status: msg.status, done: msg.done, total: msg.total, error: msg.error, size: msg.size };
+        state.voiceModel = { status: msg.status, done: msg.done, total: msg.total, error: msg.error, size: msg.size, engine: msg.engine };
         if (cur === 1) perms.progress();
         if (cur === 3) keys.tryLabel();
         break;

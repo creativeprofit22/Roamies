@@ -23,6 +23,7 @@ import {
 } from './store.mjs';
 import { EMOTES, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, talkLabel, totalBytes } from './voice-model.mjs';
+import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor } from './voice-engines.mjs';
 import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
 
 console.log = console.info = (...a) => console.error(...a);
@@ -55,17 +56,24 @@ const DEFAULT_KEYS = process.platform === 'win32'
 const DEFAULTS = {
   provider: null, model: null, sound: true, allowActions: false, voice: true,
   onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, setupVersion: 0, voiceMode: 'agent',
+  voiceEngine: DEFAULT_ENGINE,
 };
-// Windows voice runs Moonshine on the PC (x64 build only). Its model is downloaded once: from the setup
-// guide, or the first time voice is used.
+// Windows voice runs a speech engine on the PC (x64 build only), one helper per engine in voice-engines.json.
+// Each engine's model is downloaded once: from the setup guide, when it's first chosen, or when voice is used.
 const VOICE_OK = process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64');
 const NEEDS_MODEL = process.platform === 'win32';
-const MODEL_DIR = modelDir();
-const voiceModel = { status: !NEEDS_MODEL || isReady(MODEL_DIR) ? 'ready' : 'missing', done: 0, total: totalBytes(), error: null };
-const voiceReady = () => voiceModel.status === 'ready';
+const voiceModels = Object.fromEntries(ENGINES.map((e) => {
+  const manifest = manifestFor(e), dir = modelDir(process.env, manifest);
+  return [e.id, { manifest, dir, status: !NEEDS_MODEL || isReady(dir, manifest) ? 'ready' : 'missing', done: 0, total: totalBytes(manifest), error: null }];
+}));
+const activeEngine = () => chooseEngine({ configured: config.voiceEngine, ready: (id) => voiceModels[id].status === 'ready' });
+const voiceReady = () => activeEngine().ready;
+const engineLabel = (id) => engine(id)?.label ?? id;
+const pct = (vm) => Math.floor((vm.done / vm.total) * 100);
 let config = { ...DEFAULTS };
 try { config = { ...DEFAULTS, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) }; } catch {}
 if (config.voiceMode !== 'dictation') config.voiceMode = 'agent';
+if (!engine(config.voiceEngine)) config.voiceEngine = DEFAULT_ENGINE;
 const dictating = () => config.voiceMode === 'dictation';
 const saveConfig = () => writeJson(CONFIG_PATH, config);
 
@@ -184,7 +192,7 @@ const livePrompt = (context = '') => {
   const open = commitmentsText();
   return `Live state (current as of this moment):
 - Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF in the ${TRAY} menu (tell the user to turn on "Allow File Edits & Commands" if they want it)`}.
-${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : `on, but the speech model isn't downloaded yet (${voiceModel.status === 'downloading' ? 'downloading now' : `Settings > Download Voice in the ${TRAY} menu`})`}.` : ''}
+${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? (NEEDS_MODEL ? `using the ${engineLabel(activeEngine().id)} speech engine, ` : '') + (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : `on, but the speech model isn't downloaded yet (${voiceModels[activeEngine().id].status === 'downloading' ? 'downloading now' : `Settings > Download Voice in the ${TRAY} menu`})`}.` : ''}
 - Shortcuts: show or hide you ${keyWords(keys().summon)}${MAC ? `; ask about an area ${keyWords(keys().snap)}` : ''}; show the list ${keyWords(keys().list)}.${MAC ? '' : ' take_screenshot works here (it always captures the whole screen), so look when asked what is on screen. Asking about an area, reading app windows, pointing and working other apps are Mac only for now.'}
 ${open ? `Open commitments:\n${open}` : 'No open commitments.'}${doneTodayText() ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${doneTodayText()}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}`;
@@ -606,9 +614,10 @@ function menu() {
           { id: 'voicemode:agent', label: 'Computer Use', checked: !dictating() },
           { id: 'voicemode:dictation', label: 'Dictation', checked: dictating() },
         ] }] : []),
-        ...(NEEDS_MODEL && config.voice && !voiceReady() ? [voiceModel.status === 'downloading'
-          ? { id: 'voicedl', label: `Downloading Voice… ${Math.floor((voiceModel.done / voiceModel.total) * 100)}%`, enabled: false }
-          : { id: 'voicedl', label: voiceModel.status === 'error' ? 'Retry Voice Download' : `Download Voice (${sizeLabel()})…` }] : []),
+        ...(VOICE_OK && NEEDS_MODEL ? [{ label: 'Voice Engine', items: engineItems() }] : []),
+        ...(NEEDS_MODEL && config.voice && !voiceReady() ? [((vm) => vm.status === 'downloading'
+          ? { id: 'voicedl', label: `Downloading Voice… ${pct(vm)}%`, enabled: false }
+          : { id: 'voicedl', label: vm.status === 'error' ? 'Retry Voice Download' : `Download Voice (${sizeLabel(vm.manifest)})…` })(voiceModels[activeEngine().id])] : []),
         ...(VOICE_OK && MAC ? [{ id: 'mutetalk', label: 'Mute Mac While Talking', checked: config.muteWhileTalking !== false }] : []),
         ...(usageToday.requests ? [{ id: 'usage', label: `Today: ${usageToday.requests} requests · ${usageToday.tokens >= 1000 ? `${(usageToday.tokens / 1000).toFixed(1)}k` : usageToday.tokens} new tokens`, enabled: false }, { sep: true }] : []),
         { id: 'sound', label: 'Sound Effects', checked: config.sound },
@@ -642,7 +651,24 @@ function menu() {
   send({ type: 'menu', items });
 }
 
-const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, mode: config.voiceMode, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}) });
+// One check item per registry engine with its download state; a line says which engine runs meanwhile.
+function engineItems() {
+  const active = activeEngine();
+  const items = ENGINES.map((e) => {
+    const vm = voiceModels[e.id];
+    const state = vm.status === 'ready' ? `${e.about} ✓ ready` : vm.status === 'downloading' ? `downloading ${pct(vm)}%` : vm.status === 'error' ? 'download failed, retry' : `${e.about} · ${sizeLabel(vm.manifest)} download`;
+    return { id: `voiceengine:${e.id}`, label: `${e.label} · ${state}`, checked: config.voiceEngine === e.id };
+  });
+  if (active.id !== config.voiceEngine) items.push({ id: 'none', label: `Using ${engineLabel(active.id)} until ${engineLabel(config.voiceEngine)} is ready`, enabled: false });
+  return items;
+}
+
+// With no model ready the helper still runs: a press reports `unavailable`, which starts the download.
+const voiceConfig = () => {
+  const active = activeEngine();
+  send({ type: 'voice_config', enabled: VOICE_OK && config.voice, mute: config.muteWhileTalking !== false, mode: config.voiceMode,
+    ...(NEEDS_MODEL ? { engine: active.id, model: voiceModels[active.id].dir, ready: active.ready } : {}) });
+};
 
 // Progress goes to the setup guide often and to the tray menu now and then.
 let modelShownAt = 0, modelMenuAt = 0;
@@ -650,21 +676,26 @@ function modelUpdate(force) {
   const now = Date.now();
   if (!force && now - modelShownAt < 300) return;
   modelShownAt = now;
-  const { status, done, total, error } = voiceModel;
-  ob({ kind: 'voice_model', status, done, total, error, size: sizeLabel() });
+  ob({ kind: 'voice_model', ...guideModel() });
   if (force || now - modelMenuAt > 3000) { modelMenuAt = now; menu(); }
 }
-async function getVoiceModel() {
-  if (!NEEDS_MODEL || voiceReady() || voiceModel.status === 'downloading') return;
+// The setup guide shows the configured engine's model.
+const guideModel = () => {
+  const { status, done, total, error, manifest } = voiceModels[config.voiceEngine];
+  return { status, done, total, error, size: sizeLabel(manifest), engine: engineLabel(config.voiceEngine) };
+};
+async function getVoiceModel(id = activeEngine().id) {
+  const voiceModel = voiceModels[id];
+  if (!NEEDS_MODEL || !voiceModel || voiceModel.status === 'ready' || voiceModel.status === 'downloading') return;
   Object.assign(voiceModel, { status: 'downloading', error: null });
-  logLine('voice_model', { phase: 'start', dir: MODEL_DIR });
+  logLine('voice_model', { phase: 'start', engine: id, dir: voiceModel.dir });
   modelUpdate(true);
   try {
-    await downloadModel(MODEL_DIR, { onProgress: ({ done, total }) => { voiceModel.done = done; voiceModel.total = total; modelUpdate(false); } });
+    await downloadModel(voiceModel.dir, { manifest: voiceModel.manifest, onProgress: ({ done, total }) => { voiceModel.done = done; voiceModel.total = total; modelUpdate(false); } });
     voiceModel.status = 'ready';
-    logLine('voice_model', { phase: 'ready' });
-    voiceConfig();
-    if (!onboarding && config.voice) say(`My voice is ready. Hold ${talkWords().replace('+', ' and ')} to ${dictating() ? 'dictate' : 'talk to me'}.`, 'happy');
+    logLine('voice_model', { phase: 'ready', engine: id });
+    voiceConfig(); // switches over if this is now the engine to use
+    if (!onboarding && config.voice && activeEngine().id === id) say(`My voice is ready (${engineLabel(id)}). Hold ${talkWords().replace('+', ' and ')} to ${dictating() ? 'dictate' : 'talk to me'}.`, 'happy');
   } catch (e) {
     voiceModel.status = 'error';
     voiceModel.error = e.code === 'disk' ? e.message : e.code === 'checksum' ? 'The download was damaged. Try again.' : "Couldn't download it. Check your internet connection and try again.";
@@ -673,10 +704,12 @@ async function getVoiceModel() {
   }
   modelUpdate(true);
 }
-const startVoiceDownload = () => {
-  if (voiceModel.status === 'downloading') return say(`Still downloading my voice: ${Math.floor((voiceModel.done / voiceModel.total) * 100)}% done.`, 'happy');
-  say(`Downloading my voice (${sizeLabel()}, just this once). I'll tell you when it's ready.`, 'happy');
-  getVoiceModel();
+const startVoiceDownload = (id = activeEngine().id) => {
+  const vm = voiceModels[id], active = activeEngine();
+  if (vm.status === 'downloading') return say(`Still downloading my voice: ${pct(vm)}% done.`, 'happy');
+  const meanwhile = active.ready && active.id !== id ? ` I'll keep using ${engineLabel(active.id)} until then.` : '';
+  say(`Downloading ${engineLabel(id)} (${sizeLabel(vm.manifest)}, just this once). I'll tell you when it's ready.${meanwhile}`, 'happy');
+  getVoiceModel(id);
 };
 const PRIVACY = { microphone: 'Privacy_Microphone', speech: 'Privacy_SpeechRecognition' };
 function onVoice(m) {
@@ -761,6 +794,12 @@ async function onMenu(id) {
   else if (id.startsWith('voicemode:')) {
     config.voiceMode = id === 'voicemode:dictation' ? 'dictation' : 'agent'; saveConfig(); voiceConfig(); menu();
     say(dictating() ? `Dictation is on. Hold ${talkWords().replace('+', ' and ')} and I'll type what you say into the app in front.` : `Computer Use is on. Hold ${talkWords().replace('+', ' and ')} to talk to me.`, 'happy');
+  } else if (id.startsWith('voiceengine:')) {
+    const e = engine(id.slice('voiceengine:'.length));
+    if (!e) return;
+    config.voiceEngine = e.id; saveConfig(); voiceConfig(); menu(); obState();
+    if (voiceModels[e.id].status !== 'ready') return startVoiceDownload(e.id);
+    say(`Switched to ${e.label}${e.streaming ? '' : ". I'll write out what you say when you stop talking"}.`, 'happy');
   } else if (id === 'voicedl') startVoiceDownload();
   else if (id === 'voice') {
     config.voice = !config.voice; saveConfig(); voiceConfig(); menu();
@@ -826,7 +865,7 @@ function obState() {
     login: login.supported ? login.on : null,
     sound: config.sound,
     voice: VOICE_OK && config.voice,
-    voiceModel: NEEDS_MODEL ? { status: voiceModel.status, done: voiceModel.done, total: voiceModel.total, error: voiceModel.error, size: sizeLabel() } : null,
+    voiceModel: NEEDS_MODEL ? guideModel() : null,
     filesAsked: config.filesAsked,
   });
 }
@@ -856,7 +895,7 @@ async function onGuide(m) {
   else if (m.type === 'ob_files') ob({ kind: 'files', status: await filesStatus(!!m.request) });
   else if (m.type === 'set_actions') { config.allowActions = !!m.on; saveConfig(); menu(); obState(); }
   else if (m.type === 'set_login') setLogin(!!m.on);
-  else if (m.type === 'ob_voice_model') getVoiceModel();
+  else if (m.type === 'ob_voice_model') getVoiceModel(config.voiceEngine);
   else if (m.type === 'set_keys') {
     const next = { ...keys() };
     if (m.talk !== undefined) { if (!validTalk(m.talk)) return ob({ kind: 'keys', keys: keys(), error: 'Pick two different modifier keys.' }); next.talk = m.talk; }

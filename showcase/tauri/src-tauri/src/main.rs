@@ -21,7 +21,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry};
 
 use sidecar::spawn_sidecar;
-use voice::{init_hotkeys, set_hotkey, start_voice, stop_voice, to_voice, voice_binary};
+use voice::{init_hotkeys, perms_binary, set_hotkey, start_voice, stop_voice, to_voice};
 
 static GENERATION: AtomicUsize = AtomicUsize::new(0);
 /// The setup guide is open: voice events go to it (for the "try it" test) instead of the agent.
@@ -36,8 +36,8 @@ struct Roster(Mutex<Vec<String>>);
 struct Voice(Mutex<Option<Child>>, AtomicUsize);
 /// Talk chord passed to the voice helper, e.g. ["control", "option"].
 struct TalkChord(Mutex<Vec<String>>);
-/// Windows: the downloaded Moonshine model's folder (the sidecar owns the download and says where it is).
-struct VoiceModel(Mutex<Option<String>>);
+/// Windows: the engine the sidecar chose and its model folder (the sidecar owns downloads and the choice).
+struct VoiceWant(Mutex<voice::Want>);
 
 /// Windows: helpers are console programs, so without this each one opens a console window.
 fn hide_console(cmd: &mut Command) -> &mut Command {
@@ -122,7 +122,7 @@ fn set_typing(app: AppHandle, window: WebviewWindow, on: bool) {
 
 /// Runs the voice helper in a one-shot permission mode and returns what it printed.
 fn helper_perms(args: &[&str]) -> Value {
-    let Some(bin) = voice_binary() else { return json!({ "type": "perms", "unsupported": true }) };
+    let Some(bin) = perms_binary() else { return json!({ "type": "perms", "unsupported": true }) };
     let out = hide_console(&mut Command::new(bin)).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output();
     out.ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
@@ -666,18 +666,21 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
         }
         Some("voice_config") => {
             DICTATION.store(msg.get("mode").and_then(Value::as_str) == Some("dictation"), Ordering::Relaxed);
-            if let Some(dir) = msg.get("model").and_then(Value::as_str) {
-                let state = app.state::<VoiceModel>();
-                let changed = {
-                    let mut slot = state.0.lock().unwrap();
-                    let changed = slot.as_deref() != Some(dir);
-                    *slot = Some(dir.to_owned());
-                    changed
-                };
-                // The helper reads its model at launch, so pick up a new one (e.g. just downloaded).
-                if changed {
-                    stop_voice(app);
-                }
+            let want = voice::Want {
+                engine: msg.get("engine").and_then(Value::as_str).map(str::to_owned),
+                model: msg.get("model").and_then(Value::as_str).map(str::to_owned),
+                ready: msg.get("ready").and_then(Value::as_bool).unwrap_or(false),
+            };
+            let wanted = app.state::<VoiceWant>();
+            let changed = {
+                let mut slot = wanted.0.lock().unwrap();
+                let changed = *slot != want;
+                *slot = want;
+                changed
+            };
+            // The helper picks its engine and model at launch, so a switch or a finished download restarts it.
+            if changed {
+                stop_voice(app);
             }
             if msg.get("enabled").and_then(Value::as_bool) == Some(true) {
                 app.state::<Voice>().1.store(0, Ordering::Relaxed);
@@ -717,7 +720,7 @@ fn main() {
         .manage(Roster(Mutex::new(vec!["sidekick".into()])))
         .manage(Voice(Mutex::new(None), AtomicUsize::new(0)))
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
-        .manage(VoiceModel(Mutex::new(None)))
+        .manage(VoiceWant(Mutex::new(voice::Want::default())))
         .invoke_handler(tauri::generate_handler![set_hot, sidecar_send, set_typing, perm_status, perm_request, open_settings, onboarding_finish, relaunch, focus_guide, drag_window])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),

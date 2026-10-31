@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Downloads NVIDIA Parakeet TDT 0.6B v3 (int8 ONNX export by istupakov, CC-BY-4.0) into models/parakeet/.
-# Pinned to one commit; the hashes must match sidecar/voicemodel.mjs (a sidecar test checks this).
+# Pinned to one commit; the hashes must match src-tauri/voice-engines.json (a sidecar test checks this).
 set -euo pipefail
 cd "$(dirname "$0")"
 

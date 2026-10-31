@@ -162,6 +162,7 @@
   }
 
   // ---------- voice (⌃⌥) ----------
+  let streaming = true;
   function onVoice(m) {
     const a = getAgent();
     if (!a) return;
@@ -169,10 +170,15 @@
       if (ask) finishAsk(null);
       endTalk();
       heard = null;
-      listen = a.listen({ placeholder: m.mode === 'handsfree' ? 'Listening… tap again to send' : 'Listening…' });
-    } else if (m.type === 'partial') listen?.set(m.text);
+      // Engines that don't stream (Parakeet) send no partials, so say the text comes at the end.
+      streaming = m.streaming !== false;
+      const placeholder = streaming
+        ? (m.mode === 'handsfree' ? 'Listening… tap again to send' : 'Listening…')
+        : (m.mode === 'handsfree' ? "Listening… I'll write it out when you tap again" : "Listening… I'll write it out when you stop");
+      listen = a.listen({ placeholder });
+    } else if (m.type === 'partial') { if (streaming) listen?.set(m.text); }
     else if (m.type === 'level') listen?.level(m.v);
-    else if (m.type === 'state' && m.state === 'processing') listen?.processing();
+    else if (m.type === 'state' && m.state === 'processing') { if (!streaming) listen?.hint('Writing it out…'); listen?.processing(); }
     else if (m.type === 'final') {
       // Keep what was heard on screen until the agent starts thinking.
       if (listen) { listen.set(m.text).processing(); heard = listen; listen = null; Roamie.sfx?.play('heard'); }

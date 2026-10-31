@@ -847,6 +847,8 @@
           },
           level(v) { bb.input.target = clamp(v, 0, 1); return this; },
           processing() { bb.input.processing = true; return this; },
+          // New placeholder text, shown while nothing has been transcribed yet.
+          hint(text) { bb.input.placeholder = text; return this; },
           close() { if (b === bb) close(bb); },
           get open() { return b === bb && !bb.closing; },
           get closed() { return h.closed; },

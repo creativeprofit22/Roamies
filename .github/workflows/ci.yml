@@ -53,6 +53,11 @@ jobs:
       - name: Build
         run: ./build.sh dev
 
+      # Host unit tests (voice engine registry).
+      - name: Test host
+        working-directory: showcase/tauri/src-tauri
+        run: cargo test --locked
+
   voice-windows:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -146,6 +151,13 @@ jobs:
 
       - name: Lint voice helper
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Parakeet on a test clip must end in a final, as the Moonshine job checks for its engine.
+      - name: Smoke test Parakeet
+        run: |
+          out=$(cargo run --release --locked -- --wav tests/fixtures/en-short-1s.wav --model-dir models/parakeet)
+          echo "$out"
+          echo "$out" | grep '"type":"final"' | grep -q nightfall
 
   # Sidecar tests on Windows on their own, so a Windows-only failure (slow fsyncs, paths) shows up fast.
   sidecar-windows:

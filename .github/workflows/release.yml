@@ -1,8 +1,8 @@
 # Release: tag a version (e.g. `git tag v0.1.0 && git push origin v0.1.0`) or run it by hand.
 # Builds a signed + notarized macOS DMG (Apple silicon and Intel) and a Windows installer, then attaches
-# them to a draft GitHub release for you to review and publish. The Windows installer ships the Rust voice
-# helper with the Moonshine runtime, MSVC runtime and licences (the model downloads on first enable), and
-# is installed silently and smoke-tested before upload.
+# them to a draft GitHub release for you to review and publish. The Windows installer ships both voice
+# helpers (Moonshine and Parakeet, picked at runtime) with the Moonshine runtime, MSVC runtime and both
+# licence sets (models download on demand), and is installed silently and each helper smoke-tested before upload.
 # Each build also uploads a signed update bundle; the manifest job writes latest.json, the feed the
 # in-app updater reads from the newest published release.
 name: Release
@@ -82,6 +82,17 @@ jobs:
         if: runner.os == 'Windows'
         run: bash src-tauri/voice-rs/fetch-moonshine.sh small
 
+      # Parakeet model, only for smoke-testing the installed Parakeet helper.
+      - uses: actions/cache@v6
+        if: runner.os == 'Windows'
+        with:
+          path: showcase/tauri/src-tauri/voice-win/models/parakeet
+          key: parakeet-${{ hashFiles('showcase/tauri/src-tauri/voice-win/fetch-model.sh') }}
+
+      - name: Fetch Parakeet
+        if: runner.os == 'Windows'
+        run: bash src-tauri/voice-win/fetch-model.sh
+
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
@@ -139,7 +150,7 @@ jobs:
           [ $ok -eq 1 ]
 
       # Install the NSIS setup silently, check the voice files landed next to the app, then run the installed
-      # helper with its default engine and bundled runtime on a test clip; it must produce a final.
+      # helpers with their bundled runtime on a test clip; each must produce a final.
       - name: Install and smoke test the Windows installer
         if: runner.os == 'Windows'
         run: |
@@ -152,9 +163,13 @@ jobs:
             [ -s "$D/$f" ] || { echo "::error::installer is missing $f"; exit 1; }
           done
           [ -n "$(ls "$D/licenses/moonshine")" ] || { echo "::error::installer is missing the Moonshine licences"; exit 1; }
+          [ -n "$(ls "$D/licenses/parakeet")" ] || { echo "::error::installer is missing the Parakeet licences"; exit 1; }
           out=$("$D/roamies-voice-moonshine.exe" --wav src-tauri/voice-rs/tests/fixtures/en-short.wav --model-dir src-tauri/voice-rs/models/moonshine-small)
           echo "$out"
-          echo "$out" | grep '"type":"final"' | grep -q nightfall || { echo "::error::installed helper produced no final"; exit 1; }
+          echo "$out" | grep '"type":"final"' | grep -q nightfall || { echo "::error::installed Moonshine helper produced no final"; exit 1; }
+          out=$("$D/roamies-voice-parakeet.exe" --wav src-tauri/voice-win/tests/fixtures/en-short-1s.wav --model-dir src-tauri/voice-win/models/parakeet)
+          echo "$out"
+          echo "$out" | grep '"type":"final"' | grep -q nightfall || { echo "::error::installed Parakeet helper produced no final"; exit 1; }
 
       - name: Remove the signing keychain
         if: always() && runner.os == 'macOS'

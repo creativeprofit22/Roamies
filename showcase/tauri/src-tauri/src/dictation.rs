@@ -201,9 +201,9 @@ pub fn focused_app() -> Option<AppId> {
 }
 
 /// A final transcript in dictation mode. Read the target now, while it still has focus, then ask the sidecar.
-pub fn on_final(app: &AppHandle, text: &str) {
+pub fn on_final(app: &AppHandle, text: &str, request_id: Option<&str>) {
     let target = focused_app().map(|a| json!({ "id": a.id, "name": a.name })).unwrap_or(Value::Null);
-    crate::to_sidecar(app, &json!({ "type": "dictation", "text": text, "app": target }));
+    crate::to_sidecar(app, &json!({ "type": "dictation", "text": text, "app": target, "request_id": request_id }));
 }
 
 static PASTE: Mutex<()> = Mutex::new(());
@@ -215,10 +215,11 @@ fn report(app: &AppHandle, result: Result<(), String>) {
 }
 
 /// Paste into the app in front, off the main thread, one paste at a time. On failure the text is left on the clipboard.
-pub fn paste(app: &AppHandle, text: String) {
+pub fn paste(app: &AppHandle, text: String, request_id: Option<String>) {
     let app = app.clone();
     thread::spawn(move || {
         let _one = PASTE.lock().unwrap_or_else(|e| e.into_inner());
+        let step = crate::telemetry::start("host.dictation_paste", request_id.as_deref(), None, Default::default());
         let result = SystemClip::new().and_then(|clip| {
             let mut sink = ClipboardPaste { clip, chord: SystemChord, settle: Duration::from_millis(50), wait: Duration::from_millis(300) };
             sink.insert(&text)
@@ -228,6 +229,8 @@ pub fn paste(app: &AppHandle, text: String) {
                 let _ = c.set_text(&text);
             }
         }
+        let (outcome, code) = if result.is_ok() { (crate::telemetry::Outcome::Ok, None) } else { (crate::telemetry::Outcome::Error, Some("paste_failed")) };
+        crate::telemetry::end(step, outcome, code, Default::default());
         report(&app, result);
     });
 }

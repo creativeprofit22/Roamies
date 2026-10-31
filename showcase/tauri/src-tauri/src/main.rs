@@ -5,6 +5,7 @@
 
 mod dictation;
 mod sidecar;
+mod telemetry;
 mod voice;
 
 use std::fs::OpenOptions;
@@ -84,7 +85,8 @@ fn set_hot(window: WebviewWindow, hot: bool) {
 }
 
 #[tauri::command]
-fn sidecar_send(app: AppHandle, msg: Value) {
+fn sidecar_send(app: AppHandle, mut msg: Value) {
+    telemetry::stamp_answer(&telemetry::TEL, &mut msg);
     to_sidecar(&app, &msg);
 }
 
@@ -655,11 +657,12 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             }
         }
         // Listen right away, hands-free (after an area snap: snap, then just talk).
-        Some("listen") => to_voice(app, &json!({ "cmd": "listen" })),
+        Some("listen") => voice::listen(app),
         Some("dictation_paste") | Some("dictation_copy") => {
             let text = msg.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+            let rid = msg.get("request_id").and_then(Value::as_str).filter(|r| telemetry::is_request_id(r)).map(str::to_owned);
             if msg.get("type").and_then(Value::as_str) == Some("dictation_paste") {
-                dictation::paste(app, text);
+                dictation::paste(app, text, rid);
             } else {
                 dictation::copy_only(app, text);
             }
@@ -690,6 +693,12 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             } else {
                 stop_voice(app);
             }
+        }
+        Some("telemetry_config") => {
+            let on = msg.get("on").and_then(Value::as_bool).unwrap_or(true);
+            telemetry::TEL.set_enabled(on);
+            to_voice(app, &json!({ "cmd": "telemetry", "on": on }));
+            to_overlays(app, &json!({ "kind": "telemetry", "on": on }));
         }
         Some("overlays") => {
             let ids: Vec<String> = msg.get("ids").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
@@ -749,6 +758,8 @@ fn main() {
             }
             tray.build(app)?;
 
+            let tel_app = app.handle().clone();
+            telemetry::TEL.set_sink(move |e| to_sidecar(&tel_app, &json!({ "type": "telemetry", "events": [e] })));
             init_hotkeys(app.handle());
             if let Err(e) = set_hotkey(0, "Control+Alt+KeyS") {
                 eprintln!("could not register the show/hide shortcut: {e}");

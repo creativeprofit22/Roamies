@@ -41,6 +41,20 @@
       const duration_ms = Math.round((performance.now() - s.t0) * 1000) / 1000;
       push(event('end', s.step, { step_id: s.id, request_id: s.requestId, parent_step_id: s.parent, duration_ms, outcome, error_code: errorCode, attrs }));
     },
+    // A finished interval from two performance marks (Performance API), sent as a start/end pair.
+    measure(step, startMark, endMark, { requestId = null, parent = null, outcome = 'ok', errorCode = null, attrs = {} } = {}) {
+      let m = null;
+      try { m = performance.measure(`${step}:${startMark}`, startMark, endMark); } catch { m = null; }
+      performance.clearMarks(startMark); performance.clearMarks(endMark);
+      if (!m) return;
+      performance.clearMeasures(m.name);
+      if (!on) return;
+      const id = hex(8), request_id = rid(requestId), parent_step_id = parentId(parent);
+      const ts = Math.round(performance.timeOrigin + m.startTime);
+      push(event('start', step, { ts, step_id: id, request_id, parent_step_id, attrs }));
+      const duration_ms = Math.round(m.duration * 1000) / 1000;
+      push(event('end', step, { ts: Math.round(ts + m.duration), step_id: id, request_id, parent_step_id, duration_ms, outcome, error_code: errorCode, attrs }));
+    },
     record(step, { requestId = null, parent = null, attrs = {} } = {}) {
       push(event('event', step, { request_id: rid(requestId), parent_step_id: parentId(parent), attrs }));
     },

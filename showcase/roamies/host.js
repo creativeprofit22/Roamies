@@ -66,6 +66,18 @@
   // Telemetry (roamies/telemetry.js): agent start → first text on screen, per request id.
   const tel = window.RoamiesTelemetry;
   let firstBubble = null;
+  // ui.reply_paint: the reply reaching the page → its bubble painted (double rAF ≈ the next frame on screen).
+  let replyRid = null;
+  const paintMark = (requestId, outcome = 'ok', errorCode = null) => {
+    const p = globalThis.performance;
+    if (!tel?.measure || !p?.mark) return;
+    const key = `${requestId ?? 'none'}:${p.now()}`, recv = `reply-recv:${key}`, painted = `reply-painted:${key}`;
+    p.mark(recv);
+    return () => requestAnimationFrame(() => requestAnimationFrame(() => {
+      p.mark(painted);
+      tel.measure('ui.reply_paint', recv, painted, { requestId, outcome, errorCode });
+    }));
+  };
   const endFirstBubble = (outcome) => { if (firstBubble) { tel?.end(firstBubble, { outcome }); firstBubble = null; } };
   const MOODS = { hype: 'happy', wave: 'happy', upset: 'annoyed', remind: 'concerned', motivate: 'determined' };
   const endTalk = () => { speech?.end(); thought?.end(); speech = thought = null; };
@@ -98,6 +110,7 @@
       case 'start':
         endFirstBubble('cancelled');
         firstBubble = tel?.start('ui.first_bubble', { requestId: e.request_id }) ?? null;
+        replyRid = e.request_id ?? null;
         heard = null;
         if (!listen?.open) thought = a.think('', { stream: true });
         break;
@@ -115,9 +128,13 @@
           if (!text) break;
           // say() morphs an open thought cloud into the speech bubble, so drop the thought handle.
           thought = null;
+          const painted = paintMark(replyRid);
           speech = a.say('', { stream: true, mood: nextMood });
           nextMood = null;
           endFirstBubble('ok');
+          speech.append(text);
+          painted?.();
+          break;
         }
         speech.append(text);
         break;
@@ -165,7 +182,9 @@
         endFirstBubble('error');
         endTalk();
         for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
+        const painted = paintMark(e.request_id ?? replyRid, 'error', 'agent_error');
         a.say(e.message, { mood: 'concerned' });
+        painted?.();
         break;
     }
   }

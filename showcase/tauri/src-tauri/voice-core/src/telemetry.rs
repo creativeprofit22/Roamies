@@ -101,6 +101,38 @@ impl Telemetry {
         send(out, event(now_ms(), "end", &step, Some(ms), Some(outcome), error_code, attrs));
     }
 
+    /// A whole step measured before it could be emitted: it began `started_ago` before now and took
+    /// `duration` (the engine started or the mic opened before the talk had a request id).
+    #[allow(clippy::too_many_arguments)]
+    pub fn span<W: Write>(
+        &self,
+        out: &mut Emitter<W>,
+        name: &'static str,
+        request_id: Option<&str>,
+        parent: Option<&Step>,
+        started_ago: Duration,
+        duration: Duration,
+        outcome: Outcome,
+        error_code: Option<&str>,
+        attrs: Attrs,
+    ) {
+        if !self.on {
+            return;
+        }
+        let step = Step {
+            id: new_step_id(),
+            name,
+            request_id: request_id.map(str::to_string),
+            parent: parent.map(|p| p.id.clone()),
+            started: Instant::now(),
+        };
+        let start = now_ms().saturating_sub(started_ago.as_millis() as u64);
+        let ms = (duration.as_secs_f64() * 1000.0 * 1000.0).round() / 1000.0;
+        send(out, event(start, "start", &step, None, None, None, Attrs::new()));
+        let end = start + duration.as_millis() as u64;
+        send(out, event(end, "end", &step, Some(ms), Some(outcome), error_code, attrs));
+    }
+
     pub fn record<W: Write>(
         &self,
         out: &mut Emitter<W>,
@@ -239,6 +271,24 @@ mod tests {
         assert!(ts <= before.saturating_sub(299), "{ts} vs {before}");
         tel.end(&mut em, s, Outcome::Ok, None, Attrs::new());
         assert!(lines(&em)[1]["event"]["duration_ms"].as_f64().unwrap() >= 299.0);
+    }
+
+    #[test]
+    fn span_writes_a_back_dated_pair() {
+        let tel = Telemetry::default();
+        let mut em = Emitter::new(Vec::new());
+        let before = now_ms();
+        let mut a = Attrs::new();
+        a.insert("warm".into(), json!(true));
+        tel.span(&mut em, "voice.mic_open", Some("r"), None, Duration::from_millis(500), Duration::from_millis(120), Outcome::Ok, None, a);
+        let ev = lines(&em);
+        assert_eq!(ev.len(), 2);
+        let (s, e) = (&ev[0]["event"], &ev[1]["event"]);
+        assert_eq!(s["step_id"], e["step_id"]);
+        assert!(s["ts"].as_u64().unwrap() <= before.saturating_sub(499));
+        assert_eq!(e["ts"].as_u64().unwrap() - s["ts"].as_u64().unwrap(), 120);
+        assert_eq!(e["duration_ms"], 120.0);
+        assert_eq!(e["attrs"]["warm"], true);
     }
 
     #[test]

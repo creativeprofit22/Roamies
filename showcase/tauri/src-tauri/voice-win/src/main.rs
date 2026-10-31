@@ -199,7 +199,10 @@ fn run_live(session: &mut Live) -> ExitCode {
         if session.wants_audio() && mic.is_none() {
             generation += 1;
             match open_mic(&tx, generation) {
-                Ok(m) => mic = Some(m),
+                Ok(m) => {
+                    mic = Some(m);
+                    session.mic_opened(now());
+                }
                 Err(e) => {
                     log(&format!("mic: {e}"));
                     if keys::mic_status() == MicStatus::Denied {

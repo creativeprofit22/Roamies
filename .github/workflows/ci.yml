@@ -74,6 +74,13 @@ jobs:
         with:
           workspaces: showcase/tauri/src-tauri/voice-rs -> target
 
+      # rust-cache can restore sherpa-onnx's prebuilt folder without its .lib files; drop it so the build re-downloads.
+      - name: Drop a partial sherpa-onnx download
+        shell: bash
+        run: |
+          P="$GITHUB_WORKSPACE/showcase/tauri/src-tauri/voice-rs/target/sherpa-onnx-prebuilt"
+          ls "$P"/*/lib/sherpa-onnx-c-api.lib >/dev/null 2>&1 || rm -rf "$P"
+
       - uses: actions/cache@v6
         with:
           path: showcase/tauri/src-tauri/voice-rs/models/zipformer
@@ -211,6 +218,13 @@ jobs:
             showcase/tauri/src-tauri -> target
             showcase/tauri/src-tauri/voice-rs -> target
             showcase/tauri/src-tauri/voice-win -> target
+
+      # rust-cache can restore sherpa-onnx's prebuilt folder without its .lib files; drop it so the build re-downloads.
+      - name: Drop a partial sherpa-onnx download
+        shell: bash
+        run: |
+          P="$GITHUB_WORKSPACE/showcase/tauri/src-tauri/voice-rs/target/sherpa-onnx-prebuilt"
+          ls "$P"/*/lib/sherpa-onnx-c-api.lib >/dev/null 2>&1 || rm -rf "$P"
 
       - uses: actions/cache@v6
         with:

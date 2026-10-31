@@ -70,6 +70,13 @@ jobs:
           key: ${{ matrix.target }}
 
       # Moonshine runtime + CRT (bundled by tauri.windows.conf.json) and the small model for the smoke test.
+      # rust-cache can restore sherpa-onnx's prebuilt folder without its .lib files; drop it so the build re-downloads.
+      - name: Drop a partial sherpa-onnx download
+        shell: bash
+        run: |
+          P="$GITHUB_WORKSPACE/showcase/tauri/src-tauri/voice-rs/target/sherpa-onnx-prebuilt"
+          ls "$P"/*/lib/sherpa-onnx-c-api.lib >/dev/null 2>&1 || rm -rf "$P"
+
       - uses: actions/cache@v6
         if: runner.os == 'Windows'
         with:

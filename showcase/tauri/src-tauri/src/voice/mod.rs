@@ -230,20 +230,26 @@ pub(crate) fn set_hotkey(slot: usize, accel: &str) -> Result<(), String> {
     })
 }
 
-fn handle_voice(app: &AppHandle, msg: Value) {
+// Both the overlays and the setup guide need `streaming` to word non-streaming engines honestly.
+fn ui_message(msg: &Value, streaming: bool) -> Value {
     let mut ui = msg.clone();
     ui["kind"] = json!("voice");
+    if msg.get("type").and_then(Value::as_str) == Some("state") {
+        ui["streaming"] = json!(streaming);
+    }
+    ui
+}
+
+fn handle_voice(app: &AppHandle, msg: Value) {
     if msg.get("type").and_then(Value::as_str) == Some("ready") {
         app.state::<Voice>().1.store(0, Ordering::Relaxed);
         return;
     }
+    let ui = ui_message(&msg, STREAMING.load(Ordering::Relaxed));
     // While the setup guide is open, talking is just the "try it" test: it never reaches the agent.
     if ONBOARDING.load(Ordering::Relaxed) {
         to_onboarding(app, &ui);
         return;
-    }
-    if msg.get("type").and_then(Value::as_str) == Some("state") {
-        ui["streaming"] = json!(STREAMING.load(Ordering::Relaxed));
     }
     match msg.get("type").and_then(Value::as_str) {
         Some("state") => {
@@ -265,5 +271,19 @@ fn handle_voice(app: &AppHandle, msg: Value) {
             to_sidecar(app, &m);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_messages_carry_streaming_flag() {
+        let ui = ui_message(&json!({ "type": "state", "state": "listening" }), false);
+        assert_eq!(ui["streaming"], json!(false));
+        assert_eq!(ui["kind"], json!("voice"));
+        let ui = ui_message(&json!({ "type": "partial", "text": "hi" }), false);
+        assert!(ui.get("streaming").is_none());
     }
 }

@@ -67,6 +67,15 @@ impl Telemetry {
         step
     }
 
+    /// A step that began at `at`, measured before it could be reported (e.g. before the sink existed).
+    pub fn start_at(&self, name: &'static str, request_id: Option<&str>, parent: Option<&Step>, at: Instant, attrs: Attrs) -> Step {
+        let mut step = new_step(name, request_id, parent);
+        step.started = at;
+        let ago = at.elapsed().as_millis() as u64;
+        self.emit(|| event(now_ms().saturating_sub(ago), "start", &step, None, None, None, attrs));
+        step
+    }
+
     pub fn end(&self, step: Step, outcome: Outcome, error_code: Option<&str>, attrs: Attrs) {
         let ms = (step.started.elapsed().as_secs_f64() * 1_000_000.0).round() / 1000.0;
         self.emit(|| event(now_ms(), "end", &step, Some(ms), Some(outcome), error_code, attrs));
@@ -75,6 +84,12 @@ impl Telemetry {
     pub fn record(&self, name: &'static str, request_id: Option<&str>, parent: Option<&Step>, attrs: Attrs) {
         let step = new_step(name, request_id, parent);
         self.emit(|| event(now_ms(), "event", &step, None, None, None, attrs));
+    }
+
+    /// A failure with no step around it: an `event` with outcome error and a stable code.
+    pub fn record_error(&self, name: &'static str, request_id: Option<&str>, code: &str, attrs: Attrs) {
+        let step = new_step(name, request_id, None);
+        self.emit(|| event(now_ms(), "event", &step, None, Some(Outcome::Error), Some(code), attrs));
     }
 
     fn emit(&self, make: impl FnOnce() -> Value) {
@@ -104,7 +119,15 @@ pub fn end(step: Step, outcome: Outcome, error_code: Option<&str>, attrs: Attrs)
     TEL.end(step, outcome, error_code, attrs)
 }
 
-#[allow(dead_code)] // part of the shared start/end/record API; no host event uses it yet
+pub fn start_at(name: &'static str, request_id: Option<&str>, parent: Option<&Step>, at: Instant, attrs: Attrs) -> Step {
+    TEL.start_at(name, request_id, parent, at, attrs)
+}
+
+pub fn record_error(name: &'static str, request_id: Option<&str>, code: &str, attrs: Attrs) {
+    TEL.record_error(name, request_id, code, attrs)
+}
+
+#[allow(dead_code)] // part of the shared start/end/record API; host events use start/end and record_error
 pub fn record(name: &'static str, request_id: Option<&str>, parent: Option<&Step>, attrs: Attrs) {
     TEL.record(name, request_id, parent, attrs)
 }
@@ -131,6 +154,7 @@ pub fn stamp_answer(tel: &Telemetry, msg: &mut Value) -> Option<String> {
         _ => new_request_id(),
     };
     msg["request_id"] = json!(rid);
+    msg["sent_ms"] = json!(now_ms());
     tel.record("host.request_typed", Some(&rid), None, Attrs::new());
     Some(rid)
 }
@@ -180,7 +204,8 @@ fn os() -> &'static str {
     }
 }
 
-fn now_ms() -> u64 {
+/// Epoch ms; also `sent_ms` on messages to the sidecar, for `agent.handoff`.
+pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -261,6 +286,7 @@ mod tests {
         let rid = stamp_answer(&tel, &mut m).unwrap();
         assert!(is_request_id(&rid));
         assert_eq!(m["request_id"], rid.as_str());
+        assert!(m["sent_ms"].as_u64().is_some_and(|t| t > 0));
         assert_eq!(got.lock().unwrap()[0]["step"], "host.request_typed");
         assert_eq!(got.lock().unwrap()[0]["request_id"], rid.as_str());
 
@@ -272,6 +298,20 @@ mod tests {
             assert_eq!(stamp_answer(&tel, &mut m), None);
             assert!(m.get("request_id").is_none());
         }
+    }
+
+    #[test]
+    fn start_at_is_back_dated_and_errors_carry_a_code() {
+        let (tel, got) = capture();
+        let at = Instant::now() - std::time::Duration::from_millis(250);
+        let s = tel.start_at("host.cold_start", None, None, at, Attrs::new());
+        tel.end(s, Outcome::Ok, None, Attrs::new());
+        tel.record_error("host.error", None, "menu_build_failed", Attrs::new());
+        let ev = got.lock().unwrap().clone();
+        let start_ts = ev[0]["ts"].as_u64().unwrap();
+        assert!(ev[1]["ts"].as_u64().unwrap() - start_ts >= 240);
+        assert!(ev[1]["duration_ms"].as_f64().unwrap() >= 250.0);
+        assert_eq!((&ev[2]["kind"], &ev[2]["outcome"], &ev[2]["error_code"]), (&json!("event"), &json!("error"), &json!("menu_build_failed")));
     }
 
     #[test]

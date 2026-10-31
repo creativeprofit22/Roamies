@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod dictation;
+mod lifecycle;
 mod sidecar;
 mod telemetry;
 mod voice;
@@ -34,7 +35,7 @@ const ONBOARDING_LABEL: &str = "onboarding";
 struct Sidecar(Mutex<Option<ChildStdin>>);
 struct Roster(Mutex<Vec<String>>);
 /// The voice helper and how many times it has died on its own since it was last wanted.
-struct Voice(Mutex<Option<Child>>, AtomicUsize);
+struct Voice(Mutex<Option<Child>>, lifecycle::Restarts);
 /// Talk chord passed to the voice helper, e.g. ["control", "option"].
 struct TalkChord(Mutex<Vec<String>>);
 /// Windows: the engine the sidecar chose and its model folder (the sidecar owns downloads and the choice).
@@ -55,9 +56,11 @@ fn is_overlay(label: &str) -> bool {
     label.starts_with("overlay-")
 }
 
-fn to_sidecar(app: &AppHandle, msg: &Value) {
-    if let Some(stdin) = app.state::<Sidecar>().0.lock().unwrap().as_mut() {
-        let _ = writeln!(stdin, "{msg}");
+/// Whether the message was written (false: no sidecar running, or the pipe is broken).
+fn to_sidecar(app: &AppHandle, msg: &Value) -> bool {
+    match app.state::<Sidecar>().0.lock().unwrap().as_mut() {
+        Some(stdin) => writeln!(stdin, "{msg}").is_ok(),
+        None => false,
     }
 }
 
@@ -88,6 +91,12 @@ fn set_hot(window: WebviewWindow, hot: bool) {
 fn sidecar_send(app: AppHandle, mut msg: Value) {
     telemetry::stamp_answer(&telemetry::TEL, &mut msg);
     to_sidecar(&app, &msg);
+}
+
+/// Resident memory of the host and the voice helper, for the sidecar's `app.memory` sample.
+fn memory(app: &AppHandle) -> Value {
+    let helper = app.state::<Voice>().0.lock().unwrap().as_ref().map(Child::id);
+    json!({ "type": "memory", "host": lifecycle::rss_bytes(std::process::id()), "helper": helper.and_then(lifecycle::rss_bytes) })
 }
 
 /// The input bubble needs keystrokes: make the overlay key while typing, then hand focus back.
@@ -351,13 +360,14 @@ fn open_onboarding(app: &AppHandle) {
                 if let tauri::WindowEvent::Destroyed = e {
                     ONBOARDING.store(false, Ordering::Relaxed);
                     set_dock(&app2, false);
-                    to_sidecar(&app2, &json!({ "type": "ob_closed" }));
+                    let _ = to_sidecar(&app2, &json!({ "type": "ob_closed" }));
                 }
             });
             activate_app(app);
         }
         Err(e) => {
             set_dock(app, false);
+            telemetry::record_error("host.error", None, "guide_open_failed", Default::default());
             eprintln!("setup guide failed to open: {e}");
         }
     }
@@ -498,7 +508,10 @@ fn set_menu(app: &AppHandle, items: &[Value]) {
     });
     match built {
         Ok(menu) => { let _ = tray.set_menu(Some(menu)); }
-        Err(e) => eprintln!("menu build failed: {e}"),
+        Err(e) => {
+            telemetry::record_error("host.error", None, "menu_build_failed", Default::default());
+            eprintln!("menu build failed: {e}");
+        }
     }
 }
 
@@ -589,16 +602,27 @@ fn update(app: &AppHandle, install: bool) {
             }
             to_sidecar(&app, &m);
         };
+        let check = telemetry::start("host.update_check", None, None, Default::default());
         let found = match app.updater() {
             Ok(u) => u.check().await,
             Err(e) => Err(e),
         };
+        match &found {
+            Ok(u) => telemetry::end(check, telemetry::Outcome::Ok, None, telemetry::attrs(json!({ "found": u.is_some() }))),
+            Err(_) => telemetry::end(check, telemetry::Outcome::Error, Some("update_check_failed"), Default::default()),
+        }
         match found {
             Ok(None) => status("none", json!({})),
             Ok(Some(u)) if !install => status("available", json!({ "version": u.version })),
             Ok(Some(u)) => {
                 status("downloading", json!({ "version": u.version }));
-                match u.download_and_install(|_, _| {}, || {}).await {
+                let dl = telemetry::start("host.update_download", None, None, Default::default());
+                let done = u.download_and_install(|_, _| {}, || {}).await;
+                match &done {
+                    Ok(()) => telemetry::end(dl, telemetry::Outcome::Ok, None, Default::default()),
+                    Err(_) => telemetry::end(dl, telemetry::Outcome::Error, Some("update_download_failed"), Default::default()),
+                }
+                match done {
                     Ok(()) => {
                         status("installed", json!({ "version": u.version }));
                         tokio_sleep(Duration::from_millis(1500)).await;
@@ -620,6 +644,9 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
     match msg.get("type").and_then(Value::as_str) {
         Some("update") => update(app, msg.get("install").and_then(Value::as_bool) == Some(true)),
         Some("login_item") => login_item(app, msg.get("on").and_then(Value::as_bool)),
+        Some("memory_probe") => {
+            let _ = to_sidecar(app, &memory(app));
+        }
         Some("menu") => {
             if let Some(items) = msg.get("items").and_then(Value::as_array) {
                 set_menu(app, items);
@@ -644,6 +671,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
                 if let Some(accel) = msg.get(which).and_then(Value::as_str) {
                     if let Err(e) = set_hotkey(slot, accel) {
                         eprintln!("{which} shortcut {accel}: {e}");
+                        telemetry::record_error("host.shortcut", None, "shortcut_taken", telemetry::attrs(json!({ "which": which })));
                         to_sidecar(app, &json!({ "type": "keybind_error", "which": which, "accel": accel, "error": e }));
                     }
                 }
@@ -664,7 +692,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             if msg.get("type").and_then(Value::as_str) == Some("dictation_paste") {
                 dictation::paste(app, text, rid);
             } else {
-                dictation::copy_only(app, text);
+                dictation::copy_only(app, text, rid);
             }
         }
         Some("voice_config") => {
@@ -686,7 +714,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
                 stop_voice(app);
             }
             if msg.get("enabled").and_then(Value::as_bool) == Some(true) {
-                app.state::<Voice>().1.store(0, Ordering::Relaxed);
+                app.state::<Voice>().1.reset();
                 start_voice(app);
                 let mute = msg.get("mute").and_then(Value::as_bool).unwrap_or(true);
                 to_voice(app, &json!({ "cmd": "mute", "on": mute }));
@@ -718,6 +746,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
 }
 
 fn main() {
+    lifecycle::mark_process_start();
     tauri::Builder::default()
         // Must be the first plugin. A second launch (say, straight from the DMG) quits and summons this one instead.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -727,16 +756,26 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecar(Mutex::new(None)))
         .manage(Roster(Mutex::new(vec!["sidekick".into()])))
-        .manage(Voice(Mutex::new(None), AtomicUsize::new(0)))
+        .manage(Voice(Mutex::new(None), lifecycle::Restarts::new()))
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
         .manage(VoiceWant(Mutex::new(voice::Want::default())))
         .invoke_handler(tauri::generate_handler![set_hot, sidecar_send, set_typing, perm_status, perm_request, open_settings, onboarding_finish, relaunch, focus_guide, drag_window])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),
             "restart" => spawn_sidecar(app),
-            id => to_sidecar(app, &json!({ "type": "menu", "id": id })),
+            id => {
+                let _ = to_sidecar(app, &json!({ "type": "menu", "id": id }));
+            }
         })
         .setup(|app| {
+            // Until the sidecar is up (or while it's down) host events wait in the backlog.
+            let tel_app = app.handle().clone();
+            telemetry::TEL.set_sink(move |e| {
+                let mut msg = json!({ "type": "telemetry", "events": [e] });
+                if !to_sidecar(&tel_app, &msg) {
+                    lifecycle::hold(msg["events"][0].take());
+                }
+            });
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -757,9 +796,8 @@ fn main() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
-
-            let tel_app = app.handle().clone();
-            telemetry::TEL.set_sink(move |e| to_sidecar(&tel_app, &json!({ "type": "telemetry", "events": [e] })));
+            let cold = telemetry::start_at("host.cold_start", None, None, lifecycle::process_start(), Default::default());
+            telemetry::end(cold, telemetry::Outcome::Ok, None, Default::default());
             init_hotkeys(app.handle());
             if let Err(e) = set_hotkey(0, "Control+Alt+KeyS") {
                 eprintln!("could not register the show/hide shortcut: {e}");

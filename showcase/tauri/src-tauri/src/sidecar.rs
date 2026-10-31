@@ -2,6 +2,10 @@
 
 use super::*;
 use std::io::{BufRead, BufReader};
+use std::time::Instant;
+
+/// How many times the sidecar has been started this run.
+static ATTEMPT: AtomicUsize = AtomicUsize::new(0);
 
 fn find_node() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("ROAMIES_NODE") {
@@ -38,9 +42,12 @@ fn sidecar_script(app: &AppHandle) -> PathBuf {
 
 pub(crate) fn spawn_sidecar(app: &AppHandle) {
     let Some(node) = find_node() else {
+        telemetry::record_error("host.sidecar_start", None, "node_missing", Default::default());
         fallback_menu(app, "Sidekick's runtime is missing; reinstall Roamies");
         return;
     };
+    let attempt = ATTEMPT.fetch_add(1, Ordering::Relaxed) + 1;
+    let started = Instant::now();
     let script = sidecar_script(app);
     let stderr = log_stdio("sidekick.log");
     let mut cmd = Command::new(node);
@@ -57,21 +64,47 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            telemetry::record_error("host.sidecar_start", None, "sidecar_spawn_failed", telemetry::attrs(json!({ "attempt": attempt })));
             fallback_menu(app, &format!("Sidekick failed to start: {e}"));
             return;
         }
     };
-    *app.state::<Sidecar>().0.lock().unwrap() = child.stdin.take();
+    let start = telemetry::start_at("host.sidecar_start", None, None, started, telemetry::attrs(json!({ "attempt": attempt })));
+    let mut stdin = child.stdin.take();
+    // Held events go first, under the same lock, so nothing newer can overtake them.
+    let (held, dropped) = lifecycle::take_backlog();
+    {
+        let state = app.state::<Sidecar>();
+        let mut slot = state.0.lock().unwrap();
+        if let (Some(s), Some(m)) = (stdin.as_mut(), held) {
+            let _ = writeln!(s, "{m}");
+        }
+        *slot = stdin;
+    }
+    if dropped > 0 {
+        telemetry::TEL.record_error("host.telemetry_backlog", None, "telemetry_dropped", telemetry::attrs(json!({ "dropped": dropped })));
+    }
     let stdout = child.stdout.take().expect("piped stdout");
     let app = app.clone();
     thread::spawn(move || {
+        let mut start = Some(start);
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(s) = start.take() {
+                telemetry::end(s, telemetry::Outcome::Ok, None, Default::default());
+            }
             let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
             let app2 = app.clone();
             let _ = app.run_on_main_thread(move || handle_sidecar(&app2, msg));
         }
-        let _ = child.wait();
+        if let Some(s) = start.take() {
+            telemetry::end(s, telemetry::Outcome::Error, Some("sidecar_exited"), Default::default());
+        }
+        let code = child.wait().ok().and_then(|s| s.code());
         *app.state::<Sidecar>().0.lock().unwrap() = None;
+        // Lands in the backlog; the next sidecar gets it.
+        let exit = telemetry::start_at("host.sidecar_exit", None, None, started, Default::default());
+        let (outcome, err) = if code == Some(0) { (telemetry::Outcome::Ok, None) } else { (telemetry::Outcome::Error, Some("sidecar_exited")) };
+        telemetry::end(exit, outcome, err, telemetry::attrs(json!({ "code": code, "attempt": attempt })));
         let app2 = app.clone();
         let _ = app.run_on_main_thread(move || fallback_menu(&app2, "Sidekick stopped"));
     });

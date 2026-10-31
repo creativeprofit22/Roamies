@@ -8,6 +8,8 @@ use std::{thread, time::Duration};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
+use crate::telemetry::{self, Outcome, Step, Telemetry};
+
 /// Where dictated text goes. Kept behind a trait so a "type characters" fallback can be added later.
 pub trait TextSink: Send {
     fn insert(&mut self, text: &str) -> Result<(), String>;
@@ -111,6 +113,50 @@ impl Chord for SystemChord {
     }
 }
 
+/// Times each clipboard or key call as a child step of the paste (`host.clipboard_*`, `host.key_send`).
+pub struct Timed<'a, T> {
+    pub inner: T,
+    pub tel: &'a Telemetry,
+    pub parent: Step,
+}
+
+fn timed(tel: &Telemetry, parent: &Step, name: &'static str, f: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    let s = tel.start(name, parent.request_id.as_deref(), Some(parent), Default::default());
+    let r = f();
+    let code = r.is_err().then(|| format!("{}_failed", name.trim_start_matches("host.")));
+    tel.end(s, if r.is_ok() { Outcome::Ok } else { Outcome::Error }, code.as_deref(), Default::default());
+    r
+}
+
+impl<C: Clip> Clip for Timed<'_, C> {
+    fn save(&mut self) -> Saved {
+        let s = self.tel.start("host.clipboard_save", self.parent.request_id.as_deref(), Some(&self.parent), Default::default());
+        let saved = self.inner.save();
+        let kind = match saved {
+            Saved::Text(_) => "text",
+            Saved::Image(_) => "image",
+            Saved::Nothing => "nothing",
+        };
+        self.tel.end(s, Outcome::Ok, None, telemetry::attrs(json!({ "saved": kind })));
+        saved
+    }
+    fn set_text(&mut self, text: &str) -> Result<(), String> {
+        let inner = &mut self.inner;
+        timed(self.tel, &self.parent, "host.clipboard_set", || inner.set_text(text))
+    }
+    fn restore(&mut self, saved: &Saved) -> Result<(), String> {
+        let inner = &mut self.inner;
+        timed(self.tel, &self.parent, "host.clipboard_restore", || inner.restore(saved))
+    }
+}
+
+impl<K: Chord> Chord for Timed<'_, K> {
+    fn paste(&mut self) -> Result<(), String> {
+        let inner = &mut self.inner;
+        timed(self.tel, &self.parent, "host.key_send", || inner.paste())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AppId {
     pub id: String,
@@ -203,14 +249,14 @@ pub fn focused_app() -> Option<AppId> {
 /// A final transcript in dictation mode. Read the target now, while it still has focus, then ask the sidecar.
 pub fn on_final(app: &AppHandle, text: &str, request_id: Option<&str>) {
     let target = focused_app().map(|a| json!({ "id": a.id, "name": a.name })).unwrap_or(Value::Null);
-    crate::to_sidecar(app, &json!({ "type": "dictation", "text": text, "app": target, "request_id": request_id }));
+    crate::to_sidecar(app, &json!({ "type": "dictation", "text": text, "app": target, "request_id": request_id, "sent_ms": telemetry::now_ms() }));
 }
 
 static PASTE: Mutex<()> = Mutex::new(());
 
-fn report(app: &AppHandle, result: Result<(), String>) {
+fn report(app: &AppHandle, result: Result<(), String>, request_id: Option<&str>) {
     let ok = result.is_ok();
-    crate::to_sidecar(app, &json!({ "type": "dictation_result", "ok": ok, "error": result.err() }));
+    crate::to_sidecar(app, &json!({ "type": "dictation_result", "ok": ok, "error": result.err(), "request_id": request_id }));
     crate::to_overlays(app, &json!({ "kind": "voice", "type": "dictated", "ok": ok }));
 }
 
@@ -219,9 +265,12 @@ pub fn paste(app: &AppHandle, text: String, request_id: Option<String>) {
     let app = app.clone();
     thread::spawn(move || {
         let _one = PASTE.lock().unwrap_or_else(|e| e.into_inner());
-        let step = crate::telemetry::start("host.dictation_paste", request_id.as_deref(), None, Default::default());
+        let tel = &telemetry::TEL;
+        let step = tel.start("host.dictation_paste", request_id.as_deref(), None, Default::default());
         let result = SystemClip::new().and_then(|clip| {
-            let mut sink = ClipboardPaste { clip, chord: SystemChord, settle: Duration::from_millis(50), wait: Duration::from_millis(300) };
+            let clip = Timed { inner: clip, tel, parent: step.clone() };
+            let chord = Timed { inner: SystemChord, tel, parent: step.clone() };
+            let mut sink = ClipboardPaste { clip, chord, settle: Duration::from_millis(50), wait: Duration::from_millis(300) };
             sink.insert(&text)
         });
         if result.is_err() {
@@ -229,19 +278,22 @@ pub fn paste(app: &AppHandle, text: String, request_id: Option<String>) {
                 let _ = c.set_text(&text);
             }
         }
-        let (outcome, code) = if result.is_ok() { (crate::telemetry::Outcome::Ok, None) } else { (crate::telemetry::Outcome::Error, Some("paste_failed")) };
-        crate::telemetry::end(step, outcome, code, Default::default());
-        report(&app, result);
+        let (outcome, code) = if result.is_ok() { (Outcome::Ok, None) } else { (Outcome::Error, Some("paste_failed")) };
+        tel.end(step, outcome, code, Default::default());
+        report(&app, result, request_id.as_deref());
     });
 }
 
 /// Blocked target: just put the text on the clipboard.
-pub fn copy_only(app: &AppHandle, text: String) {
+pub fn copy_only(app: &AppHandle, text: String, request_id: Option<String>) {
     let app = app.clone();
     thread::spawn(move || {
         let _one = PASTE.lock().unwrap_or_else(|e| e.into_inner());
+        let step = telemetry::start("host.dictation_copy", request_id.as_deref(), None, Default::default());
         let result = SystemClip::new().and_then(|mut c| c.set_text(&text));
-        report(&app, result);
+        let (outcome, code) = if result.is_ok() { (Outcome::Ok, None) } else { (Outcome::Error, Some("copy_failed")) };
+        telemetry::end(step, outcome, code, Default::default());
+        report(&app, result, request_id.as_deref());
     });
 }
 
@@ -329,6 +381,54 @@ mod tests {
         assert!(r.is_ok());
         assert_eq!(clip.now(), Saved::Nothing);
         assert_eq!(clip.last().as_deref(), Some("clear"));
+    }
+
+    fn timed_run(fail: bool) -> (Result<(), String>, Vec<Value>) {
+        let tel = Telemetry::new();
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let g = got.clone();
+        tel.set_sink(move |e| g.lock().unwrap().push(e));
+        let rid = telemetry::new_request_id();
+        let step = tel.start("host.dictation_paste", Some(&rid), None, Default::default());
+        let clip = FakeClip::with(Saved::Text("mine".into()));
+        let chord = FakeChord { clip: clip.clone(), fail, seen: Arc::new(Mutex::new(None)) };
+        let mut sink = ClipboardPaste {
+            clip: Timed { inner: clip, tel: &tel, parent: step.clone() },
+            chord: Timed { inner: chord, tel: &tel, parent: step.clone() },
+            settle: Duration::ZERO,
+            wait: Duration::ZERO,
+        };
+        let r = sink.insert("hello");
+        drop(sink);
+        tel.end(step, Outcome::Ok, None, Default::default());
+        let ev = got.lock().unwrap().clone();
+        for e in &ev {
+            assert_eq!(e["request_id"], rid.as_str());
+        }
+        (r, ev)
+    }
+
+    #[test]
+    fn timed_paste_emits_each_step_in_order() {
+        let (r, ev) = timed_run(false);
+        assert!(r.is_ok());
+        let parent = ev[0]["step_id"].clone();
+        let ends: Vec<(String, String)> = ev.iter().filter(|e| e["kind"] == "end" && e["step"] != "host.dictation_paste")
+            .map(|e| { assert_eq!(e["parent_step_id"], parent); (e["step"].as_str().unwrap().to_owned(), e["outcome"].as_str().unwrap().to_owned()) })
+            .collect();
+        let names: Vec<&str> = ends.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["host.clipboard_save", "host.clipboard_set", "host.key_send", "host.clipboard_restore"]);
+        assert!(ends.iter().all(|(_, o)| o == "ok"));
+        assert_eq!(ev[2]["attrs"]["saved"], "text");
+    }
+
+    #[test]
+    fn timed_paste_marks_a_failed_key_send() {
+        let (r, ev) = timed_run(true);
+        assert!(r.is_err());
+        let key = ev.iter().find(|e| e["kind"] == "end" && e["step"] == "host.key_send").unwrap();
+        assert_eq!((&key["outcome"], &key["error_code"]), (&json!("error"), &json!("key_send_failed")));
+        assert!(ev.iter().any(|e| e["kind"] == "end" && e["step"] == "host.clipboard_restore" && e["outcome"] == "ok"));
     }
 
     #[test]

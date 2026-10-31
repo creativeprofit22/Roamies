@@ -127,7 +127,8 @@ The helper is restarted after up to 3 crashes in a row; `ready` resets the count
 `{type:'memory_probe'}` and the host answers `{type:'memory', host, helper}` (RSS in bytes, or `null`); host
 values are left out if there is no answer within 2 s.
 
-Host events written while the sidecar isn't running (start-up, a crash) wait in a backlog of 500 (oldest
+Host events written while the sidecar isn't running (start-up, a crash), and `voice.*` events the host
+forwards from the voice helper in that time, wait in a backlog of 500 (oldest
 dropped and counted in a `host.telemetry_backlog` event) and are sent when the next sidecar starts.
 
 ### Hand-off

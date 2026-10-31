@@ -415,7 +415,8 @@ fn handle_voice(app: &AppHandle, msg: Value) {
                         talk().helper_rid = Some(r.to_string());
                     }
                 }
-                to_sidecar(app, &json!({ "type": "telemetry", "events": [ev] }));
+                let sent = to_sidecar(app, &json!({ "type": "telemetry", "events": [ev] }));
+                crate::lifecycle::hold_unsent(sent, ev);
             }
             return;
         }

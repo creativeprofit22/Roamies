@@ -54,6 +54,17 @@ pub fn hold(e: Value) {
     BACKLOG.lock().unwrap_or_else(|e| e.into_inner()).push(e);
 }
 
+/// Keeps a forwarded helper event that didn't reach the sidecar; with telemetry off nothing is held.
+pub fn hold_unsent_in(backlog: &Mutex<Backlog>, sent: bool, enabled: bool, ev: &Value) {
+    if !sent && enabled {
+        backlog.lock().unwrap_or_else(|e| e.into_inner()).push(ev.clone());
+    }
+}
+
+pub fn hold_unsent(sent: bool, ev: &Value) {
+    hold_unsent_in(&BACKLOG, sent, telemetry::TEL.enabled(), ev);
+}
+
 /// The held events as one `telemetry` message, if any.
 pub fn take_backlog() -> (Option<Value>, u64) {
     let (events, dropped) = BACKLOG.lock().unwrap_or_else(|e| e.into_inner()).drain();
@@ -203,6 +214,18 @@ mod tests {
         assert_eq!(events[0], json!(5));
         assert_eq!(events.last(), Some(&json!(BACKLOG_MAX + 4)));
         assert_eq!(b.drain(), (vec![], 0));
+    }
+
+    #[test]
+    fn unsent_helper_events_are_held_only_when_telemetry_is_on() {
+        let b = Mutex::new(Backlog::new());
+        hold_unsent_in(&b, true, true, &json!({ "step": "voice.stt", "n": 0 }));
+        hold_unsent_in(&b, false, false, &json!({ "step": "voice.stt", "n": 1 }));
+        hold_unsent_in(&b, false, true, &json!({ "step": "voice.session", "n": 2 }));
+        hold_unsent_in(&b, false, true, &json!({ "step": "voice.stt", "n": 3 }));
+        let (events, dropped) = b.lock().unwrap().drain();
+        assert_eq!(dropped, 0);
+        assert_eq!(events.iter().map(|e| e["n"].as_i64().unwrap()).collect::<Vec<_>>(), [2, 3]);
     }
 
     #[test]

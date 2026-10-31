@@ -37,6 +37,10 @@ jobs:
         working-directory: showcase/tauri/sidecar
         run: npm test
 
+      - name: Test sidecar (telemetry off)
+        working-directory: showcase/tauri/sidecar
+        run: npm run test:telemetry-off
+
       # Tauri's Linux build dependencies (v2.tauri.app/start/prerequisites, Debian list).
       - name: Install Tauri system dependencies
         run: |
@@ -188,6 +192,9 @@ jobs:
 
       - name: Test sidecar
         run: npm test
+
+      - name: Test sidecar (telemetry off)
+        run: npm run test:telemetry-off
 
   # The Windows app build: build.rs compiles both voice helpers and the bundle config ships their runtime.
   app-windows:

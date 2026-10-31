@@ -57,23 +57,83 @@ by pairing events or subtracting `ts` (for example "chord down → first reply t
 | `voice.session` | voice | chord down (back-dated) → idle | `engine`, `mode`, `streaming`, `audio_ms`, `chars` |
 | `voice.listen` | voice | listening shown → finish | `mode` |
 | `voice.finalize` | voice | engine `finish()` call | `chars` |
-| `host.voice_session` | host | `listening` → `idle` (all platforms, incl. macOS) | `mode`, `streaming` |
+| `voice.mic_open` | voice | chord armed → microphone open (child of `voice.session`) | |
+| `voice.engine_start` | voice | engine `start()` for this talk | `engine`, `warm` |
+| `voice.stt` | voice | speech end (finish) → final text, Windows engines | `chars` |
+| `voice.warmup` | voice | model load (`prepare()`), no request id | `engine`, `model` |
+| `host.voice_session` | host | `listening` → `idle` (all platforms, incl. macOS) | `mode`, `streaming`, `retry`, `retry_of` |
+| `host.stt` | host | helper `processing` → `final` (any engine, incl. macOS) | |
 | `host.dictation_paste` | host | paste start → done | |
+| `host.clipboard_save` / `host.clipboard_set` / `host.key_send` / `host.clipboard_restore` | host | the parts of a paste (children of `host.dictation_paste`) | |
+| `host.dictation_copy` | host | copy-only dictation (no paste) | |
 | `host.request_typed` | host | event: a typed request was sent | |
-| `agent.request` | sidecar | enqueued → reply done | `source` (`voice`, `typed`, `reminder`, `snap`), `model`, `provider`, `calls`, `tools`, `in`, `cacheRead`, `cacheWrite`, `out`, `image` |
+| `agent.handoff` | sidecar | host sent the message (`sent_ms`) → sidecar received it | |
+| `agent.request` | sidecar | enqueued → reply done | `source` (`voice`, `typed`, `reminder`, `snap`), `model`, `provider`, `calls`, `tools`, `in`, `cacheRead`, `cacheWrite`, `out`, `image`, `first_text_ms`, `retry`, `retry_of`, `retry_after_ms` |
 | `agent.queue_wait` | sidecar | enqueued → run starts | |
 | `agent.first_text` | sidecar | event: first reply text from the model | |
-| `agent.turn` | sidecar | one model call | `in`, `cacheRead`, `cacheWrite`, `out` |
+| `agent.turn` | sidecar | one model call (generation span) | `model`, `provider`, `ttft_ms` (call start → first streamed token), `stream_ms` (first → last token), `in`, `cacheRead`, `cacheWrite`, `out` |
 | `agent.tool` | sidecar | tool call start → end | `name`, `anim`, `variant` |
-| `dictation.check` | sidecar | event: safety verdict for a dictation | `level` |
+| `agent.safety` | sidecar | one `safety.mjs` check (child of its `agent.tool`) | `check` (`read`, `write`, `url`, `open`, `command`, `click`), `level` |
+| `dictation.check` | sidecar | safety check of the dictation target | `level` |
 | `voice_model.download` | sidecar | download start → ready/error | `engine` |
+| `ui.error_shown` | sidecar | event: an error bubble was shown | |
 | `ui.listen_shown` | webview | event: listening bubble on screen | `mode` |
 | `ui.first_bubble` | webview | agent `start` → first text shown | |
+| `ui.reply_paint` | webview | reply event reached the page → bubble painted (`performance.mark`/`measure`; "painted" is two `requestAnimationFrame`s later) | |
 | `telemetry.dropped` | sidecar | event: events dropped (queue full or write failed) | `count`, `reason` |
 | `telemetry.capped` | sidecar | event: day file hit the size cap | `bytes` |
 
-Error codes on `agent.request`: `not_signed_in`, `rate_limited`, `auth`, `aborted` (outcome `cancelled`),
-`failed`. On `voice.session`: `no_input`, `unavailable`, `nothing_heard`, `permission`.
+### Error codes
+
+Every error path that shows a bubble or logs also writes an event with outcome `error` and one of these codes.
+
+| where | codes |
+|---|---|
+| `agent.request`, `agent.turn` | `not_signed_in`, `rate_limited`, `auth`, `failed`; cancels (outcome `cancelled`): `user_stop` (Stop menu), `interrupted` (a new talk), `aborted` |
+| `agent.tool` / `agent.safety` | `tool_error` / `safety_blocked` |
+| `voice.session` | `no_input`, `unavailable`, `nothing_heard`, `permission`, `user_cancel` (cancelled) |
+| `voice.warmup` | `model_load_failed` |
+| `ui.error_shown` (the bubble) | `sign_in_needed`, `permission`, `no_input`, `nothing_heard`, `dictation_off`, `stt_failed`, `dictation_blocked`, `paste_failed`, `login_failed`, `login_busy`, `login_item_approval`, `snap_failed`, `update_failed`, `update_download_failed`, voice model download codes |
+| `dictation.check` | `dictation_blocked` |
+| `host.dictation_paste` and its parts | `paste_failed`, `copy_failed`, `key_send_failed` |
+| `host.helper_start` / `host.helper_exit` | `helper_missing`, `helper_spawn_failed` / `helper_crashed` |
+| `host.sidecar_start` / `host.sidecar_exit` | `node_missing`, `sidecar_spawn_failed` / `sidecar_exited` |
+| `host.update_check` / `host.update_download` | `update_check_failed` / `update_download_failed` |
+| `host.shortcut`, `host.error` | `shortcut_taken`; `hotkeys_unavailable`, `menu_build_failed`, `guide_open_failed` |
+| `sidecar.error` | the `console.error` label (`prompt_failed`, …) or `unexpected` |
+| `host.telemetry_backlog` | `telemetry_dropped` |
+
+### Retries and cancels
+
+A request or talk that starts within 10 s of a failed or cancelled one gets `retry: true` and `retry_of` (the
+earlier request id); `agent.request` also gets `retry_after_ms`.
+
+## App lifecycle
+
+No request id. Startup and restarts:
+
+| step | component | from → to | attrs / codes |
+|---|---|---|---|
+| `host.cold_start` | host | process start → tray ready | |
+| `host.sidecar_start` | host | sidecar spawn → first line on its stdout | `attempt` |
+| `host.sidecar_exit` | host | event: the sidecar exited | `code`; outcome `error`, `sidecar_exited` |
+| `sidecar.boot` | sidecar | Node process start → start-up done | |
+| `host.helper_start` | host | voice helper spawn → `ready` | `engine`, `attempt` |
+| `host.helper_exit` | host | event: the helper exited on its own | `code`, `crashes`, `restart`; `helper_crashed` |
+| `host.update_check` / `host.update_download` | host | updater check / download and install | `found` |
+| `app.memory` | sidecar | event, every 60 s while there was a request, talk or dictation in the last 60 s | `host_mb`, `sidecar_mb`, `helper_mb`, `heap_mb` |
+
+The helper is restarted after up to 3 crashes in a row; `ready` resets the count. Memory: the sidecar sends
+`{type:'memory_probe'}` and the host answers `{type:'memory', host, helper}` (RSS in bytes, or `null`); host
+values are left out if there is no answer within 2 s.
+
+Host events written while the sidecar isn't running (start-up, a crash) wait in a backlog of 500 (oldest
+dropped and counted in a `host.telemetry_backlog` event) and are sent when the next sidecar starts.
+
+### Hand-off
+
+The host adds `sent_ms` (epoch ms) to `voice`, `dictation` and typed `answer` messages. The sidecar turns it into
+`agent.handoff`, ignored if missing, in the future or older than 60 s.
 
 ## Request ids
 
@@ -94,6 +154,22 @@ the sidecar (reminders, the area-snap typed fallback), which the sidecar mints i
 
 The macOS Swift helper is unchanged: it ignores unknown commands and fields. On macOS the host's
 `host.voice_session` covers the voice part.
+
+## Turning it off
+
+The menu toggle (Settings > Telemetry) stops all writing. `ROAMIES_TELEMETRY=off` in the sidecar's environment
+forces it off whatever the config says. `npm run test:telemetry-off` runs the whole sidecar suite that way;
+`test/telemetry-chain.test.mjs` runs one mocked request with telemetry on and off and checks the UI output is
+the same and nothing is written.
+
+## Reading it
+
+```sh
+npm run telemetry:report -- chain <request_id>   # one request's steps in order, indented by parent
+npm run telemetry:report -- p95 [days]           # steps ranked by p95, with error and retry rates
+```
+
+It reads `~/.gg/sidekick/telemetry` (or `ROAMIES_DATA_DIR`, or `--dir <folder>`).
 
 ## Defaults
 

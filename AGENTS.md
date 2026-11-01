@@ -13,6 +13,8 @@ crate's `fetch-*.sh`).
 Telemetry (one request id across host, voice helper, sidecar and webview; written only by the sidecar,
 local only): see `docs/telemetry.md`. Each layer has its own `telemetry` module with the same start/end/record API.
 
+UI, CSS, layout or visual work in `showcase/` (roamies/, onboarding/, desktop.html): first read `showcase/AGENTS.md` (its `## Polish` section).
+
 ## Commands
 
 ```sh

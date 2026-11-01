@@ -1,0 +1,5 @@
+{
+  "name": "roamies-ui",
+  "private": true,
+  "description": "Roamies browser UI (roamies/, onboarding/, desktop.html); no build step."
+}

@@ -6,6 +6,7 @@
 // out: {type:'menu', items} {type:'ui', msg} {type:'overlays', ids}
 import { Agent } from '@kenkaiiii/gg-agent';
 import { redactArgs } from './safety.mjs';
+import { agentEvents } from './agentstream.mjs';
 import { agentUserAgent } from './useragent.mjs';
 import {
   AUTH_PROVIDERS, AuthStorage, dualAuthProvider, getClaudeCliUserAgent, getContextWindow, getDefaultModel, getModel, getModelsForProvider,
@@ -360,7 +361,7 @@ async function prompt(text, image = null) {
     const stamped = `[${stampNow()}] ${text}`;
     // An area snap rides along as an image in the same message.
     const content = image ? [{ type: 'text', text: `${stamped}\n(Attached: the area of the screen I selected.)` }, image] : stamped;
-    for await (const e of agent.prompt(content)) {
+    for await (const e of agentEvents(agent.prompt(content))) {
       if (e.type === 'text_delta') reply.push(e.text);
       else if (e.type === 'turn_end') {
         reply.endTurn();

@@ -348,7 +348,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     },
     {
       name: 'fetch_url', description: 'Fetch a web page and return its readable text.',
-      parameters: z.object({ url: z.string().url() }),
+      parameters: z.object({ url: z.string() }), // no .url(): OpenAI strict schemas reject format "uri"; checkUrl validates
       execute: async ({ url }) => {
         // Redirects are followed by hand so each hop is checked too (a public page can't bounce to localhost).
         let res, at = url;

@@ -167,6 +167,9 @@ the one that is pasted, sent to the agent or shown; the other engine's result is
 - It is skipped (logged as cancelled with `battery_saver`, `busy` or `not_installed`) when Windows battery saver is
   on, while the previous shadow job is still running, or when the other engine's model isn't downloaded. It never
   downloads a model.
+- It needs telemetry: with Record Telemetry off (or `ROAMIES_TELEMETRY=off`) the shadow helper isn't started at all,
+  since its results would be thrown away, and the menu item reads "(needs telemetry)". Turning telemetry back on
+  starts it again.
 - `host.stt_shadow` carries the shadow's metrics and `agreement` = 1 − word edits / longer word count between the two
   transcripts, plus `sub/ins/del` with the selected engine as reference. No text.
 

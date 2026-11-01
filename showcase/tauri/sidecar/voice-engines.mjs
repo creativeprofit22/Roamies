@@ -28,10 +28,10 @@ export function shadowEngine({ active, ready }) {
   return other ? { id: other.id, ready: !!ready(other.id) } : null;
 }
 
-// voice_config's `shadow` field: only when switched on, the primary is ready and the other model is
-// already verified. Shadow mode never starts a download.
-export function shadowPayload({ on, active, ready, dirOf }) {
-  if (!on || !active.ready) return null;
+// voice_config's `shadow` field: only when switched on, telemetry is recording (its only output), the primary
+// is ready and the other model is already verified. Shadow mode never starts a download.
+export function shadowPayload({ on, telemetry, active, ready, dirOf }) {
+  if (!on || !telemetry || !active.ready) return null;
   const s = shadowEngine({ active: active.id, ready });
   return s?.ready ? { engine: s.id, model: dirOf(s.id), ready: true } : null;
 }

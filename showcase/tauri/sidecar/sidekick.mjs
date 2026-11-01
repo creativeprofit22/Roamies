@@ -793,14 +793,14 @@ function engineItems() {
   if (active.id !== config.voiceEngine) items.push({ id: 'none', label: `Using ${engineLabel(active.id)} until ${engineLabel(config.voiceEngine)} is ready`, enabled: false });
   // Shadow mode (docs/voice-engines.md): the other engine re-transcribes each take for comparison only.
   const shadow = shadowEngine({ active: active.id, ready: (id) => voiceModels[id].status === 'ready' });
-  if (shadow) items.push({ sep: true }, { id: 'voiceshadow', label: `Compare With ${engineLabel(shadow.id)} in Background${shadow.ready ? '' : ' (model not downloaded)'}`, checked: !!config.voiceShadow });
+  if (shadow) items.push({ sep: true }, { id: 'voiceshadow', label: `Compare With ${engineLabel(shadow.id)} in Background${!shadow.ready ? ' (model not downloaded)' : tel.enabled ? '' : ' (needs telemetry)'}`, checked: !!config.voiceShadow });
   return items;
 }
 
 // With no model ready the helper still runs: a press reports `unavailable`, which starts the download.
 const voiceConfig = () => {
   const active = activeEngine();
-  const shadow = NEEDS_MODEL && shadowPayload({ on: config.voiceShadow, active, ready: (id) => voiceModels[id].status === 'ready', dirOf: (id) => voiceModels[id].dir });
+  const shadow = NEEDS_MODEL && shadowPayload({ on: config.voiceShadow, telemetry: tel.enabled, active, ready: (id) => voiceModels[id].status === 'ready', dirOf: (id) => voiceModels[id].dir });
   send({ type: 'voice_config', enabled: VOICE_OK && config.voice, mute: config.muteWhileTalking !== false, mode: config.voiceMode,
     ...(NEEDS_MODEL ? { engine: active.id, model: voiceModels[active.id].dir, ready: active.ready } : {}),
     ...(shadow ? { shadow } : {}) });
@@ -941,7 +941,7 @@ async function onMenu(id) {
   else if (id === 'telemetryfolder') fs.mkdir(TELEMETRY_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(TELEMETRY_DIR)).catch(() => {});
   else if (id === 'telemetry') {
     if (TEL_OFF) return;
-    config.telemetry = !tel.enabled; saveConfig(); tel.setEnabled(config.telemetry); telemetryConfig(); menu();
+    config.telemetry = !tel.enabled; saveConfig(); tel.setEnabled(config.telemetry); telemetryConfig(); voiceConfig(); menu();
   } else if (id === 'telemetrytext') {
     config.telemetryText = !tel.includeText; saveConfig(); tel.setIncludeText(config.telemetryText); menu();
     if (config.telemetryText) say("Okay, the telemetry log on this computer will include what you say and what I answer. Nothing is sent anywhere.", 'happy');

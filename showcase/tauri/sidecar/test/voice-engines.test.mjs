@@ -22,9 +22,11 @@ assert.deepEqual(shadowEngine({ active: 'moonshine', ready: readyOf('moonshine')
 
 // voice_config.shadow payload: off by default, never for a missing model or a primary that isn't ready
 const dirOf = (id) => `/m/${id}`;
-const on = { on: true, active: { id: 'moonshine', ready: true }, ready: readyOf('moonshine', 'parakeet'), dirOf };
+const on = { on: true, telemetry: true, active: { id: 'moonshine', ready: true }, ready: readyOf('moonshine', 'parakeet'), dirOf };
 assert.deepEqual(shadowPayload(on), { engine: 'parakeet', model: '/m/parakeet', ready: true });
 assert.equal(shadowPayload({ ...on, on: false }), null, 'toggle off');
+assert.equal(shadowPayload({ ...on, telemetry: false }), null, 'telemetry off: results would be dropped');
+assert.equal(shadowPayload({ ...on, telemetry: undefined }), null, 'telemetry unknown counts as off');
 assert.equal(shadowPayload({ ...on, ready: readyOf('moonshine') }), null, 'shadow model missing');
 assert.equal(shadowPayload({ ...on, active: { id: 'moonshine', ready: false } }), null, 'primary not ready');
 

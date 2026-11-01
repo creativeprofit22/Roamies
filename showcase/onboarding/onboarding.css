@@ -1,40 +1,4 @@
-/* Setup guide. Same LED-panel world as the Sidekick and the installer: Doto (dot matrix) for headings
-   and the Sidekick's voice, Martian Mono for everything else, and every tile, button, key and field
-   drawn as a pixel frame with stepped corners. Fonts are SIL OFL 1.1; licences sit in fonts/. */
-@font-face {
-  font-family: "Doto";
-  src: url("fonts/doto.woff2") format("woff2");
-  font-weight: 100 900;
-  font-display: block;
-}
-@font-face {
-  font-family: "Martian Mono";
-  src: url("fonts/martian-mono.woff2") format("woff2");
-  font-weight: 100 800;
-  font-stretch: 75% 112.5%;
-  font-display: block;
-}
-
-:root {
-  --bg: #051214;
-  --panel: #071a1c;
-  --ink: #e8fffa;
-  --ink-2: #b4d8d1;
-  --ink-3: #8ab8b0;
-  --accent: #78ffe2;
-  --accent-hi: #a8ffed;
-  --accent-lo: #5ce6c9;
-  --accent-ink: #032722;
-  --line: #1d4a48;
-  --line-hi: #2f7c74;
-  --line-hot: #4fbfa9;
-  --danger: #ffb4a8;
-  --ease: cubic-bezier(.2, .8, .2, 1);
-  --display: "Doto", ui-monospace, monospace;
-  --mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  color-scheme: dark;
-}
-* { box-sizing: border-box; }
+/* Setup guide layout. Tokens, fonts, pixel frames and controls live in ../ui/kit.css (loaded first). */
 html, body { margin: 0; height: 100%; }
 body {
   background:
@@ -48,43 +12,6 @@ body {
   user-select: none;
   -webkit-font-smoothing: antialiased;
 }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-
-/* ---------- pixel frame ----------
-   The element paints its frame colour and is clipped to stepped corners; ::before paints the fill
-   inside it. Set --bc (frame), --fill (inside) and --bw (frame width) per component. */
-.px {
-  --s: 2px;
-  --bc: var(--line);
-  --fill: var(--panel);
-  --bw: 2px;
-  --notch: polygon(
-    calc(var(--s) * 2) 0, calc(100% - var(--s) * 2) 0, calc(100% - var(--s) * 2) var(--s), calc(100% - var(--s)) var(--s),
-    calc(100% - var(--s)) calc(var(--s) * 2), 100% calc(var(--s) * 2), 100% calc(100% - var(--s) * 2),
-    calc(100% - var(--s)) calc(100% - var(--s) * 2), calc(100% - var(--s)) calc(100% - var(--s)),
-    calc(100% - var(--s) * 2) calc(100% - var(--s)), calc(100% - var(--s) * 2) 100%, calc(var(--s) * 2) 100%,
-    calc(var(--s) * 2) calc(100% - var(--s)), var(--s) calc(100% - var(--s)), var(--s) calc(100% - var(--s) * 2),
-    0 calc(100% - var(--s) * 2), 0 calc(var(--s) * 2), var(--s) calc(var(--s) * 2), var(--s) var(--s), calc(var(--s) * 2) var(--s));
-  position: relative; isolation: isolate;
-  background: var(--bc);
-  clip-path: var(--notch);
-  transition: background-color .15s var(--ease);
-}
-.px::before {
-  content: ""; position: absolute; inset: var(--bw); z-index: -1;
-  background: var(--fill);
-  clip-path: var(--notch);
-  transition: background-color .15s var(--ease);
-}
-/* clip-path hides outlines, so keyboard focus shows as a thick white frame with a dark inner ring. */
-.px:focus-visible, .px:has(:focus-visible) { --bc: var(--ink); --bw: 3px; }
-.px:focus-visible::before, .px:has(:focus-visible)::before { box-shadow: inset 0 0 0 2px var(--bg); }
-
-/* An LED status light: a lit square with a soft glow. */
-.led { display: inline-block; flex: none; width: 8px; height: 8px; background: #1e3f3d; }
-.led.on { background: var(--accent); box-shadow: 0 0 6px rgba(120, 255, 226, 0.9), 0 0 14px rgba(120, 255, 226, 0.35); }
-.led.busy { background: var(--accent); animation: led-blink 0.9s steps(2) infinite; }
-@keyframes led-blink { 50% { background: #1e3f3d; box-shadow: none; } }
 
 /* Invisible strip along the top (where a title bar would be) that moves the window. */
 .drag { position: fixed; inset: 0 0 auto 0; height: 34px; z-index: 20; cursor: default; }
@@ -115,113 +42,13 @@ h1 {
 h1:focus, h1:focus-visible { outline: none; }
 h2 { margin: 0; font: 700 13px/1.35 var(--mono); font-stretch: 87.5%; color: var(--ink); }
 .lead { margin: 0 0 18px; max-width: 36em; color: var(--ink-2); }
-.error { margin: 10px 0 0; font-size: 12px; color: var(--danger); }
 .glyph { color: var(--accent); filter: drop-shadow(0 0 4px rgba(120, 255, 226, 0.7)); }
 .trayicon { display: inline-block; width: 15px; height: 15px; vertical-align: -2px; }
 .cap .trayicon { width: 14px; height: 14px; vertical-align: 0; }
-
-/* ---------- buttons ---------- */
-.btn {
-  appearance: none; border: 0; padding: 10px 16px; cursor: pointer; color: var(--ink);
-  font: 700 12px/1.25 var(--mono); font-stretch: 87.5%; letter-spacing: 0.06em; text-transform: uppercase;
-}
-.btn.primary { --bc: var(--accent); --fill: var(--accent); color: var(--accent-ink); }
-.btn.primary:hover { --bc: var(--accent-hi); --fill: var(--accent-hi); }
-.btn.primary:active { --fill: var(--accent-lo); }
-.btn.primary:disabled { --bc: #1c3634; --fill: #1c3634; color: #7f9f9a; cursor: default; }
-.btn.ghost { --bc: var(--line-hi); }
-.btn.ghost:hover { --bc: var(--line-hot); }
-.btn.ghost:active { --fill: #0d2e2e; }
-.btn.ghost:disabled { --bc: var(--line); color: var(--ink-3); cursor: default; }
-.btn.text { background: transparent; color: var(--ink-2); padding-inline: 4px; }
-.btn.text:hover { color: var(--ink); }
-.btn.text:disabled { visibility: hidden; }
-.link {
-  appearance: none; background: none; border: 0; padding: 4px 0; cursor: pointer;
-  font: 600 12px/1.25 var(--mono); font-stretch: 87.5%; color: var(--accent);
-  text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px;
-  transition: text-decoration-color .15s var(--ease);
-}
-.link:hover { text-decoration-color: currentColor; }
-:focus { outline: none; }
-.btn.text:focus-visible, .link:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-
-/* ---------- permission rows ---------- */
-.rows { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; }
-.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 6px 10px 6px 14px; min-height: 46px; }
-.row.focus { --bc: var(--line-hi); }
-.row.granted { --bc: #24675f; }
-.row p { margin: 1px 0 0; font-size: 11px; line-height: 1.4; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.status {
-  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
-  font: 700 11px/1.2 var(--mono); font-stretch: 87.5%; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
-}
-.waiting { font: 600 11px/1.2 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
-.row .btn { padding: 7px 12px; white-space: nowrap; }
-.pair { display: inline-flex; gap: 6px; }
-.row p.bad { color: var(--danger); white-space: normal; }
-/* Download progress: the step bar's LED segments, smaller. */
-.dl-wrap { display: inline-flex; align-items: center; gap: 10px; }
-.dl { display: inline-flex; gap: 2px; }
-.dl i { width: 8px; height: 6px; background: #14302f; transition: background-color .3s var(--ease), box-shadow .3s var(--ease); }
-.dl i.on { background: var(--accent); box-shadow: 0 0 6px rgba(120, 255, 226, 0.6); }
-.dl-pct { min-width: 4ch; text-align: right; }
-
-/* Pixel switch: a stepped track and a square knob. */
-.switch { appearance: none; width: 44px; height: 24px; padding: 0; border: 0; cursor: pointer; --bc: var(--line-hi); --fill: #0b2224; }
-.switch::after {
-  content: ""; position: absolute; top: 6px; left: 6px; width: 12px; height: 12px;
-  background: var(--ink-3); transition: transform .18s steps(4), background-color .18s var(--ease);
-}
-.switch[aria-checked="true"] { --bc: var(--accent); --fill: #0e3a36; }
-.switch[aria-checked="true"]::after { transform: translateX(20px); background: var(--accent); box-shadow: 0 0 8px rgba(120, 255, 226, 0.8); }
-
-/* ---------- providers ---------- */
-.connected { display: flex; align-items: center; gap: 10px; margin: -6px 0 14px; font-weight: 700; color: var(--accent); }
-.providers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
-.prov {
-  appearance: none; display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 2px 8px;
-  text-align: left; cursor: pointer; padding: 10px 12px; border: 0; color: var(--ink);
-  font: 700 14px/1.25 var(--mono); font-stretch: 87.5%;
-}
-.prov { --bc: var(--line-hi); }
-.prov small { grid-column: 1 / -1; font: 500 11px/1.3 var(--mono); font-stretch: 87.5%; color: var(--ink-3); }
-.prov .led { margin-top: 4px; }
-.prov:hover { --bc: var(--line-hot); }
-.prov:active { --fill: #0b2526; }
-.prov:disabled { cursor: default; opacity: 0.5; }
-.prov.busy { --bc: var(--accent); opacity: 1; }
-.prov.on { --bc: var(--accent); --fill: #0a2a28; }
-.prov.on small { color: var(--accent); }
-
-.inline { margin: 4px 0 8px; }
-.inline label { display: block; margin-bottom: 6px; font-size: 12px; color: var(--ink-2); }
-.field-row { display: flex; gap: 8px; }
-.field { display: flex; flex: 1; min-width: 0; --bc: var(--line-hi); --fill: #061719; }
-.field.select { flex: 0 0 160px; }
-input, select {
-  min-width: 0; flex: 1; padding: 9px 12px; border: 0; background: transparent; color: var(--ink);
-  font: 500 13px/1.25 var(--mono); font-stretch: 87.5%; user-select: text;
-}
-input::placeholder { color: var(--ink-3); }
-select {
-  appearance: none; padding-inline-end: 30px;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' shape-rendering='crispEdges'%3E%3Cpath d='M0 0h2v2H0zM2 2h2v2H2zM4 4h2v2H4zM6 2h2v2H6zM8 0h2v2H8z' fill='%23b4d8d1'/%3E%3C/svg%3E") no-repeat right 12px center;
-}
-select option { background: var(--panel); color: var(--ink); }
-input:focus-visible, select:focus-visible { outline: none; }
-
 /* ---------- shortcuts ---------- */
 .keyrow { padding: 13px 16px; margin-bottom: 9px; }
 .keyrow-head { margin-bottom: 10px; }
 .keyrow-head p { margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--ink-3); }
-.caps { display: inline-flex; gap: 4px; }
-/* Keycaps: thicker bottom edge, like a key you could press. */
-.cap {
-  --bc: #2f6d66; --fill: #0c2a2c; --bw: 2px 2px 4px 2px;
-  display: inline-grid; place-items: center; min-width: 28px; height: 28px; padding: 0 7px 2px;
-  color: var(--ink); font: 700 13px/1 var(--mono); font-stretch: 87.5%;
-}
 .chords { display: flex; flex-wrap: wrap; gap: 6px; }
 .chord { appearance: none; display: inline-flex; padding: 5px; border: 0; cursor: pointer; --bc: var(--line-hi); --fill: var(--panel); }
 .chord:hover { --bc: var(--line-hot); }
@@ -290,7 +117,8 @@ input:focus-visible, select:focus-visible { outline: none; }
 .quip.on + .quip-tail { opacity: 1; }
 .quip:empty, .quip:empty + .quip-tail { display: none; }
 
+
 @media (prefers-reduced-motion: reduce) {
-  .step, .mb-me, .summon.recording .caps, .led.busy { animation: none; }
-  .px, .px::before, .link, .switch::after, .quip, .quip-tail, .progress li, .dl i { transition: none; }
+  .step, .mb-me, .summon.recording .caps { animation: none; }
+  .quip, .quip-tail, .progress li { transition: none; }
 }

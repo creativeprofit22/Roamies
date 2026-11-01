@@ -150,7 +150,8 @@ defined once in `voice-core/src/protocol.rs` and measured by `voice-core/src/met
 
 `npm run telemetry:report -- stt [days]` compares them per engine and role: count, empty rate, p50/p95 RTF,
 speech end → final and first partial, mean revision rate, max peak RAM, mean shadow agreement and the
-`stt_correction` rate per selected engine.
+`stt_correction` rate per selected engine. `npm run telemetry:report -- report` adds shadow S / I / D sums, a
+by-version split and the bench tables above (see [the full report](telemetry.md#the-full-report)).
 
 ## Shadow mode
 

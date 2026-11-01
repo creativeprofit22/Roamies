@@ -180,6 +180,55 @@ npm run telemetry:report -- stt [days]           # voice engines compared by eng
 
 It reads `~/.gg/sidekick/telemetry` (or `ROAMIES_DATA_DIR`, or `--dir <folder>`).
 
+### The full report
+
+```sh
+cd showcase/tauri/sidecar
+npm run telemetry:report -- report [days] [--dir <folder>] [--out <folder>] [--bench-doc <md>]
+```
+
+It reads the newest `days` day files (default 14, the retention) and writes two files to `--out`, by default
+`~/.gg/sidekick/telemetry-report/` (next to the telemetry folder, so retention never deletes it):
+
+- `telemetry-report.md`: the readable report.
+- `telemetry-report.json`: the same numbers unrounded, for scripts or the agent.
+
+Only those two files are overwritten. It needs no dependencies beyond Node and exits 0 even with no events.
+`--bench-doc` points at another copy of `docs/voice-engines.md` for the offline bench tables.
+
+Sections: Input, Regressions, Steps, Components, Share of request time, Slowest requests, Errors and cancels,
+Crashes and restarts, Memory, Voice engines (live and offline bench), By version.
+
+### What the numbers mean
+
+| metric | meaning |
+|---|---|
+| p50 / p90 / p95 / p99 / max | exact nearest-rank percentiles over every raw `duration_ms` of a step's ends (no sampling or buckets); the set prom-client's Summary uses |
+| n | ended steps (`kind: "end"`) with a duration |
+| error / cancel rate | ends with `outcome: "error"` / `"cancelled"` ÷ all ends of the step |
+| retry rate | ends whose `start` (or end) has `attrs.retry` ÷ all ends |
+| component | the same stats over every ended step of one layer (`host`, `sidecar`, `webview`, `voice`); nested steps count in their own and their parent's numbers |
+| share of request time | a step's summed duration inside requests ÷ the summed wall time of all requests (first event → last end per `request_id`). Nested steps overlap their parents, so shares don't add up to 100 % |
+| slowest requests | the 10 longest requests by wall time, each step with its offset from the request's first event, duration, outcome and error code |
+| by error code | count per (step, outcome, `error_code`) and its share of that step's outcomes |
+| crashes and restarts | app starts (`host.cold_start`), sidecar boots and starts, restarts (`host.sidecar_start` with `attempt` > 1), sidecar exits, voice helper crashes (`host.helper_exit`, restarted or given up), shadow helper crashes, telemetry events dropped and days capped |
+| memory | `app.memory` samples (`host_mb`, `sidecar_mb`, `helper_mb`, `heap_mb`) per UTC day and per app version: p50 and max; the trend is the p50 change from the first to the last day |
+| regressions | the newest two `app_version`s: a step whose p95 grew ≥ 20 %, or whose error rate rose ≥ 5 points, with n ≥ 5 in both |
+| voice engines | per engine and role (primary = the selected engine, shadow): n, skipped and crashed shadow runs, empty rate, rtf, speech end → final, time to first partial, revision rate, shadow agreement, S / I / D (substitutions / insertions / deletions against the selected engine's text, jiwer's naming), `stt_correction` count and rate, peak RAM. Field meanings: [voice metrics](voice-engines.md#voice-metrics) |
+| offline bench | the `### Own voice` and `### LibriSpeech` tables and the test machine note from `docs/voice-engines.md`, as last run with `--bench` |
+| malformed / unsupported schema | lines skipped because they aren't JSON or lack `ts`, `kind` or `step`, and lines with a `schema` this script can't read (missing `schema` counts as 1). Skipped lines never fail the report |
+
+### How to ask the agent
+
+1. Run `npm run telemetry:report -- report` in `showcase/tauri/sidecar`.
+2. Attach `telemetry-report.md` and `telemetry-report.json` from `~/.gg/sidekick/telemetry-report/`.
+3. For the engine decision also attach `docs/voice-engines.md`. Attach a raw day file (`telemetry/YYYY-MM-DD.jsonl`)
+   only to dig into one request with `chain`.
+
+Example prompt: "Here is my Roamies telemetry report. List the three biggest bottlenecks and any regressions
+between versions, with the code change you'd make for each, and say whether the voice numbers support keeping the
+current default engine."
+
 ## Defaults
 
 | setting | default |

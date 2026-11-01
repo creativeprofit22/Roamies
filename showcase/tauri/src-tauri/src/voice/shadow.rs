@@ -13,6 +13,8 @@ use std::sync::Arc;
 const KEEP: usize = 4;
 /// A job the shadow never answered stops counting as busy after this.
 const BUSY_FOR: Duration = Duration::from_secs(90);
+/// Respawns after the shadow helper dies on its own, per wanted config (reset when it answers or the config changes).
+const MAX_RESPAWNS: usize = 1;
 
 /// Where a primary helper line goes. Shadow audio and anything shadow-shaped never reach the UI routes.
 #[derive(Debug, PartialEq)]
@@ -131,6 +133,8 @@ struct Proc {
 }
 
 static PROC: Mutex<Option<Proc>> = Mutex::new(None);
+/// The config the sidecar last asked for and how many times its helper has crashed. Locked after `PROC`.
+static WANTED: Mutex<(Option<Want>, usize)> = Mutex::new((None, 0));
 static BOOK: Mutex<Option<Book>> = Mutex::new(None);
 /// Whether the primary helper should keep each take for the shadow (resent whenever it restarts).
 static ON: AtomicBool = AtomicBool::new(false);
@@ -146,12 +150,20 @@ pub(crate) fn on() -> bool {
 /// Starts, switches or stops the shadow helper to match the sidecar's config, and tells the primary.
 pub(crate) fn sync(app: &AppHandle, want: Option<Want>) {
     let mut slot = PROC.lock().unwrap_or_else(|e| e.into_inner());
+    let crashes = {
+        let mut w = WANTED.lock().unwrap_or_else(|e| e.into_inner());
+        if w.0 != want {
+            *w = (want.clone(), 0);
+        }
+        w.1
+    };
     if slot.as_ref().map(|p| &p.want) != want.as_ref() {
         if let Some(p) = slot.take() {
             retire(p);
         }
-        if let Some(w) = want.clone() {
-            *slot = spawn(w);
+        // A config whose helper keeps crashing stays off until the config changes.
+        if let Some(w) = want.clone().filter(|_| crashes <= MAX_RESPAWNS) {
+            *slot = spawn(app, w);
         }
     }
     let on = slot.is_some();
@@ -166,24 +178,84 @@ pub(crate) fn sync(app: &AppHandle, want: Option<Want>) {
     to_voice(app, &json!({ "cmd": "shadow", "on": on }));
 }
 
+/// Waits up to 3 s for the helper to exit, then kills it. `Some(exit code)` if it exited by itself.
+fn reap(child: &mut Child) -> Option<Option<i32>> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status.code());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
 /// Closing stdin ends the helper's loop; kill it only if it hangs.
 fn retire(mut p: Proc) {
     drop(p.stdin);
-    thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if let Ok(Some(_)) = p.child.try_wait() {
-                return voice_log(&format!("shadow stop pid {} exited", p.pid));
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        let _ = p.child.kill();
-        let _ = p.child.wait();
-        voice_log(&format!("shadow stop pid {} killed", p.pid));
+    thread::spawn(move || match reap(&mut p.child) {
+        Some(_) => voice_log(&format!("shadow stop pid {} exited", p.pid)),
+        None => voice_log(&format!("shadow stop pid {} killed", p.pid)),
     });
 }
 
-fn spawn(want: Want) -> Option<Proc> {
+/// The process with `pid` exited: take it out of the slot, unless the slot holds another one (or none).
+fn take_exited<T>(slot: &mut Option<T>, pid: u32, pid_of: impl Fn(&T) -> u32) -> Option<T> {
+    if slot.as_ref().is_some_and(|p| pid_of(p) == pid) {
+        slot.take()
+    } else {
+        None
+    }
+}
+
+/// How long to wait before respawning after crash number `crashes`, or `None` once the cap is used up.
+fn respawn_after(crashes: usize) -> Option<Duration> {
+    (crashes <= MAX_RESPAWNS).then(|| Duration::from_secs(2 * crashes as u64))
+}
+
+/// The shadow helper's output closed. If it was still the current one it died on its own: clear it,
+/// stop the primary buffering for it, record `helper_crashed`, and respawn it within the cap.
+fn exited(app: &AppHandle, pid: u32) {
+    let mut slot = PROC.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut p) = take_exited(&mut slot, pid, |p: &Proc| p.pid) else {
+        return voice_log(&format!("shadow pid {pid} output closed"));
+    };
+    let crashes = {
+        let mut w = WANTED.lock().unwrap_or_else(|e| e.into_inner());
+        w.1 += 1;
+        w.1
+    };
+    ON.store(false, Ordering::Relaxed);
+    drop(slot);
+    drop(p.stdin);
+    let code = reap(&mut p.child).flatten();
+    book(|b| {
+        b.busy = None;
+        b.finals.clear();
+    });
+    to_voice(app, &json!({ "cmd": "shadow", "on": false }));
+    let wait = respawn_after(crashes);
+    voice_log(&format!("shadow pid {pid} exited on its own (code {code:?}, crash {crashes})"));
+    let a = telemetry::attrs(json!({ "role": "shadow", "engine": p.want.engine, "code": code, "crashes": crashes, "restart": wait.is_some() }));
+    telemetry::record_error("host.stt_shadow", None, "helper_crashed", a);
+    let Some(wait) = wait else { return };
+    thread::sleep(wait);
+    let mut slot = PROC.lock().unwrap_or_else(|e| e.into_inner());
+    // Only if nothing changed meanwhile: no newer helper, and the sidecar still wants this one.
+    if slot.is_some() || WANTED.lock().unwrap_or_else(|e| e.into_inner()).0.as_ref() != Some(&p.want) {
+        return;
+    }
+    *slot = spawn(app, p.want);
+    if slot.is_some() {
+        ON.store(true, Ordering::Relaxed);
+        drop(slot);
+        to_voice(app, &json!({ "cmd": "shadow", "on": true }));
+    }
+}
+
+fn spawn(app: &AppHandle, want: Want) -> Option<Proc> {
     let e = engines::get(&want.engine)?;
     let bin = helper_binary(&e.helper)?;
     let mut args = engines::args(e, bin.parent()?, Some(&want.model));
@@ -206,18 +278,21 @@ fn spawn(want: Want) -> Option<Proc> {
     let stdout = child.stdout.take()?;
     let stdin = Arc::new(Mutex::new(child.stdin.take()?));
     voice_log(&format!("shadow start {} pid {pid} model {}", want.engine, want.model));
+    let app = app.clone();
     thread::spawn(move || {
-        // Isolation: this thread's only outputs are `on_line` and telemetry.
+        // Isolation: this thread only touches `on_line`, telemetry, voice_log, the shadow statics and the
+        // primary's `shadow` on/off command; never overlays or the sidecar's voice or dictation messages.
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
             if let Some(s) = book(|b| on_line(b, &msg)) {
+                WANTED.lock().unwrap_or_else(|e| e.into_inner()).1 = 0;
                 match s.error {
                     Some(code) => telemetry::record_error("host.stt_shadow", Some(&s.rid), &code, s.attrs),
                     None => telemetry::record("host.stt_shadow", Some(&s.rid), None, s.attrs),
                 }
             }
         }
-        voice_log(&format!("shadow pid {pid} output closed"));
+        exited(&app, pid);
     });
     Some(Proc { want, pid, child, stdin })
 }
@@ -369,6 +444,22 @@ mod tests {
         assert_eq!(want_from(&cfg(true, json!({ "engine": "parakeet", "model": "C:/m/p", "ready": false }))), None);
         assert_eq!(want_from(&cfg(true, json!({ "engine": "parakeet", "ready": true }))), None);
         assert_eq!(want_from(&json!({ "type": "voice_config", "enabled": true })), None, "setting off");
+    }
+
+    #[test]
+    fn an_exit_clears_only_its_own_process() {
+        let mut slot = Some(7u32);
+        assert_eq!(take_exited(&mut slot, 8, |p| *p), None, "a newer helper stays");
+        assert_eq!(slot, Some(7));
+        assert_eq!(take_exited(&mut slot, 7, |p| *p), Some(7));
+        assert_eq!(slot, None);
+        assert_eq!(take_exited(&mut slot, 7, |p| *p), None, "already retired");
+    }
+
+    #[test]
+    fn crashes_respawn_with_backoff_up_to_the_cap() {
+        assert_eq!(respawn_after(1), Some(Duration::from_secs(2)));
+        assert_eq!(respawn_after(MAX_RESPAWNS + 1), None);
     }
 
     #[test]

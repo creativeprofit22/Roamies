@@ -105,7 +105,7 @@ Every error path that shows a bubble or logs also writes an event with outcome `
 | `host.shortcut`, `host.error` | `shortcut_taken`; `hotkeys_unavailable`, `menu_build_failed`, `guide_open_failed` |
 | `sidecar.error` | the `console.error` label (`prompt_failed`, …) or `unexpected` |
 | `host.telemetry_backlog` | `telemetry_dropped` |
-| `host.stt_shadow` (cancelled) | `battery_saver`, `busy`, `not_installed`, `not_running` |
+| `host.stt_shadow` (cancelled) / (error) | `battery_saver`, `busy`, `not_installed`, `not_running` / `helper_crashed` (the shadow helper exited on its own; `code`, `crashes`, `restart`) |
 
 ### Retries and cancels
 

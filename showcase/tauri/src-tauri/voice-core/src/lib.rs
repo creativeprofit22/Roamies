@@ -4,7 +4,10 @@
 pub mod chord;
 pub mod engine;
 pub mod level;
+pub mod metrics;
+pub mod pcm;
 pub mod protocol;
 pub mod score;
 pub mod session;
+pub mod shadow;
 pub mod telemetry;

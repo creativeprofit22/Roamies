@@ -120,6 +120,7 @@ jobs:
           out=$(cargo run --release --locked -- --wav tests/fixtures/en-short.wav --model-dir models/moonshine-small --moonshine-lib models/moonshine-runtime/moonshine.dll)
           echo "$out"
           echo "$out" | grep '"type":"final"' | grep -q nightfall
+          echo "$out" | grep '"type":"final"' | grep -q '"metrics":{'
 
   # The Parakeet helper (voice-win) and the voice-core crate both helpers share. The CLI tests
   # (short-clip regression, --wav event order, missing/corrupt model) need the Parakeet model.
@@ -169,6 +170,7 @@ jobs:
           out=$(cargo run --release --locked -- --wav tests/fixtures/en-short-1s.wav --model-dir models/parakeet)
           echo "$out"
           echo "$out" | grep '"type":"final"' | grep -q nightfall
+          echo "$out" | grep '"type":"final"' | grep -q '"metrics":{'
 
   # Sidecar tests on Windows on their own, so a Windows-only failure (slow fsyncs, paths) shows up fast.
   sidecar-windows:

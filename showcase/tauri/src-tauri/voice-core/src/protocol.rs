@@ -35,6 +35,27 @@ pub enum ErrorCode {
     Permission,
 }
 
+/// Per-take speech KPIs on `final` (and `nothing_heard`); see docs/voice-engines.md.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Metrics {
+    pub audio_s: f64,
+    pub compute_s: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtf: Option<f64>,
+    pub warmup_ms: f64,
+    pub speech_end_to_final_ms: f64,
+    /// Null for engines without partials.
+    #[serde(default)]
+    pub time_to_first_partial_ms: Option<f64>,
+    pub partial_count: u32,
+    /// Characters revised over characters shown; streaming engines only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_rate: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_rss_mb: Option<f64>,
+    pub empty: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Event {
@@ -60,6 +81,8 @@ pub enum Event {
     },
     Final {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metrics: Option<Metrics>,
     },
     Error {
         code: ErrorCode,
@@ -69,6 +92,8 @@ pub enum Event {
         message: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         what: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metrics: Option<Metrics>,
     },
     Perms {
         mic: MicStatus,
@@ -77,6 +102,20 @@ pub enum Event {
     /// One schema v1 telemetry event (docs/telemetry.md); the host forwards it to the sidecar.
     Telemetry {
         event: serde_json::Value,
+    },
+    /// The take's audio (base64 s16le, 16 kHz) right after `final`, only while shadow mode is on.
+    Audio {
+        request_id: String,
+        pcm: String,
+    },
+    /// A shadow helper's transcript of a `transcribe` job; never used as the user's text.
+    Shadow {
+        request_id: String,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metrics: Option<Metrics>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<ErrorCode>,
     },
 }
 
@@ -90,7 +129,7 @@ impl Event {
     }
 
     pub fn error(code: ErrorCode) -> Self {
-        Event::Error { code, spoke: None, message: None, what: None }
+        Event::Error { code, spoke: None, message: None, what: None, metrics: None }
     }
 }
 
@@ -107,6 +146,10 @@ pub enum Command {
     /// The id for the next talk-chord session.
     Request { request_id: String },
     Telemetry { on: bool },
+    /// Keep each take's audio and send it after `final` for the shadow engine.
+    Shadow { on: bool },
+    /// Shadow helper only: transcribe this take (base64 s16le, 16 kHz).
+    Transcribe { request_id: String, pcm: String },
 }
 
 /// Unknown or malformed lines are ignored, like the Mac helper does.
@@ -175,16 +218,16 @@ mod tests {
             json!({"type":"state","state":"idle","cancelled":true})
         );
         assert_eq!(js(&Event::Partial { text: "hi".into() }), json!({"type":"partial","text":"hi"}));
-        assert_eq!(js(&Event::Final { text: "hi there".into() }), json!({"type":"final","text":"hi there"}));
+        assert_eq!(js(&Event::Final { text: "hi there".into(), metrics: None }), json!({"type":"final","text":"hi there"}));
         assert_eq!(js(&Event::level(0.5)), json!({"type":"level","v":0.5}));
         assert_eq!(js(&Event::error(ErrorCode::NoInput)), json!({"type":"error","code":"no_input"}));
         assert_eq!(js(&Event::error(ErrorCode::Unavailable)), json!({"type":"error","code":"unavailable"}));
         assert_eq!(
-            js(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(false), message: None, what: None }),
+            js(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(false), message: None, what: None, metrics: None }),
             json!({"type":"error","code":"nothing_heard","spoke":false})
         );
         assert_eq!(
-            js(&Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone") }),
+            js(&Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone"), metrics: None }),
             json!({"type":"error","code":"permission","what":"microphone"})
         );
         assert_eq!(
@@ -199,6 +242,47 @@ mod tests {
             js(&Event::Telemetry { event: json!({"schema":1}) }),
             json!({"type":"telemetry","event":{"schema":1}})
         );
+    }
+
+    #[test]
+    fn metrics_shapes() {
+        let streaming = Metrics {
+            audio_s: 2.0,
+            compute_s: 0.4,
+            rtf: Some(0.2),
+            warmup_ms: 3.5,
+            speech_end_to_final_ms: 120.0,
+            time_to_first_partial_ms: Some(480.0),
+            partial_count: 4,
+            revision_rate: Some(0.1),
+            peak_rss_mb: Some(300.5),
+            empty: false,
+        };
+        assert_eq!(
+            js(&Event::Final { text: "hi".into(), metrics: Some(streaming.clone()) }),
+            json!({"type":"final","text":"hi","metrics":{"audio_s":2.0,"compute_s":0.4,"rtf":0.2,"warmup_ms":3.5,
+                "speech_end_to_final_ms":120.0,"time_to_first_partial_ms":480.0,"partial_count":4,"revision_rate":0.1,
+                "peak_rss_mb":300.5,"empty":false}})
+        );
+        let finish_only = Metrics {
+            audio_s: 0.0,
+            time_to_first_partial_ms: None,
+            rtf: None,
+            revision_rate: None,
+            peak_rss_mb: None,
+            empty: true,
+            ..streaming.clone()
+        };
+        let err = Event::Error { code: ErrorCode::NothingHeard, spoke: Some(true), message: None, what: None, metrics: Some(finish_only.clone()) };
+        assert_eq!(
+            js(&err)["metrics"],
+            json!({"audio_s":0.0,"compute_s":0.4,"warmup_ms":3.5,"speech_end_to_final_ms":120.0,
+                "time_to_first_partial_ms":null,"partial_count":4,"empty":true})
+        );
+        for m in [streaming, finish_only] {
+            let back: Metrics = serde_json::from_value(serde_json::to_value(&m).unwrap()).unwrap();
+            assert_eq!(back, m);
+        }
     }
 
     #[test]

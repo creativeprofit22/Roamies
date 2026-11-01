@@ -3,6 +3,7 @@
 //!
 //! roamies-voice-parakeet [--model-dir <dir>] [--chord control,option]   normal use (Roamies starts it)
 //! roamies-voice-parakeet --perms                                       prints {"type":"perms",…}
+//! roamies-voice-parakeet --shadow                                     background engine: transcribe jobs only
 //! roamies-voice-parakeet --wav <file>                                  dev: a WAV stands in for the mic
 //! roamies-voice-parakeet --bench <dir>                                 dev: WER over wav+txt pairs
 
@@ -17,6 +18,7 @@ use roamies_voice_core::chord::{self, KeySource};
 use roamies_voice_core::engine::SAMPLE_RATE;
 use roamies_voice_core::protocol::{parse_command, Command, Emitter, ErrorCode, Event, MicStatus};
 use roamies_voice_core::session::Session;
+use roamies_voice_core::shadow;
 use std::io::{self, BufRead, Stdout};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -33,6 +35,7 @@ struct Args {
     wav: Option<PathBuf>,
     bench: Option<PathBuf>,
     perms: bool,
+    shadow: bool,
 }
 
 fn parse_args() -> Args {
@@ -50,6 +53,7 @@ fn parse_args() -> Args {
             "--wav" => args.wav = it.next().map(PathBuf::from),
             "--bench" => args.bench = it.next().map(PathBuf::from),
             // Windows has no mic prompt for desktop apps, so --request just reports like --perms.
+            "--shadow" => args.shadow = true,
             "--perms" => args.perms = true,
             "--request" => {
                 it.next();
@@ -84,7 +88,11 @@ fn main() -> ExitCode {
     if let Some(dir) = &args.bench {
         return bench::run(&mut engine, dir, &model_dir);
     }
+    if args.shadow {
+        return run_shadow(&mut engine);
+    }
     let mut session = Session::new(engine, Emitter::new(io::stdout()));
+    session.set_rss_probe(bench::peak_working_set);
     session.emit(&Event::Ready { engine: session.engine_name(), model: session.engine_model(), dry_run: args.wav.is_some() });
     if !args.chord.is_empty() {
         session.set_chord(&args.chord);
@@ -95,6 +103,18 @@ fn main() -> ExitCode {
     }
 }
 
+// ---------- --shadow ----------
+
+fn run_shadow(engine: &mut Parakeet) -> ExitCode {
+    match shadow::run(engine, io::stdin().lock(), &mut Emitter::new(io::stdout()), Some(bench::peak_working_set)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            log(&format!("shadow: {e}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 // ---------- --wav dry run ----------
 
 fn run_wav(session: &mut Live, path: &Path) -> ExitCode {
@@ -102,7 +122,7 @@ fn run_wav(session: &mut Live, path: &Path) -> ExitCode {
         Ok(a) => a,
         Err(e) => {
             log(&format!("can't read {}: {e}", path.display()));
-            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e), what: None });
+            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e), what: None, metrics: None });
             return ExitCode::FAILURE;
         }
     };
@@ -168,6 +188,8 @@ fn run_live(session: &mut Live) -> ExitCode {
                 }
                 Some(Command::Request { request_id }) => session.set_request_id(&request_id),
                 Some(Command::Telemetry { on }) => session.set_telemetry(on),
+                Some(Command::Shadow { on }) => session.set_shadow(on),
+                Some(Command::Transcribe { .. }) => {}
                 Some(Command::Cancel) => session.cancel(),
                 Some(Command::Chord { mods }) => session.set_chord(&mods),
                 Some(Command::Mute { on }) => log(&format!("mute while talking: {on}")),

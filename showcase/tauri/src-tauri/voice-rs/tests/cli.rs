@@ -27,6 +27,29 @@ fn telemetry(stdout: &[u8]) -> Vec<Value> {
     all_lines(stdout).into_iter().filter(|e| e["type"] == "telemetry").map(|e| e["event"].clone()).collect()
 }
 
+// Keys every `final.metrics` carries, whatever the engine.
+fn assert_common_metrics(fin: &Value) {
+    let m = &fin["metrics"];
+    for k in ["audio_s", "compute_s", "rtf", "warmup_ms", "speech_end_to_final_ms"] {
+        assert!(m[k].as_f64().is_some_and(|v| v >= 0.0), "{k}: {m}");
+    }
+    assert!(m["audio_s"].as_f64().unwrap() > 0.5, "{m}");
+    assert!(m["partial_count"].is_u64(), "{m}");
+    assert_eq!(m["empty"], false, "{m}");
+    if cfg!(windows) {
+        assert!(m["peak_rss_mb"].as_f64().is_some_and(|v| v > 0.0), "{m}");
+    }
+}
+
+// Streaming engines also report time to first partial and the revision rate.
+fn assert_streaming_metrics(fin: &Value) {
+    assert_common_metrics(fin);
+    let m = &fin["metrics"];
+    assert!(m["time_to_first_partial_ms"].as_f64().is_some_and(|v| v > 0.0), "{m}");
+    assert!(m["partial_count"].as_u64().is_some_and(|n| n > 0), "{m}");
+    assert!(m["revision_rate"].as_f64().is_some_and(|r| (0.0..=1.0).contains(&r)), "{m}");
+}
+
 #[test]
 fn wav_dry_run_transcribes_the_fixture() {
     let models = crate_dir().join("models").join("zipformer");
@@ -56,6 +79,7 @@ fn wav_dry_run_transcribes_the_fixture() {
     assert!(processing < fin);
     let text = ev[fin]["text"].as_str().unwrap().to_lowercase();
     assert!(text.contains("after early nightfall"), "final: {text}");
+    assert_streaming_metrics(&ev[fin]);
     assert_eq!(ev.last().unwrap(), &serde_json::json!({"type":"state","state":"idle"}));
     let tel = telemetry(&out.stdout);
     let session: Vec<_> = tel.iter().filter(|e| e["step"] == "voice.session").collect();
@@ -149,6 +173,7 @@ fn moonshine_dry_run_transcribes_the_fixture() {
     let fin = ev.iter().find(|e| e["type"] == "final").expect("no final");
     let text = fin["text"].as_str().unwrap().to_lowercase();
     assert!(text.contains("nightfall"), "final: {text}");
+    assert_streaming_metrics(fin);
     assert_eq!(ev.last().unwrap(), &serde_json::json!({"type":"state","state":"idle"}));
 }
 
@@ -237,4 +262,38 @@ fn perms_prints_one_mic_line() {
         assert!(["granted", "denied"].contains(&ev[0]["mic"].as_str().unwrap()), "{}", ev[0]);
         assert!(ev[0]["input"].is_boolean(), "{}", ev[0]);
     }
+}
+
+// Shadow role: no mic or chord, answers each `transcribe` job with one `shadow` event and never a
+// `final`, `partial` or `state`, whatever else it is sent.
+#[test]
+fn shadow_mode_answers_only_with_shadow_events() {
+    let models = crate_dir().join("models").join("zipformer");
+    assert!(models.join("tokens.txt").is_file(), "model missing: run ./fetch-model.sh in voice-rs first");
+    let wav = hound::WavReader::open(crate_dir().join("tests/fixtures/en-short.wav")).unwrap();
+    let samples: Vec<f32> = wav.into_samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect();
+    let pcm = roamies_voice_core::pcm::encode(&samples);
+    let mut child = bin()
+        .args(["--engine", "zipformer", "--shadow", "--model-dir"])
+        .arg(&models)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = [
+        serde_json::json!({"cmd":"listen","request_id":"r0"}).to_string(),
+        serde_json::json!({"cmd":"transcribe","request_id":"r1","pcm":pcm}).to_string(),
+    ];
+    child.stdin.take().unwrap().write_all((input.join("\n") + "\n").as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let ev = all_lines(&out.stdout);
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(ev[0]["type"], "shadow");
+    assert_eq!(ev[0]["request_id"], "r1");
+    assert!(!ev[0]["text"].as_str().unwrap().is_empty(), "{}", ev[0]);
+    let m = &ev[0]["metrics"];
+    assert!(m["audio_s"].as_f64().is_some_and(|v| v > 6.0), "{m}");
+    assert!(m["time_to_first_partial_ms"].is_null(), "{m}");
 }

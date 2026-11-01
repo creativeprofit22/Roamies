@@ -24,18 +24,62 @@ pub fn normalize(text: &str) -> Vec<String> {
     out.split_whitespace().map(str::to_string).collect()
 }
 
+/// Word edits split by kind, with `reference` as the truth (jiwer's naming).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Edits {
+    pub sub: usize,
+    pub ins: usize,
+    pub del: usize,
+}
+
+impl Edits {
+    pub fn total(&self) -> usize {
+        self.sub + self.ins + self.del
+    }
+}
+
+/// Minimum word alignment of `hypothesis` against `reference`. On a tie the backtrace prefers a
+/// substitution, then a deletion, then an insertion, so the counts are stable.
+pub fn word_alignment(reference: &[String], hypothesis: &[String]) -> Edits {
+    let (n, m) = (reference.len(), hypothesis.len());
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let sub = d[i - 1][j - 1] + usize::from(reference[i - 1] != hypothesis[j - 1]);
+            d[i][j] = sub.min(d[i - 1][j] + 1).min(d[i][j - 1] + 1);
+        }
+    }
+    let (mut i, mut j, mut e) = (n, m, Edits::default());
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 {
+            let differ = reference[i - 1] != hypothesis[j - 1];
+            if d[i][j] == d[i - 1][j - 1] + usize::from(differ) {
+                e.sub += usize::from(differ);
+                i -= 1;
+                j -= 1;
+                continue;
+            }
+        }
+        if i > 0 && d[i][j] == d[i - 1][j] + 1 {
+            e.del += 1;
+            i -= 1;
+        } else {
+            e.ins += 1;
+            j -= 1;
+        }
+    }
+    e
+}
+
 /// Word-level Levenshtein distance (substitutions + insertions + deletions).
 pub fn word_edits(reference: &[String], hypothesis: &[String]) -> usize {
-    let mut prev: Vec<usize> = (0..=hypothesis.len()).collect();
-    for (i, r) in reference.iter().enumerate() {
-        let mut cur = vec![i + 1; hypothesis.len() + 1];
-        for (j, h) in hypothesis.iter().enumerate() {
-            let sub = prev[j] + usize::from(r != h);
-            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
-        }
-        prev = cur;
-    }
-    prev[hypothesis.len()]
+    word_alignment(reference, hypothesis).total()
 }
 
 /// Nearest-rank percentile (p in 0..=100) of unsorted values.
@@ -88,6 +132,21 @@ mod tests {
         assert_eq!(words("Hello, World! It's  'quoted' -- ok."), ["hello", "world", "it's", "quoted", "ok"]);
         assert_eq!(words("DON’T stop"), ["don't", "stop"]);
         assert!(words("  ...  ").is_empty());
+    }
+
+    #[test]
+    fn word_alignment_splits_sub_ins_del() {
+        let e = |sub, ins, del| Edits { sub, ins, del };
+        assert_eq!(word_alignment(&words("a b c"), &words("a b c")), e(0, 0, 0));
+        assert_eq!(word_alignment(&words("a b c"), &words("a x c")), e(1, 0, 0));
+        assert_eq!(word_alignment(&words("a b c"), &words("a c")), e(0, 0, 1));
+        assert_eq!(word_alignment(&words("a b"), &words("a b c d")), e(0, 2, 0));
+        assert_eq!(word_alignment(&words("a b c"), &[]), e(0, 0, 3));
+        assert_eq!(word_alignment(&[], &words("a")), e(0, 1, 0));
+        assert_eq!(word_alignment(&words("the cat sat"), &words("a cat sat down")), e(1, 1, 0));
+        // "a b" vs "b": one deletion, never a substitution plus a deletion
+        assert_eq!(word_alignment(&words("a b"), &words("b")), e(0, 0, 1));
+        assert_eq!(word_alignment(&[], &[]), e(0, 0, 0));
     }
 
     #[test]

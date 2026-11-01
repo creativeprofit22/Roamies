@@ -2,6 +2,7 @@
 //! and emits events. Time is passed in so tests and `--wav` runs are deterministic.
 
 use crate::level::level;
+use crate::metrics::Recorder;
 use crate::chord::{Action, KeySource, Mods, Phase, SessionMachine};
 use crate::engine::{EngineError, SpeechEngine};
 #[cfg(test)]
@@ -13,6 +14,8 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 const LEVEL_EVERY: f64 = 0.05;
+/// The 60 s session cap, in 16 kHz samples.
+const TAKE_CAP: usize = 60 * 16_000;
 
 pub struct Session<E: SpeechEngine, W: Write> {
     engine: E,
@@ -42,12 +45,19 @@ pub struct Session<E: SpeechEngine, W: Write> {
     mic_asked: Option<f64>,
     mic_open: Option<(Instant, Duration)>,
     stt_step: Option<Step>,
+    rec: Recorder,
+    /// Peak working set of this process in bytes, injected by the helper (OS-specific).
+    rss_probe: Option<fn() -> Option<u64>>,
+    /// Shadow mode: the take's audio, kept in memory only and sent after `final`.
+    shadow: bool,
+    take: Vec<f32>,
 }
 
 impl<E: SpeechEngine, W: Write> Session<E, W> {
     pub fn new(engine: E, out: Emitter<W>) -> Self {
         let mut machine = SessionMachine::new();
         machine.set_finish_only(!engine.streaming());
+        let rec = Recorder::new(engine.streaming());
         Session {
             engine,
             out,
@@ -70,6 +80,10 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
             mic_asked: None,
             mic_open: None,
             stt_step: None,
+            rec,
+            rss_probe: None,
+            shadow: false,
+            take: Vec::new(),
         }
     }
 
@@ -77,6 +91,18 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
     pub fn set_request_id(&mut self, id: &str) {
         if is_request_id(id) {
             self.pending_rid = Some(id.to_string());
+        }
+    }
+
+    pub fn set_rss_probe(&mut self, probe: fn() -> Option<u64>) {
+        self.rss_probe = Some(probe);
+    }
+
+    /// `{"cmd":"shadow"}`; off drops any kept audio.
+    pub fn set_shadow(&mut self, on: bool) {
+        self.shadow = on;
+        if !on {
+            self.take = Vec::new();
         }
     }
 
@@ -131,7 +157,9 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
     fn start_engine(&mut self) -> Result<(), EngineError> {
         let at = Instant::now();
         let r = self.engine.start();
-        self.engine_start = Some((at, at.elapsed(), r.is_ok()));
+        let took = at.elapsed();
+        self.rec.warmup(took);
+        self.engine_start = Some((at, took, r.is_ok()));
         self.flush_starts();
         r
     }
@@ -183,6 +211,8 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         self.armed_at = None;
         self.audio_samples = 0;
         self.mic_open = None;
+        self.rec.reset();
+        self.take.clear();
         let rid = request_id.filter(|r| is_request_id(r)).unwrap_or_else(new_request_id);
         self.begin(Mode::Handsfree, 0.0, Some(rid));
         if let Err(e) = self.start_engine() {
@@ -192,6 +222,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         }
         self.engine_ok = true;
         let now = now();
+        self.rec.started(now);
         self.mic_asked = Some(now);
         let actions: Vec<Action> = self.machine.listen_now(now).into_iter().filter(|a| *a != Action::Arm).collect();
         self.run(actions, now)
@@ -237,6 +268,11 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
             return;
         }
         self.audio_samples += samples.len();
+        self.rec.audio(samples.len());
+        if self.shadow {
+            let room = TAKE_CAP.saturating_sub(self.take.len());
+            self.take.extend_from_slice(&samples[..samples.len().min(room)]);
+        }
         let v = level(samples);
         if v > self.engine.voice_level() {
             self.machine.on_voice(now);
@@ -247,18 +283,23 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
             self.level_at = now;
             self.emit(&Event::level(v));
         }
+        let at = Instant::now();
         self.engine.accept(samples);
-        if let Some(text) = self.engine.partial() {
+        let partial = self.engine.partial();
+        let endpoint = self.engine.endpoint();
+        self.rec.compute(at.elapsed());
+        if let Some(text) = partial {
             let text = text.trim().to_string();
             if text != self.best && !text.is_empty() {
                 self.best = text.clone();
+                self.rec.partial(now, &text);
                 self.machine.on_text(now, true);
                 if shown {
                     self.emit(&Event::Partial { text });
                 }
             }
         }
-        if self.engine.endpoint() {
+        if endpoint {
             self.machine.on_endpoint();
         }
     }
@@ -271,7 +312,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
     /// The mic is off in Windows privacy settings: like `audio_failed`, but the host can point there.
     pub fn mic_denied(&mut self) {
         self.fail_audio(
-            Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone") },
+            Event::Error { code: ErrorCode::Permission, spoke: None, message: None, what: Some("microphone"), metrics: None },
             "permission",
         );
     }
@@ -300,6 +341,9 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
                     self.mic_asked = Some(now);
                     self.mic_open = None;
                     self.audio_samples = 0;
+                    self.rec.reset();
+                    self.take.clear();
+                    self.rec.started(now);
                     self.engine_ok = match self.start_engine() {
                         Ok(()) => true,
                         Err(e) => {
@@ -311,6 +355,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
                 Action::Listen(mode) => self.show(mode, now)?,
                 Action::Finish { shown } => {
                     self.shown = shown;
+                    self.rec.speech_end(now);
                     if let Some(step) = self.listen_step.take() {
                         self.tel.end(&mut self.out, step, Outcome::Ok, None, Attrs::new());
                     }
@@ -322,7 +367,7 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
                         self.emit(&Event::state(SessionState::Processing));
                     }
                 }
-                Action::Finalize => self.finalize(),
+                Action::Finalize => self.finalize(now),
                 Action::Cancel => {
                     self.engine.cancel();
                     self.mic_down = false;
@@ -413,11 +458,13 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         self.tel.end(&mut self.out, step, outcome, code, a);
     }
 
-    fn finalize(&mut self) {
+    fn finalize(&mut self, now: f64) {
         let parent = self.session_step.as_ref();
         let rid = parent.and_then(|p| p.request_id.clone());
         let step = parent.map(|p| self.tel.start(&mut self.out, "voice.finalize", rid.as_deref(), Some(p), Attrs::new()));
+        let at = Instant::now();
         let heard = self.engine.finish();
+        let took = at.elapsed();
         if let Some(step) = step {
             let mut a = Attrs::new();
             a.insert("chars".into(), json!(heard.trim().chars().count()));
@@ -425,14 +472,20 @@ impl<E: SpeechEngine, W: Write> Session<E, W> {
         }
         let heard = heard.trim();
         let text = if heard.is_empty() { self.best.trim().to_string() } else { heard.to_string() };
+        let metrics = self.rec.finish(now, took, &text, self.rss_probe.and_then(|p| p()));
         if !text.is_empty() {
-            self.emit(&Event::Final { text: text.clone() });
+            self.emit(&Event::Final { text: text.clone(), metrics: Some(metrics.clone()) });
             self.end_stt(Outcome::Ok, None, Some(text.chars().count()));
+            let take = std::mem::take(&mut self.take);
+            if let (true, Some(request_id)) = (self.shadow && !take.is_empty(), rid.clone()) {
+                self.emit(&Event::Audio { request_id, pcm: crate::pcm::encode(&take) });
+            }
         }
+        self.take.clear();
         self.emit(&Event::state(SessionState::Idle));
         if text.is_empty() && self.shown {
             let spoke = self.machine.spoke();
-            self.emit(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(spoke), message: None, what: None });
+            self.emit(&Event::Error { code: ErrorCode::NothingHeard, spoke: Some(spoke), message: None, what: None, metrics: Some(metrics) });
         }
         let chars = Some(text.chars().count());
         match (text.is_empty(), self.shown) {
@@ -520,7 +573,19 @@ mod tests {
 
     /// Protocol events without telemetry.
     fn plain(out: &[u8]) -> Vec<Value> {
-        all_lines(out).into_iter().filter(|e| e["type"] != "telemetry").collect()
+        all_lines(out)
+            .into_iter()
+            .filter(|e| e["type"] != "telemetry")
+            .map(|mut e| {
+                e.as_object_mut().unwrap().remove("metrics");
+                e
+            })
+            .collect()
+    }
+
+    /// The `metrics` of the take's `final` or `nothing_heard` line.
+    fn metrics(s: &Session<impl SpeechEngine, Vec<u8>>) -> Value {
+        all_lines(s.output()).into_iter().find(|e| e["type"] == "final" || e["code"] == "nothing_heard").unwrap()["metrics"].clone()
     }
 
     fn events(s: &Session<FakeEngine, Vec<u8>>) -> Vec<Value> {
@@ -579,6 +644,92 @@ mod tests {
         assert!(ev.contains(&json!({"type":"final","text":"hello there"})));
         assert_eq!(ev.last().unwrap(), &json!({"type":"state","state":"idle"}));
         assert!(s.is_idle() && !s.wants_audio());
+    }
+
+    #[test]
+    fn final_carries_streaming_metrics() {
+        let mut s = session(FakeEngine::new(&["hello", "there"]));
+        s.set_rss_probe(|| Some(64 * 1_048_576));
+        s.listen(|| 1.0).unwrap();
+        let t = feed(&mut s, &LOUD, 2, 1.0);
+        s.finish(t);
+        s.tick(t + 0.31, &mut NoKeys);
+        let m = metrics(&s);
+        assert_eq!(m["audio_s"], 0.2);
+        assert_eq!(m["partial_count"], 2);
+        assert_eq!(m["time_to_first_partial_ms"], 0.0, "the first chunk already says hello");
+        assert_eq!(m["revision_rate"], 0.0, "only appended");
+        assert_eq!(m["peak_rss_mb"], 64.0);
+        assert_eq!(m["empty"], false);
+        assert!(m["rtf"].as_f64().unwrap() >= 0.0);
+        assert!(m["speech_end_to_final_ms"].as_f64().unwrap() >= 300.0, "includes the tail");
+        for k in ["compute_s", "warmup_ms"] {
+            assert!(m[k].is_number(), "{k}");
+        }
+    }
+
+    #[test]
+    fn shadow_sends_the_take_right_after_final() {
+        let mut s = session(FakeEngine::new(&["hello", "there"]));
+        s.set_shadow(true);
+        s.listen_with(Some(RID.into()), || 0.0).unwrap();
+        let t = feed(&mut s, &LOUD, 2, 0.0);
+        s.finish(t);
+        s.tick(t + 0.31, &mut NoKeys);
+        let ev = events(&s);
+        let at = ev.iter().position(|e| e["type"] == "audio").expect("audio event");
+        assert_eq!(ev[at - 1]["type"], "final", "audio comes right after final");
+        assert_eq!(ev[at]["request_id"], RID);
+        let pcm = crate::pcm::decode(ev[at]["pcm"].as_str().unwrap()).unwrap();
+        assert_eq!(pcm.len(), LOUD.len() * 2);
+        assert!(s.take.is_empty(), "not kept after sending");
+    }
+
+    #[test]
+    fn no_audio_event_without_shadow_or_text() {
+        let mut s = session(FakeEngine::new(&["hello"]));
+        s.listen(|| 0.0).unwrap();
+        let t = feed(&mut s, &LOUD, 2, 0.0);
+        s.finish(t);
+        s.tick(t + 0.31, &mut NoKeys);
+        assert!(events(&s).iter().all(|e| e["type"] != "audio"));
+        assert!(s.take.is_empty());
+
+        let mut s = session(FakeEngine::new(&[]));
+        s.set_shadow(true);
+        s.listen(|| 0.0).unwrap();
+        let t = feed(&mut s, &QUIET, 3, 0.0);
+        s.finish(t);
+        s.tick(t + 0.31, &mut NoKeys);
+        assert!(events(&s).iter().all(|e| e["type"] != "audio"), "nothing heard sends nothing");
+        assert!(s.take.is_empty());
+    }
+
+    #[test]
+    fn shadow_take_is_capped_at_sixty_seconds() {
+        let mut s = session(FakeEngine::new(&["hi"]));
+        s.set_shadow(true);
+        s.listen(|| 0.0).unwrap();
+        let big = vec![0.5f32; 16_000];
+        for i in 0..62 {
+            s.audio(&big, i as f64 * 0.01);
+        }
+        assert_eq!(s.take.len(), TAKE_CAP);
+        s.set_shadow(false);
+        assert!(s.take.is_empty());
+    }
+
+    #[test]
+    fn nothing_heard_carries_empty_metrics() {
+        let mut s = session(FakeEngine::new(&[]));
+        s.listen(|| 0.0).unwrap();
+        let t = feed(&mut s, &QUIET, 3, 0.0);
+        s.finish(t);
+        s.tick(t + 0.31, &mut NoKeys);
+        let m = metrics(&s);
+        assert_eq!((m["empty"].as_bool(), m["partial_count"].as_u64()), (Some(true), Some(0)));
+        assert!(m["time_to_first_partial_ms"].is_null());
+        assert!(m.get("peak_rss_mb").is_none(), "no probe, no number");
     }
 
     #[test]
@@ -750,6 +901,9 @@ mod tests {
         }
         let out = String::from_utf8_lossy(s.output()).to_string();
         let ev = plain(s.output());
+        let m = metrics(&s);
+        assert!(m["time_to_first_partial_ms"].is_null() && m.get("revision_rate").is_none(), "{m}");
+        assert_eq!(m["partial_count"], 0);
         assert!(!ev.iter().any(|e| e["type"] == "partial"));
         assert!(ev.contains(&json!({"type":"final","text":"hello there"})), "{out}");
         assert_eq!(ev.last().unwrap(), &json!({"type":"state","state":"idle"}));

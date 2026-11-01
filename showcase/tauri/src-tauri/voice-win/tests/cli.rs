@@ -75,6 +75,19 @@ fn wav_run_event_order() {
     assert!(n - 3 > 2, "at least one level");
     assert_eq!(ev[n - 3], json!({"type":"state","state":"processing"}));
     assert_eq!(ev[n - 2]["type"], "final");
+    let m = &ev[n - 2]["metrics"];
+    for k in ["audio_s", "compute_s", "rtf", "warmup_ms", "speech_end_to_final_ms"] {
+        assert!(m[k].as_f64().is_some_and(|v| v >= 0.0), "{k}: {m}");
+    }
+    assert!(m["audio_s"].as_f64().unwrap() > 0.5, "{m}");
+    assert_eq!(m["partial_count"], 0, "{m}");
+    assert_eq!(m["empty"], false, "{m}");
+    // Finish-only engine: no first partial, no revision rate.
+    assert!(m["time_to_first_partial_ms"].is_null(), "{m}");
+    assert!(m.get("revision_rate").is_none(), "{m}");
+    if cfg!(windows) {
+        assert!(m["peak_rss_mb"].as_f64().is_some_and(|v| v > 0.0), "{m}");
+    }
     assert_eq!(ev[n - 1], json!({"type":"state","state":"idle"}));
     let tel = telemetry(&out.stdout);
     let session: Vec<_> = tel.iter().filter(|e| e["step"] == "voice.session").collect();
@@ -155,4 +168,36 @@ fn perms_prints_one_line() {
     assert_eq!(ev[0]["type"], "perms");
     assert!(ev[0]["mic"] == "granted" || ev[0]["mic"] == "denied", "{}", ev[0]);
     assert!(ev[0]["input"].is_boolean());
+}
+
+// Shadow role: no mic or chord, answers each `transcribe` job with one `shadow` event and never a
+// `final`, `partial` or `state`, whatever else it is sent.
+#[test]
+fn shadow_mode_answers_only_with_shadow_events() {
+    let wav = hound::WavReader::open(fixture()).unwrap();
+    let samples: Vec<f32> = wav.into_samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect();
+    let pcm = roamies_voice_core::pcm::encode(&samples);
+    let mut child = bin()
+        .arg("--shadow")
+        .arg("--model-dir")
+        .arg(model_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = [
+        json!({"cmd":"listen","request_id":"r0"}).to_string(),
+        json!({"cmd":"transcribe","request_id":"r1","pcm":pcm}).to_string(),
+    ];
+    child.stdin.take().unwrap().write_all((input.join("\n") + "\n").as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let ev = all_lines(&out.stdout);
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(ev[0]["type"], "shadow");
+    assert_eq!(ev[0]["request_id"], "r1");
+    assert!(ev[0]["text"].as_str().unwrap().to_lowercase().contains("nightfall"), "{}", ev[0]);
+    let m = &ev[0]["metrics"];
+    assert!(m["time_to_first_partial_ms"].is_null() && m.get("revision_rate").is_none(), "{m}");
 }

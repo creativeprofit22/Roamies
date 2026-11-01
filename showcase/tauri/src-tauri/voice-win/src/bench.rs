@@ -3,7 +3,7 @@
 
 use crate::audio::read_wav;
 use roamies_voice_core::engine::{SpeechEngine, SAMPLE_RATE};
-use roamies_voice_core::score::{dir_bytes, find_pairs, normalize, word_edits};
+use roamies_voice_core::score::{dir_bytes, find_pairs, normalize, word_alignment, Edits};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -14,7 +14,7 @@ use std::time::Instant;
 pub struct ClipResult {
     pub audio_s: f64,
     pub ref_words: usize,
-    pub edits: usize,
+    pub edits: Edits,
     pub finish_s: f64,
     pub hypothesis: String,
 }
@@ -32,7 +32,7 @@ pub fn run_clip(engine: &mut dyn SpeechEngine, audio: &[f32], reference: &str) -
     Ok(ClipResult {
         audio_s: audio.len() as f64 / SAMPLE_RATE as f64,
         ref_words: ref_words.len(),
-        edits: word_edits(&ref_words, &normalize(&hypothesis)),
+        edits: word_alignment(&ref_words, &normalize(&hypothesis)),
         finish_s,
         hypothesis,
     })
@@ -57,7 +57,7 @@ pub fn run(engine: &mut dyn SpeechEngine, dir: &Path, model_dir: &Path) -> ExitC
     }
     let load_s = t.elapsed().as_secs_f64();
     println!("engine {} model {} load {load_s:.2}s", engine.name(), engine.model().unwrap_or_else(|| "-".into()));
-    println!("{:<28} {:>6} {:>6} {:>6} {:>7} {:>6}", "clip", "audio", "words", "WER", "finish", "RTF");
+    println!("{:<28} {:>6} {:>6} {:>6} {:>11} {:>7} {:>6}", "clip", "audio", "words", "WER", "S/I/D", "finish", "RTF");
     let mut results = Vec::new();
     for (wav, txt) in &pairs {
         let name = wav.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -76,15 +76,20 @@ pub fn run(engine: &mut dyn SpeechEngine, dir: &Path, model_dir: &Path) -> ExitC
                 return ExitCode::FAILURE;
             }
         };
-        let wer = if r.ref_words == 0 { 0.0 } else { r.edits as f64 / r.ref_words as f64 };
+        let wer = if r.ref_words == 0 { 0.0 } else { r.edits.total() as f64 / r.ref_words as f64 };
+        let sid = format!("{}/{}/{}", r.edits.sub, r.edits.ins, r.edits.del);
         let blank = if r.hypothesis.trim().is_empty() { "  BLANK" } else { "" };
-        println!("{name:<28} {:>6.2} {:>6} {:>5.1}% {:>7.3} {:>6.3}{blank}", r.audio_s, r.ref_words, wer * 100.0, r.finish_s, r.finish_s / r.audio_s.max(1e-9));
-        if r.edits > 0 {
+        println!("{name:<28} {:>6.2} {:>6} {:>5.1}% {sid:>11} {:>7.3} {:>6.3}{blank}", r.audio_s, r.ref_words, wer * 100.0, r.finish_s, r.finish_s / r.audio_s.max(1e-9));
+        if r.edits.total() > 0 {
             eprintln!("[bench] {name}: ref \"{}\" hyp \"{}\"", reference.trim(), r.hypothesis.trim());
         }
         results.push(r);
     }
     let s = summary(engine, &results, load_s, dir_bytes(model_dir));
+    println!(
+        "TOTAL {} clips {:.1}s audio | WER {:.2}% (S/I/D {}/{}/{}) | blank {}",
+        s["clips"], s["audioS"].as_f64().unwrap_or(0.0), s["wer"].as_f64().unwrap_or(0.0) * 100.0, s["sub"], s["ins"], s["del"], s["blank"]
+    );
     println!("{s}");
     ExitCode::SUCCESS
 }
@@ -92,7 +97,8 @@ pub fn run(engine: &mut dyn SpeechEngine, dir: &Path, model_dir: &Path) -> ExitC
 fn summary(engine: &dyn SpeechEngine, results: &[ClipResult], load_s: f64, model_bytes: u64) -> serde_json::Value {
     let n = results.len().max(1) as f64;
     let ref_words: usize = results.iter().map(|r| r.ref_words).sum();
-    let edits: usize = results.iter().map(|r| r.edits).sum();
+    let e = results.iter().fold(Edits::default(), |a, r| Edits { sub: a.sub + r.edits.sub, ins: a.ins + r.edits.ins, del: a.del + r.edits.del });
+    let edits = e.total();
     json!({
         "engine": engine.name(),
         "model": engine.model(),
@@ -100,6 +106,9 @@ fn summary(engine: &dyn SpeechEngine, results: &[ClipResult], load_s: f64, model
         "blank": results.iter().filter(|r| r.hypothesis.trim().is_empty()).count(),
         "audioS": results.iter().map(|r| r.audio_s).sum::<f64>(),
         "wer": if ref_words == 0 { 0.0 } else { edits as f64 / ref_words as f64 },
+        "sub": e.sub,
+        "ins": e.ins,
+        "del": e.del,
         "finishMeanS": results.iter().map(|r| r.finish_s).sum::<f64>() / n,
         "rtfMean": results.iter().map(|r| r.finish_s / r.audio_s.max(1e-9)).sum::<f64>() / n,
         "loadS": load_s,
@@ -109,7 +118,7 @@ fn summary(engine: &dyn SpeechEngine, results: &[ClipResult], load_s: f64, model
 }
 
 #[cfg(windows)]
-fn peak_working_set() -> Option<u64> {
+pub fn peak_working_set() -> Option<u64> {
     use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
     // SAFETY: plain-data struct; all-zero is a valid value.
@@ -121,7 +130,7 @@ fn peak_working_set() -> Option<u64> {
 }
 
 #[cfg(not(windows))]
-fn peak_working_set() -> Option<u64> {
+pub fn peak_working_set() -> Option<u64> {
     None
 }
 
@@ -161,13 +170,14 @@ mod tests {
         let audio = vec![0.0f32; SAMPLE_RATE as usize / 2];
         let mut e = Fake { fed: 0, blank: false };
         let r = run_clip(&mut e, &audio, "Hello, there world.").unwrap();
-        assert_eq!((r.ref_words, r.edits, e.fed), (3, 1, audio.len()));
+        assert_eq!((r.ref_words, r.edits.total(), e.fed), (3, 1, audio.len()));
         assert!((r.audio_s - 0.5).abs() < 1e-9);
         let mut b = Fake { fed: 0, blank: true };
         let blank = run_clip(&mut b, &audio, "one two").unwrap();
         let s = summary(&e, &[r, blank], 1.0, 0);
         assert_eq!(s["clips"], 2);
         assert_eq!(s["blank"], 1);
+        assert_eq!((s["sub"].clone(), s["ins"].clone(), s["del"].clone()), (json!(0), json!(0), json!(3)));
         assert!((s["wer"].as_f64().unwrap() - 3.0 / 5.0).abs() < 1e-9);
     }
 }

@@ -7,7 +7,7 @@ mod keys_windows;
 mod perms;
 mod record;
 
-use roamies_voice_core::{chord, engine, protocol, session};
+use roamies_voice_core::{chord, engine, protocol, session, shadow};
 
 use audio::{MicCapture, Resampler16k};
 use engine::{SpeechEngine, SAMPLE_RATE};
@@ -35,6 +35,7 @@ struct Args {
     moonshine_lib: Option<PathBuf>,
     model_dir: Option<PathBuf>,
     perms: bool,
+    shadow: bool,
 }
 
 fn parse_args() -> Args {
@@ -49,6 +50,7 @@ fn parse_args() -> Args {
         moonshine_lib: None,
         model_dir: None,
         perms: false,
+        shadow: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -61,6 +63,7 @@ fn parse_args() -> Args {
             "--wav" => args.wav = it.next().map(PathBuf::from),
             "--bench" => args.bench = it.next().map(PathBuf::from),
             // Windows has no mic prompt for desktop apps, so --request just reports like --perms.
+            "--shadow" => args.shadow = true,
             "--perms" => args.perms = true,
             "--request" => {
                 it.next();
@@ -148,14 +151,18 @@ fn main() -> ExitCode {
         Ok(e) => e,
         Err(e) => {
             log(&e);
-            let _ = Emitter::new(io::stdout()).emit(&Event::Error { code: ErrorCode::Unavailable, spoke: None, message: Some(e), what: None });
+            let _ = Emitter::new(io::stdout()).emit(&Event::Error { code: ErrorCode::Unavailable, spoke: None, message: Some(e), what: None, metrics: None });
             return ExitCode::FAILURE;
         }
     };
     if let Some(dir) = &args.bench {
         return bench::run(&mut *engine, dir, &info);
     }
+    if args.shadow {
+        return run_shadow(&mut engine);
+    }
     let mut session = Session::new(engine, Emitter::new(io::stdout()));
+    session.set_rss_probe(bench::peak_working_set);
     let dry_run = args.wav.is_some();
     session.emit(&Event::Ready { engine: session.engine_name(), model: session.engine_model(), dry_run });
     if !args.chord.is_empty() {
@@ -167,6 +174,18 @@ fn main() -> ExitCode {
     }
 }
 
+// ---------- --shadow (background engine: transcribe jobs only) ----------
+
+fn run_shadow(engine: &mut Box<dyn SpeechEngine>) -> ExitCode {
+    match shadow::run(engine, io::stdin().lock(), &mut Emitter::new(io::stdout()), Some(bench::peak_working_set)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            log(&format!("shadow: {e}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 // ---------- --wav dry run ----------
 
 fn run_wav(session: &mut Live, path: &Path) -> ExitCode {
@@ -174,14 +193,14 @@ fn run_wav(session: &mut Live, path: &Path) -> ExitCode {
         Ok(v) => v,
         Err(e) => {
             log(&format!("can't read {}: {e}", path.display()));
-            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e), what: None });
+            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e), what: None, metrics: None });
             return ExitCode::FAILURE;
         }
     };
     let mut resampler = match Resampler16k::new(rate) {
         Ok(r) => r,
         Err(e) => {
-            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e), what: None });
+            session.emit(&Event::Error { code: ErrorCode::NoInput, spoke: None, message: Some(e), what: None, metrics: None });
             return ExitCode::FAILURE;
         }
     };
@@ -270,6 +289,8 @@ fn run_live(session: &mut Live) -> ExitCode {
                 }
                 Some(Command::Request { request_id }) => session.set_request_id(&request_id),
                 Some(Command::Telemetry { on }) => session.set_telemetry(on),
+                Some(Command::Shadow { on }) => session.set_shadow(on),
+                Some(Command::Transcribe { .. }) => {}
                 Some(Command::Cancel) => session.cancel(),
                 Some(Command::Chord { mods }) => session.set_chord(&mods),
                 Some(Command::Mute { on }) => log(&format!("mute while talking: {on}")),

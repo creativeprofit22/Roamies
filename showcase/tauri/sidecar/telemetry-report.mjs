@@ -284,14 +284,14 @@ const nums = (rows, k) => rows.map((r) => r[k]).filter(finite).sort((a, b) => a 
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
 // The engine comparison (docs/voice-engines.md): one row per engine x role from `host.stt` ends (primary) and
-// `host.stt_shadow` results (shadow), with the stt_correction rate per primary engine. Skipped and crashed shadow
-// jobs count apart; shadow rows sum sub/ins/del (jiwer's naming, the selected engine's text as reference).
+// `host.stt_shadow` results (shadow), with the stt_correction rate per primary engine. Skipped, crashed (helper died)
+// and failed (per-take error) shadow jobs count apart; shadow rows sum sub/ins/del (jiwer's naming, the selected engine's text as reference).
 export function stt(events) {
   const by = new Map();
   const corrections = new Map();
   const row = (engine, role) => {
     const k = `${engine}\u0000${role}`;
-    if (!by.has(k)) by.set(k, { engine, role, takes: [], skipped: 0, crashed: 0 });
+    if (!by.has(k)) by.set(k, { engine, role, takes: [], skipped: 0, crashed: 0, failed: 0 });
     return by.get(k);
   };
   for (const e of events) {
@@ -300,7 +300,8 @@ export function stt(events) {
     else if (e.step === 'host.stt_shadow') {
       const r = row(a.engine ?? 'unknown', 'shadow');
       if (e.outcome === 'cancelled') r.skipped++;
-      else if (e.outcome === 'error') r.crashed++;
+      else if (e.outcome === 'error' && e.error_code === 'helper_crashed') r.crashed++;
+      else if (e.outcome === 'error') r.failed++;
       else r.takes.push(a);
     } else if (e.step === 'stt_correction') corrections.set(a.engine ?? 'system', (corrections.get(a.engine ?? 'system') ?? 0) + 1);
   }
@@ -309,7 +310,7 @@ export function stt(events) {
     const rss = nums(t, 'peak_rss_mb');
     const sum = (k) => (g.role === 'shadow' ? nums(t, k).reduce((x, y) => x + y, 0) : null);
     return {
-      engine: g.engine, role: g.role, n, skipped: g.skipped, crashed: g.crashed,
+      engine: g.engine, role: g.role, n, skipped: g.skipped, crashed: g.crashed, failed: g.failed,
       empty_rate: n ? t.filter((a) => a.empty === true).length / n : null,
       rtf_p50: q('rtf', 50), rtf_p95: q('rtf', 95),
       final_p50: q('speech_end_to_final_ms', 50), final_p95: q('speech_end_to_final_ms', 95),
@@ -433,9 +434,9 @@ const errorTable = (rows) => table(['step', 'outcomes', 'errors', 'error rate', 
 const codeTable = (rows) => table(['step', 'outcome', 'code', 'count', 'share of step'],
   rows.map((r) => [code(r.step), r.outcome, code(r.error_code), r.count, pcnt(r.share)]));
 const sttTable = (rows) => table(
-  ['engine', 'role', 'n', 'skipped', 'crashed', 'empty', 'rtf p50 / p95', 'speech end → final ms p50 / p95', 'first partial ms p50 / p95',
+  ['engine', 'role', 'n', 'skipped', 'crashed', 'failed', 'empty', 'rtf p50 / p95', 'speech end → final ms p50 / p95', 'first partial ms p50 / p95',
     'revision', 'agreement', 'S / I / D', 'corrections', 'correction rate', 'peak MB'],
-  rows.map((r) => [r.engine, r.role, r.n, r.skipped, r.crashed, pcnt(r.empty_rate), `${num(r.rtf_p50, 2)} / ${num(r.rtf_p95, 2)}`,
+  rows.map((r) => [r.engine, r.role, r.n, r.skipped, r.crashed, r.failed, pcnt(r.empty_rate), `${num(r.rtf_p50, 2)} / ${num(r.rtf_p95, 2)}`,
     `${num(r.final_p50, 0)} / ${num(r.final_p95, 0)}`, `${num(r.ttfp_p50, 0)} / ${num(r.ttfp_p95, 0)}`, pcnt(r.revision_rate),
     pcnt(r.agreement), r.role === 'shadow' ? `${r.sub} / ${r.ins} / ${r.del}` : '–', num(r.corrections), pcnt(r.correction_rate), num(r.peak_rss_mb, 0)]),
 );
@@ -553,10 +554,10 @@ export function writeReport({ dir, days = 14, out, benchDoc, now } = {}) {
 export function formatStt(rows) {
   const f = (v, d = 2) => (v === null ? '-' : Number.isInteger(v) ? String(v) : v.toFixed(d));
   const pc = (v) => (v === null ? '-' : `${Math.round(v * 100)}%`);
-  const cols = [['engine', 12], ['role', 8], ['n', 5], ['skipped', 7], ['empty', 6], ['rtf p50/p95', 12], ['final ms p50/p95', 17],
+  const cols = [['engine', 12], ['role', 8], ['n', 5], ['skipped', 7], ['failed', 6], ['empty', 6], ['rtf p50/p95', 12], ['final ms p50/p95', 17],
     ['ttfp ms p50/p95', 16], ['revised', 7], ['peak MB', 8], ['agree', 6], ['corrected', 9]];
   const line = (vals) => vals.map((v, i) => (i < 2 ? String(v).padEnd(cols[i][1]) : String(v).padStart(cols[i][1]))).join('  ');
-  return [line(cols.map((c) => c[0])), ...rows.map((r) => line([r.engine, r.role, r.n, r.skipped, pc(r.empty_rate),
+  return [line(cols.map((c) => c[0])), ...rows.map((r) => line([r.engine, r.role, r.n, r.skipped, r.failed, pc(r.empty_rate),
     `${f(r.rtf_p50)}/${f(r.rtf_p95)}`, `${f(r.final_p50, 0)}/${f(r.final_p95, 0)}`, `${f(r.ttfp_p50, 0)}/${f(r.ttfp_p95, 0)}`,
     pc(r.revision_rate), f(r.peak_rss_mb, 0), pc(r.agreement), pc(r.correction_rate)]))].join('\n');
 }

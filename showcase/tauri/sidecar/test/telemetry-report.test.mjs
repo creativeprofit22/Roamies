@@ -49,6 +49,8 @@ const sttEvents = [
   host('event', 'host.stt_shadow', 's4', { engine: 'parakeet', role: 'shadow', rtf: 0.07, agreement: 0.8, peak_rss_mb: 810 }),
   host('event', 'host.stt_shadow', 's5', { engine: 'parakeet', role: 'shadow', rtf: 0.09, agreement: 1, peak_rss_mb: 805 }),
   host('event', 'host.stt_shadow', 's6', { engine: 'parakeet', role: 'shadow' }, { outcome: 'cancelled', error_code: 'battery_saver' }),
+  // A per-take error from a live shadow helper is a failure, not a crash.
+  host('event', 'host.stt_shadow', 's8', { engine: 'parakeet', role: 'shadow' }, { outcome: 'error', error_code: 'no_input' }),
   ev('event', 'stt_correction', 's7', 2100, { attrs: { kind: 'reask', engine: 'moonshine', edit_distance: 3 } }),
 ];
 const cmp = stt(sttEvents);
@@ -60,7 +62,9 @@ assert.ok(Math.abs(moon.revision_rate - 0.2) < 1e-9);
 assert.equal(moon.correction_rate, 0.5);
 assert.deepEqual([para.ttfp_p50, para.revision_rate, para.correction_rate, para.agreement], [null, null, 0, null]);
 assert.deepEqual([shadow.skipped, shadow.agreement, shadow.peak_rss_mb, shadow.correction_rate], [1, 0.9, 810, null]);
-assert.match(formatStt(cmp), /moonshine\s+primary\s+2\s+0\s+50%/);
+assert.deepEqual([shadow.n, shadow.crashed, shadow.failed], [2, 0, 1]);
+assert.match(formatStt(cmp), /moonshine\s+primary\s+2\s+0\s+0\s+50%/);
+assert.match(formatStt(cmp), /parakeet\s+shadow\s+2\s+1\s+1\s/);
 
 // CLI on a day file.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roamies-report-'));
@@ -142,6 +146,7 @@ assert.ok(Math.abs(mp.revision_rate - 0.1) < 1e-9);
 assert.deepEqual([ps.n, ps.sub, ps.ins, ps.del, ps.correction_rate], [2, 3, 1, 0, null]);
 assert.ok(Math.abs(ps.agreement - 0.85) < 1e-9);
 assert.deepEqual([ms.n, ms.skipped, ms.crashed, ms.sub, ms.ins, ms.del], [2, 1, 1, 3, 1, 1]);
+assert.equal(ms.failed, 0);
 assert.ok(Math.abs(ms.agreement - 0.9) < 1e-9);
 
 assert.deepEqual([rep.regressions.from, rep.regressions.to], ['0.4.0', '0.5.0']);

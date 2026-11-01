@@ -1,6 +1,7 @@
 // Reads the local telemetry day files (docs/telemetry.md) and prints:
 //   chain <request_id> [days]  one request's steps in time order, indented by parent
 //   p95 [days]                 steps ranked by p95 duration, with error and retry rates
+//   stt [days]                 voice engines compared: host.stt and host.stt_shadow by engine and role
 // Run: npm run telemetry:report -- chain <request_id>   (ROAMIES_DATA_DIR or --dir <folder> to read elsewhere)
 import fs from 'node:fs';
 import os from 'node:os';
@@ -67,6 +68,55 @@ export function p95(events) {
   }).sort((a, b) => b.p95 - a.p95);
 }
 
+const nums = (rows, k) => rows.map((r) => r[k]).filter((v) => typeof v === 'number' && Number.isFinite(v)).sort((a, b) => a - b);
+const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+
+// The engine comparison (docs/voice-engines.md): one row per engine x role from `host.stt` ends (primary) and
+// `host.stt_shadow` results (shadow), with the stt_correction rate per primary engine. Skipped shadow jobs count apart.
+export function stt(events) {
+  const by = new Map();
+  const corrections = new Map();
+  const row = (engine, role) => {
+    const k = `${engine}\u0000${role}`;
+    if (!by.has(k)) by.set(k, { engine, role, takes: [], skipped: 0 });
+    return by.get(k);
+  };
+  for (const e of events) {
+    const a = e.attrs ?? {};
+    if (e.step === 'host.stt' && e.kind === 'end') row(a.engine ?? 'system', a.role ?? 'primary').takes.push(a);
+    else if (e.step === 'host.stt_shadow') {
+      const r = row(a.engine ?? 'unknown', 'shadow');
+      if (e.outcome === 'cancelled') r.skipped++; else r.takes.push(a);
+    } else if (e.step === 'stt_correction') corrections.set(a.engine ?? 'system', (corrections.get(a.engine ?? 'system') ?? 0) + 1);
+  }
+  return [...by.values()].map((g) => {
+    const t = g.takes, n = t.length, q = (k, p) => { const v = nums(t, k); return v.length ? pct(v, p) : null; };
+    const rss = nums(t, 'peak_rss_mb');
+    return {
+      engine: g.engine, role: g.role, n, skipped: g.skipped,
+      empty_rate: n ? t.filter((a) => a.empty === true).length / n : null,
+      rtf_p50: q('rtf', 50), rtf_p95: q('rtf', 95),
+      final_p50: q('speech_end_to_final_ms', 50), final_p95: q('speech_end_to_final_ms', 95),
+      ttfp_p50: q('time_to_first_partial_ms', 50), ttfp_p95: q('time_to_first_partial_ms', 95),
+      revision_rate: mean(nums(t, 'revision_rate')),
+      peak_rss_mb: rss.length ? rss[rss.length - 1] : null,
+      agreement: g.role === 'shadow' ? mean(nums(t, 'agreement')) : null,
+      correction_rate: g.role === 'primary' && n ? (corrections.get(g.engine) ?? 0) / n : null,
+    };
+  }).sort((a, b) => (a.role === b.role ? b.n - a.n : a.role === 'primary' ? -1 : 1));
+}
+
+export function formatStt(rows) {
+  const f = (v, d = 2) => (v === null ? '-' : Number.isInteger(v) ? String(v) : v.toFixed(d));
+  const pc = (v) => (v === null ? '-' : `${Math.round(v * 100)}%`);
+  const cols = [['engine', 12], ['role', 8], ['n', 5], ['skipped', 7], ['empty', 6], ['rtf p50/p95', 12], ['final ms p50/p95', 17],
+    ['ttfp ms p50/p95', 16], ['revised', 7], ['peak MB', 8], ['agree', 6], ['corrected', 9]];
+  const line = (vals) => vals.map((v, i) => (i < 2 ? String(v).padEnd(cols[i][1]) : String(v).padStart(cols[i][1]))).join('  ');
+  return [line(cols.map((c) => c[0])), ...rows.map((r) => line([r.engine, r.role, r.n, r.skipped, pc(r.empty_rate),
+    `${f(r.rtf_p50)}/${f(r.rtf_p95)}`, `${f(r.final_p50, 0)}/${f(r.final_p95, 0)}`, `${f(r.ttfp_p50, 0)}/${f(r.ttfp_p95, 0)}`,
+    pc(r.revision_rate), f(r.peak_rss_mb, 0), pc(r.agreement), pc(r.correction_rate)]))].join('\n');
+}
+
 const ms = (v) => (typeof v === 'number' ? `${v.toFixed(1)} ms` : '');
 const attrText = (a) => Object.entries(a).filter(([, v]) => v !== null && typeof v !== 'object').map(([k, v]) => `${k}=${typeof v === 'number' && !Number.isInteger(v) ? v.toFixed(1) : v}`).join(' ');
 
@@ -104,7 +154,11 @@ function main(argv) {
     console.log(formatP95(p95(loadEvents(dir, Number(a) || 7))));
     return 0;
   }
-  console.error('Usage: telemetry-report.mjs chain <request_id> [days] | p95 [days]  [--dir <telemetry folder>]');
+  if (cmd === 'stt') {
+    console.log(formatStt(stt(loadEvents(dir, Number(a) || 7))));
+    return 0;
+  }
+  console.error('Usage: telemetry-report.mjs chain <request_id> [days] | p95 [days] | stt [days]  [--dir <telemetry folder>]');
   return 2;
 }
 

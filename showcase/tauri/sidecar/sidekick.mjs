@@ -25,9 +25,10 @@ import {
 } from './store.mjs';
 import { EMOTES, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, talkLabel, totalBytes } from './voice-model.mjs';
-import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor } from './voice-engines.mjs';
+import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor, shadowEngine, shadowPayload } from './voice-engines.mjs';
 import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
 import { createTelemetry, newRequestId } from './telemetry.mjs';
+import { createCorrections, recordCorrection } from './stt-correction.mjs';
 
 console.log = console.info = (...a) => console.error(...a);
 // gg-ai's StreamResult.response rejects unobserved when a stream fails; prompt() already reports it, so don't die.
@@ -63,7 +64,7 @@ const DEFAULT_KEYS = process.platform === 'win32'
 const DEFAULTS = {
   provider: null, model: null, sound: true, allowActions: false, voice: true,
   onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, setupVersion: 0, voiceMode: 'agent',
-  voiceEngine: DEFAULT_ENGINE, telemetry: true, telemetryText: false,
+  voiceEngine: DEFAULT_ENGINE, voiceShadow: false, telemetry: true, telemetryText: false,
 };
 // Windows voice runs a speech engine on the PC (x64 build only), one helper per engine in voice-engines.json.
 // Each engine's model is downloaded once: from the setup guide, when it's first chosen, or when voice is used.
@@ -345,6 +346,14 @@ function makeAgent() {
 }
 let credsBaseUrl;
 
+// Re-asked requests and re-dictations after a voice take: a free hint that the transcript was wrong.
+const corrections = createCorrections();
+const sttEngine = () => (NEEDS_MODEL ? activeEngine().id : 'system');
+function noteCorrection(id, text, kind, fromVoice) {
+  recordCorrection(tel, id, corrections.check({ text, kind }), text);
+  if (fromVoice) corrections.noteVoice({ rid: id, text, engine: sttEngine(), kind });
+}
+
 // One run at a time: a new request waits for (or interrupts) the current one.
 function enqueue(text, { interrupt = false, image = null, requestId = null, source = 'typed', sentMs = null } = {}) {
   if (interrupt && busy) interruptQuietly();
@@ -352,6 +361,7 @@ function enqueue(text, { interrupt = false, image = null, requestId = null, sour
   const id = rid(requestId) ?? newRequestId();
   const req = tel.start('agent.request', { requestId: id, attrs: { source, image: !!image, ...retryAttrs(), ...(tel.includeText ? { text } : {}) } });
   handoff(id, sentMs, req);
+  noteCorrection(id, text, 'request', source === 'voice' || source === 'snap');
   const t = { rid: id, req, wait: tel.start('agent.queue_wait', { requestId: id, parent: req.id }) };
   running = running.then(() => prompt(text, image, t)).catch((e) => console.error('prompt', e));
   return running;
@@ -781,14 +791,19 @@ function engineItems() {
     return { id: `voiceengine:${e.id}`, label: `${e.label} · ${state}`, checked: config.voiceEngine === e.id };
   });
   if (active.id !== config.voiceEngine) items.push({ id: 'none', label: `Using ${engineLabel(active.id)} until ${engineLabel(config.voiceEngine)} is ready`, enabled: false });
+  // Shadow mode (docs/voice-engines.md): the other engine re-transcribes each take for comparison only.
+  const shadow = shadowEngine({ active: active.id, ready: (id) => voiceModels[id].status === 'ready' });
+  if (shadow) items.push({ sep: true }, { id: 'voiceshadow', label: `Compare With ${engineLabel(shadow.id)} in Background${shadow.ready ? '' : ' (model not downloaded)'}`, checked: !!config.voiceShadow });
   return items;
 }
 
 // With no model ready the helper still runs: a press reports `unavailable`, which starts the download.
 const voiceConfig = () => {
   const active = activeEngine();
+  const shadow = NEEDS_MODEL && shadowPayload({ on: config.voiceShadow, active, ready: (id) => voiceModels[id].status === 'ready', dirOf: (id) => voiceModels[id].dir });
   send({ type: 'voice_config', enabled: VOICE_OK && config.voice, mute: config.muteWhileTalking !== false, mode: config.voiceMode,
-    ...(NEEDS_MODEL ? { engine: active.id, model: voiceModels[active.id].dir, ready: active.ready } : {}) });
+    ...(NEEDS_MODEL ? { engine: active.id, model: voiceModels[active.id].dir, ready: active.ready } : {}),
+    ...(shadow ? { shadow } : {}) });
 };
 
 // Progress goes to the setup guide often and to the tray menu now and then.
@@ -876,6 +891,7 @@ function onDictation(m) {
     const requestId = rid(m.request_id);
     handoff(requestId, m.sent_ms);
     const check = tel.start('dictation.check', { requestId, attrs: { chars: text.length, ...(tel.includeText ? { text } : {}) } });
+    noteCorrection(requestId, text, 'dictation', true);
     const v = checkDictationTarget(m.app, text);
     tel.end(check, { outcome: v.level === BLOCK ? 'error' : 'ok', errorCode: v.level === BLOCK ? 'dictation_blocked' : null, attrs: { level: v.level } });
     if (v.level === BLOCK) { send({ type: 'dictation_copy', text, request_id: requestId }); say(`${v.reason} It's on your clipboard.`, 'concerned', { code: 'dictation_blocked', requestId }); }
@@ -943,7 +959,8 @@ async function onMenu(id) {
     config.voiceEngine = e.id; saveConfig(); voiceConfig(); menu(); obState();
     if (voiceModels[e.id].status !== 'ready') return startVoiceDownload(e.id);
     say(`Switched to ${e.label}${e.streaming ? '' : ". I'll write out what you say when you stop talking"}.`, 'happy');
-  } else if (id === 'voicedl') startVoiceDownload();
+  } else if (id === 'voiceshadow') { config.voiceShadow = !config.voiceShadow; saveConfig(); voiceConfig(); menu(); }
+  else if (id === 'voicedl') startVoiceDownload();
   else if (id === 'voice') {
     config.voice = !config.voice; saveConfig(); voiceConfig(); menu();
     if (config.voice && !voiceReady()) return startVoiceDownload();

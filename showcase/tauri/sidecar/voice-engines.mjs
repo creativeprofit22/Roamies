@@ -20,3 +20,18 @@ export function chooseEngine({ configured, ready }) {
   const other = ENGINES.find((e) => ready(e.id));
   return other ? { id: other.id, ready: true } : { id: want, ready: false };
 }
+
+// Shadow mode's candidate: the first other engine in registry order, with whether its model is verified.
+// None when the registry has a single engine.
+export function shadowEngine({ active, ready }) {
+  const other = ENGINES.find((e) => e.id !== active);
+  return other ? { id: other.id, ready: !!ready(other.id) } : null;
+}
+
+// voice_config's `shadow` field: only when switched on, the primary is ready and the other model is
+// already verified. Shadow mode never starts a download.
+export function shadowPayload({ on, active, ready, dirOf }) {
+  if (!on || !active.ready) return null;
+  const s = shadowEngine({ active: active.id, ready });
+  return s?.ready ? { engine: s.id, model: dirOf(s.id), ready: true } : null;
+}

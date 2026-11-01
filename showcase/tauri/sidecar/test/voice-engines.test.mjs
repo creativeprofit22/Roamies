@@ -2,7 +2,7 @@
 // installer helpers and licences match what the build scripts ship. Run: npm test
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor } from '../voice-engines.mjs';
+import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor, shadowEngine, shadowPayload } from '../voice-engines.mjs';
 
 const readyOf = (...ids) => (id) => ids.includes(id);
 
@@ -14,6 +14,19 @@ assert.deepEqual(chooseEngine({ configured: 'moonshine', ready: readyOf('parakee
 assert.deepEqual(chooseEngine({ configured: 'parakeet', ready: readyOf() }), { id: 'parakeet', ready: false }, 'none ready keeps the configured one');
 assert.deepEqual(chooseEngine({ configured: 'whisper', ready: readyOf() }), { id: DEFAULT_ENGINE, ready: false }, 'unknown id means the default');
 assert.deepEqual(chooseEngine({ configured: undefined, ready: readyOf('parakeet') }), { id: 'parakeet', ready: true });
+
+// shadow candidate: the other engine, ready only if its own model is verified
+assert.deepEqual(shadowEngine({ active: 'moonshine', ready: readyOf('moonshine', 'parakeet') }), { id: 'parakeet', ready: true });
+assert.deepEqual(shadowEngine({ active: 'parakeet', ready: readyOf('parakeet', 'moonshine') }), { id: 'moonshine', ready: true });
+assert.deepEqual(shadowEngine({ active: 'moonshine', ready: readyOf('moonshine') }), { id: 'parakeet', ready: false }, 'missing model: shown, never run');
+
+// voice_config.shadow payload: off by default, never for a missing model or a primary that isn't ready
+const dirOf = (id) => `/m/${id}`;
+const on = { on: true, active: { id: 'moonshine', ready: true }, ready: readyOf('moonshine', 'parakeet'), dirOf };
+assert.deepEqual(shadowPayload(on), { engine: 'parakeet', model: '/m/parakeet', ready: true });
+assert.equal(shadowPayload({ ...on, on: false }), null, 'toggle off');
+assert.equal(shadowPayload({ ...on, ready: readyOf('moonshine') }), null, 'shadow model missing');
+assert.equal(shadowPayload({ ...on, active: { id: 'moonshine', ready: false } }), null, 'primary not ready');
 
 // registry shape
 assert.equal(DEFAULT_ENGINE, 'moonshine');

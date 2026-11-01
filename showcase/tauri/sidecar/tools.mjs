@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { parseSipsSize, readProblem, rematch, sameBounds, shotMap, shotProblem, toScreen } from './pointing.mjs';
+import { parseSipsSize, parseWinShot, readProblem, rematch, resizedSize, sameBounds, shotBox, shotMap, shotPixel, shotProblem } from './pointing.mjs';
 import { performance } from 'node:perf_hooks';
 import * as safety from './safety.mjs';
 import { ASK, BLOCK, SAFE, isYes } from './safety.mjs';
@@ -76,12 +76,15 @@ function controlList(controls, texts = []) {
 }
 // A safety verdict: blocked throws with the reason, otherwise returns the checked absolute path.
 const allowed = (v) => { if (v.level === BLOCK) throw new Error(`Blocked for safety: ${v.reason}`); return v.path; };
-// Shrinks an image to at most 1568 px on its long side (Claude's own cap), never enlarging small ones. Returns [w, h].
-export async function fitImage(file) {
+// Resizes an image to exactly the size the model processes (Anthropic's edge + visual-token rule for Claude,
+// see imageLimits in pointing.mjs), never enlarging small ones, so its pixel coordinates map 1:1. Returns the sent [w, h].
+export async function fitImage(file, { maxEdge = 1568, maxTokens = 1568 } = {}) {
   const size = async () => parseSipsSize((await run('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', file])).stdout);
   const s = await size();
-  if (!s || Math.max(...s) <= 1568) return s;
-  await run('sips', ['-Z', '1568', file]);
+  if (!s) return s;
+  const [w, h] = resizedSize(s[0], s[1], maxEdge, maxTokens);
+  if (w === s[0] && h === s[1]) return s;
+  await run('sips', ['-z', String(h), String(w), file]); // -z takes height, then width
   return size();
 }
 export const imageBlock = async (file, mediaType) => {
@@ -91,7 +94,7 @@ export const imageBlock = async (file, mediaType) => {
 };
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }) }) {
   // Each safety check reports its verdict and time (telemetry agent.safety); the checks themselves are unchanged.
   const timed = (check, fn) => (...a) => {
     const t0 = performance.now(), v = fn(...a);
@@ -103,18 +106,20 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   let axNudged = 0;
   const pointWaits = new Map(); // point_at call id → resolve, settled when the overlay has shown the step
   let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)
+  let winScreen = null; // Windows: the DPI-aware primary screen size the last capture saw, [w, h]
   let lastRead = null; // { win, controls } from the latest read_window, to catch ids that went stale
   // Bumped for every new request: what was seen before it may be another page, tab or app by now.
   let turn = 0;
-  async function shotPoint(x, y) {
+  async function checkShot() {
     const problem = shotProblem(lastShot, turn);
     if (problem) throw new Error(problem);
     if (lastShot.win != null) {
       const now = await hands('locate', `window:${lastShot.win}`).catch(() => null);
       if (!sameBounds(now?.window?.bounds, lastShot.bounds)) throw new Error('That window moved or closed since the screenshot. Take a new screenshot first.');
     }
-    return toScreen(lastShot, x, y);
   }
+  async function shotPoint(x, y) { await checkShot(); return shotPixel(lastShot, x, y); }
+  async function shotRect(box) { await checkShot(); return shotBox(lastShot, box); }
   // The control that read_window listed at this id, wherever it is now.
   async function liveControls(spec) {
     const fresh = await hands('ui', spec);
@@ -151,6 +156,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   // or "window:<id>" from list_windows. Apps that are open but hidden or minimised are brought forward.
   async function screenshot({ target = 'screen' } = {}, ctx) {
     const file = path.join(os.tmpdir(), `sidekick-${Date.now()}.jpg`);
+    let sent = null;
     if (process.platform === 'darwin') {
       const t = String(target || 'screen').trim();
       const spec = t === 'screen' || t === 'front' || t.startsWith('window:') ? t : `app:${t}`;
@@ -163,31 +169,43 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         }
       }
       const res = await hands('capture', file, spec);
-      // 1568 px is Claude's own cap; a bigger image gets shrunk again and its coordinates drift.
-      const size = await fitImage(file);
+      // Sent at exactly the size the model processes; any other size gets resized again and coordinates drift.
+      const size = await fitImage(file, imageLimits());
       const bounds = res.window?.bounds ?? res.bounds;
       lastShot = size && bounds ? { ...shotMap(bounds, ...size), bounds, win: res.window?.id ?? null, turn } : null;
       const what = res.window ? `the ${res.window.app} window${res.window.title ? ` "${res.window.title}"` : ''}` : 'the whole screen';
-      const dims = size ? ` (${size[0]}×${size[1]} px; for point_at or click_at give x, y in this image's pixels)` : '';
+      const dims = size ? ` (${size[0]}×${size[1]} px; for point_at or click_at give absolute pixel x, y (or a box [x1, y1, x2, y2]) in this ${size[0]}×${size[1]} image, not a 0–1000 scale)` : '';
       return { content: [{ type: 'text', text: `Screenshot of ${what}${dims}.` }, await imageBlock(file, 'image/jpeg')] };
     } else if (process.platform === 'win32') {
-      // DPI-aware (or scaled displays capture only the top-left part), shrunk to Claude's 1568 px cap, and the
-      // file path passed by environment variable so odd characters in it can't break the script.
+      // DPI-aware (or scaled displays capture only the top-left part), resized to exactly the size the model
+      // processes, and the file path passed by environment variable so odd characters in it can't break the script.
+      // The target size depends on the screen size, so the script refuses (exit 3, prints "size W H") when the screen
+      // isn't the one we computed for; the first shot per session and a display change cost one extra short run.
       const ps = [
         'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
         "Add-Type -Name D -Namespace RoamiesWin -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();'",
         '[RoamiesWin.D]::SetProcessDPIAware() | Out-Null',
         '$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
+        'if ($env:ROAMIES_EXPECT -ne "$($b.Width) $($b.Height)") { Write-Output "size $($b.Width) $($b.Height)"; exit 3 }',
+        '$t=$env:ROAMIES_SIZE.Split(" ");$w=[int]$t[0];$h=[int]$t[1]',
         '$i=New-Object System.Drawing.Bitmap $b.Width,$b.Height',
         '[System.Drawing.Graphics]::FromImage($i).CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size)',
-        '$s=[Math]::Min(1.0,1568.0/[Math]::Max($b.Width,$b.Height))',
-        '$o=New-Object System.Drawing.Bitmap ([int]($b.Width*$s)),([int]($b.Height*$s))',
-        "$g=[System.Drawing.Graphics]::FromImage($o);$g.InterpolationMode='HighQualityBicubic';$g.DrawImage($i,0,0,$o.Width,$o.Height)",
+        '$o=New-Object System.Drawing.Bitmap $w,$h',
+        "$g=[System.Drawing.Graphics]::FromImage($o);$g.InterpolationMode='HighQualityBicubic';$g.DrawImage($i,0,0,$w,$h)",
         '$o.Save($env:ROAMIES_SHOT,[System.Drawing.Imaging.ImageFormat]::Jpeg)',
+        'Write-Output "sent $($o.Width) $($o.Height)"',
       ].join(';');
       // -EncodedCommand (UTF-16LE base64): no quoting for Windows' command line to mangle.
-      const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { env: { ...process.env, ROAMIES_SHOT: file } });
-      if (r.err) throw new Error('Screen capture failed.');
+      const shoot = (screen) => {
+        const limits = imageLimits();
+        const env = { ...process.env, ROAMIES_SHOT: file, ROAMIES_EXPECT: screen ? screen.join(' ') : '', ROAMIES_SIZE: screen ? resizedSize(screen[0], screen[1], limits.maxEdge, limits.maxTokens).join(' ') : '' };
+        return run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { env });
+      };
+      let r = await shoot(winScreen);
+      let out = parseWinShot(r.stdout);
+      if (out.size) { winScreen = out.size; r = await shoot(winScreen); out = parseWinShot(r.stdout); }
+      if (r.err || !out.sent) throw new Error('Screen capture failed.');
+      sent = out.sent;
     } else {
       let r = await run('grim', [file]);
       if (r.err) r = await run('gnome-screenshot', ['-f', file]);
@@ -195,7 +213,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     }
     const data = (await fs.readFile(file)).toString('base64');
     fs.unlink(file).catch(() => {});
-    return { content: [{ type: 'text', text: 'Screenshot of the main display.' }, { type: 'image', mediaType: 'image/jpeg', data }] };
+    const dims = sent ? ` (${sent[0]}×${sent[1]} px)` : '';
+    return { content: [{ type: 'text', text: `Screenshot of the main display${dims}.` }, { type: 'image', mediaType: 'image/jpeg', data }] };
   }
 
   const tools = [
@@ -229,16 +248,17 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       },
       {
         name: 'point_at',
-        description: "Teach by showing: fly to something on screen and point at it while you explain one step. Use it to walk the user through how to do something (e.g. 'how do I add a layer mask'), one point_at per step, in order, with a short instruction each (under 12 words). Three ways to say where, best first: text, the exact words shown on screen (button and link labels, headings, version numbers, menu names; searches every window of the target app, or the whole screen with target 'screen', so no read_window is needed first); id from read_window, for controls without visible words; or x, y pixels from your latest screenshot, only when neither finds it. Set click true only if the user asked you to do it for them; otherwise just point and let them click. wait_for_user true pauses until they do the step (or 20 s), for multi-step lessons.",
+        description: "Teach by showing: fly to something on screen and point at it while you explain one step. Use it to walk the user through how to do something (e.g. 'how do I add a layer mask'), one point_at per step, in order, with a short instruction each (under 12 words). Three ways to say where, best first: text, the exact words shown on screen (button and link labels, headings, version numbers, menu names; searches every window of the target app, or the whole screen with target 'screen', so no read_window is needed first); id from read_window, for controls without visible words; or x, y or box [x1, y1, x2, y2] in absolute pixels of your latest screenshot (never 0–1000), only when neither finds it; prefer a box for anything bigger than an icon. Set click true only if the user asked you to do it for them; otherwise just point and let them click. wait_for_user true pauses until they do the step (or 20 s), for multi-step lessons.",
         parameters: z.object({
           target: z.string().optional(),
           id: z.number().int().optional(), text: z.string().min(1).max(80).optional(), x: z.number().optional(), y: z.number().optional(),
+          box: z.array(z.number()).optional(),
           say: z.string().min(1).max(120),
           step: z.number().int().optional(), of: z.number().int().optional(),
           click: z.boolean().optional(), wait_for_user: z.boolean().optional(),
         }),
         executionMode: 'sequential',
-        execute: async ({ target = 'front', id, text: find, x, y, say: text, step, of: total, click, wait_for_user }, ctx) => {
+        execute: async ({ target = 'front', id, text: find, x, y, box, say: text, step, of: total, click, wait_for_user }, ctx) => {
           const t = String(target || 'front'), spec = t === 'front' ? 'front' : t === 'screen' ? 'screen' : `app:${t}`;
           let rect, label = '', at, liveId;
           if (id != null) {
@@ -255,10 +275,13 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
             }
             rect = m.bounds; label = m.text;
             if (click) at = [rect[0] + rect[2] / 2, rect[1] + rect[3] / 2];
+          } else if (box != null) {
+            rect = await shotRect(box);
+            if (click) at = [rect[0] + rect[2] / 2, rect[1] + rect[3] / 2];
           } else if (x != null && y != null) {
             at = await shotPoint(x, y);
             rect = [at[0] - 14, at[1] - 14, 28, 28];
-          } else throw new Error('Give an id from read_window, text shown on screen, or x and y from a screenshot.');
+          } else throw new Error('Give an id from read_window, text shown on screen, or x, y or a box from a screenshot.');
           // The overlay flies there, points, shows the step and holds; this tool resolves once it's on screen.
           const done = new Promise((resolve) => pointWaits.set(ctx.toolCallId, resolve));
           ui({ kind: 'agent', e: { type: 'point', id: ctx.toolCallId, rect, say: text, step, of: total, label } });
@@ -277,7 +300,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       },
       {
         name: 'act_in_app',
-        description: "Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and point_at find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape', 'cmd+l'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} pixels in your latest screenshot, last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.",
+        description: "Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and point_at find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape', 'cmd+l'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} absolute pixels in your latest screenshot (never 0–1000), last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.",
         parameters: z.object({
           target: z.string().optional(),
           steps: z.array(z.object({

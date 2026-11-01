@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "./bundle.sh",
-    "test": "node test/reply.test.mjs && node test/store.test.mjs && node test/pointing.test.mjs && node test/safety.test.mjs && node test/voice-model.test.mjs && node test/voice-engines.test.mjs && node test/stt-correction.test.mjs && node test/tools.test.mjs && node test/spawn.test.mjs && node test/telemetry.test.mjs && node test/telemetry-propagation.test.mjs && node test/telemetry-offline.test.mjs && node test/telemetry-chain.test.mjs && node test/telemetry-report.test.mjs && node test/webview-telemetry.test.mjs && node test/error-codes.test.mjs && node test/onboard-sync.test.mjs && node test/useragent.test.mjs && node test/agentstream.test.mjs && node test/toolschema.test.mjs",
+    "test": "node test/reply.test.mjs && node test/store.test.mjs && node test/pointing.test.mjs && node test/safety.test.mjs && node test/voice-model.test.mjs && node test/voice-engines.test.mjs && node test/stt-correction.test.mjs && node test/tools.test.mjs && node test/spawn.test.mjs && node test/telemetry.test.mjs && node test/telemetry-propagation.test.mjs && node test/telemetry-offline.test.mjs && node test/telemetry-chain.test.mjs && node test/telemetry-report.test.mjs && node test/webview-telemetry.test.mjs && node test/error-codes.test.mjs && node test/onboard-sync.test.mjs && node test/menu.test.mjs && node test/settings-view.test.mjs && node test/settings-sync.test.mjs && node test/useragent.test.mjs && node test/agentstream.test.mjs && node test/toolschema.test.mjs",
     "test:telemetry-off": "node test/telemetry-off.mjs",
     "telemetry:report": "node telemetry-report.mjs",
     "bench:telemetry": "node --expose-gc test/telemetry.bench.mjs"

@@ -31,6 +31,8 @@ import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor, shadowEngin
 import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
 import { createTelemetry, newRequestId } from './telemetry.mjs';
 import { createCorrections, recordCorrection } from './stt-correction.mjs';
+import { trayMenu, trayTooltip } from './menu.mjs';
+import { settingsView, validateAction, validateSetting } from './settings-view.mjs';
 
 console.log = console.info = (...a) => console.error(...a);
 // gg-ai's StreamResult.response rejects unobserved when a stream fails; prompt() already reports it, so don't die.
@@ -40,6 +42,9 @@ const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 let onboarding = false;
 const ui = (msg) => send({ type: 'ui', msg });
 const ob = (msg) => send({ type: 'onboard', msg });
+// While the Settings window is open it gets the live state, sign-in progress and the sign-in code prompt.
+let settingsOpen = false;
+const st = (msg) => send({ type: 'settings', msg });
 // err ({ code, requestId }) marks an error bubble: it is also recorded as ui.error_shown.
 const say = (text, mood, err = null) => {
   if (err) tel.record('ui.error_shown', { requestId: rid(err.requestId), outcome: 'error', errorCode: err.code });
@@ -54,6 +59,8 @@ const HOME = os.homedir();
 // ROAMIES_DATA_DIR (tests and benchmarks): config, sessions and memory go there instead; sign-in stays in ~/.gg.
 const CONFIG_PATH = process.env.ROAMIES_DATA_DIR ? path.join(process.env.ROAMIES_DATA_DIR, 'sidekick.json') : path.join(HOME, '.gg', 'sidekick.json');
 const OAUTH = { anthropic: loginAnthropic, openai: loginOpenAI, gemini: loginGemini, moonshot: loginKimi, xai: loginXai };
+// Tests only: sign-ins just ask for the code (no browser, no network), then fail.
+if (process.env.ROAMIES_FAKE_OAUTH) for (const k of Object.keys(OAUTH)) OAUTH[k] = async ({ onPromptCode }) => { await onPromptCode('code'); throw new Error('fake sign-in'); };
 const PROVIDER_LABELS = { gemini: 'Gemini', ...Object.fromEntries(AUTH_PROVIDERS.map((p) => [p.value, p.label])) };
 const MENU_PROVIDERS = ['anthropic', 'openai', 'gemini', ...AUTH_PROVIDERS.map((p) => p.value)].filter((v, i, a) => a.indexOf(v) === i);
 const FAST = { anthropic: 'claude-haiku-5-5', openai: 'gpt-6-luna', gemini: 'gemini-3.8-flash' };
@@ -140,6 +147,10 @@ const MAC = process.platform === 'darwin';
 const keyWords = (accel) => accel.replace(/Key|Digit/g, '').split('+')
   .map((p) => (MAC ? { Alt: 'Option' }[p] ?? p : { Control: 'Ctrl', Command: 'Win' }[p] ?? p)).join('+');
 const TRAY = MAC ? 'menu bar' : 'system tray';
+// Windows and Linux get a short tray menu; everything else is in the Settings window. macOS keeps the full menu.
+const COMPACT_TRAY = !MAC;
+// Where a setting lives, for things Sidekick says: a Settings pane, or the full tray menu on macOS.
+const whereIs = (pane) => (COMPACT_TRAY ? `Settings → ${pane}` : `the ${TRAY} menu`);
 
 const auth = new AuthStorage();
 const signedIn = new Map();
@@ -231,8 +242,11 @@ function anim(name, args) {
 // rides along on the newest user message, after all the history. Providers cache a prefix
 // (tools → system → messages), so putting LIVE in the system prompt would re-bill the whole conversation
 // every time memory changed; at the end, only the new message is fresh. The live block is never saved.
+const menuGuide = () => (COMPACT_TRAY
+  ? `Tray menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), Stop (only while you're working), Install Update … and Restart (only when one is ready; updates download, are signature-checked and install by themselves), Settings…, Quit Roamies. Right-clicking you also opens Settings. The Settings window has: AI (sign in to providers, pick the model), ${VOICE_OK ? 'Voice (on/off, Voice Mode: Computer Use sends what they say to you, Dictation types it into the app in front instead; speech engines), ' : ''}General (Sound Effects, Open at Login, Edit files & run commands), Lists & memory (open commitments, what you remember, Forget everything), Privacy (Telemetry: a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder; Show Logs), About (version, Check for Updates, Setup Guide for shortcuts, Licences).`
+  : `${MAC ? 'Menu bar' : 'Tray'} menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow File Edits & Commands, Telemetry (a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder)${VOICE_OK ? ', Voice, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies.`);
 const stablePrompt = () => `You are Sidekick, a tiny glowing pixel creature who lives on ${userName}'s screen as a desktop companion. You are the main creature of Roamies, a desktop app by Ken Kai (Mac and Windows) that puts little creatures on your screen; you are Roamies ${VERSION}.
-About Roamies, for when ${userName} asks about you or the app: ${MAC ? 'it lives in the menu bar at the top of the screen (no Dock icon)' : 'it lives in the system tray at the bottom right of the taskbar (no taskbar button); Windows may tuck the icon behind the ^ arrow next to the clock, and dragging it onto the taskbar keeps it in view'}. ${MAC ? 'Menu bar' : 'Tray'} menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow File Edits & Commands, Telemetry (a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder)${VOICE_OK ? ', Voice, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies. Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
+About Roamies, for when ${userName} asks about you or the app: ${MAC ? 'it lives in the menu bar at the top of the screen (no Dock icon)' : 'it lives in the system tray at the bottom right of the taskbar (no taskbar button); Windows may tuck the icon behind the ^ arrow next to the clock, and dragging it onto the taskbar keeps it in view'}. ${menuGuide()} Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
 You talk through small pixel speech bubbles, so keep replies short: one to three sentences unless asked for detail. Plain text only: no markdown, no asterisks, and never narrate actions like *waves*. An emoji now and then is fine; the bubbles show them. Your body does the acting: to act out a feeling, start your reply with one tag, which is never shown: ${EMOTES.map((e) => `[${e}]`).join(' ')}. hype celebrates a win, upset is for when they're dodging work, remind nudges about something they said they'd do, motivate is a push to start, wave is hello or goodbye. Most replies need no tag.
 After using a tool, never repeat what you already said; only add what's new.
 Several things in one request ("do x, then y, then z", numbered steps): do every one, in the order given. Steps that don't depend on each other can go in the same turn as parallel tool calls. If a step is blocked, refused or fails, still do the ones after it that don't depend on it, then say which step didn't happen and why. Before your final reply, check each step was really done (from the tool results) and never say a step is done when it isn't.
@@ -258,8 +272,8 @@ const livePrompt = (context = '') => {
   lastFactIds = facts.map((f) => f.id);
   const open = commitmentsText();
   return `Live state (current as of this moment):
-- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF in the ${TRAY} menu (tell the user to turn on "Allow File Edits & Commands" if they want it)`}.
-${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? (NEEDS_MODEL ? `using the ${engineLabel(activeEngine().id)} speech engine, ` : '') + (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : `on, but the speech model isn't downloaded yet (${voiceModels[activeEngine().id].status === 'downloading' ? 'downloading now' : `Settings > Download Voice in the ${TRAY} menu`})`}.` : ''}
+- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF in ${whereIs('General')} (tell the user to turn on "${COMPACT_TRAY ? 'Edit files & run commands' : 'Allow File Edits & Commands'}" if they want it)`}.
+${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? (NEEDS_MODEL ? `using the ${engineLabel(activeEngine().id)} speech engine, ` : '') + (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : `on, but the speech model isn't downloaded yet (${voiceModels[activeEngine().id].status === 'downloading' ? 'downloading now' : (COMPACT_TRAY ? 'Download in Settings → Voice' : `Settings > Download Voice in the ${TRAY} menu`)})`}.` : ''}
 - Shortcuts: show or hide you ${keyWords(keys().summon)}${MAC ? `; ask about an area ${keyWords(keys().snap)}` : ''}; show the list ${keyWords(keys().list)}.${MAC ? '' : ' take_screenshot works here (it always captures the whole screen), so look when asked what is on screen. Asking about an area, reading app windows, pointing and working other apps are Mac only for now.'}
 ${open ? `Open commitments:\n${open}` : 'No open commitments.'}${doneTodayText() ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${doneTodayText()}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}`;
@@ -429,7 +443,7 @@ async function prompt(text, image = null, t = {}) {
   if (!ensureModel()) {
     tel.end(t.req, { outcome: 'error', errorCode: 'not_signed_in' });
     failed(t.rid);
-    return say(`Sign in to an AI provider from the ${TRAY} menu first, then ask me again!`, 'concerned', { code: 'sign_in_needed', requestId: t.rid });
+    return say(`Sign in to an AI provider from ${whereIs('AI')} first, then ask me again!`, 'concerned', { code: 'sign_in_needed', requestId: t.rid });
   }
   if (isStale(session)) {
     // Quiet for two hours, or a new day: start fresh. The old one stays on disk.
@@ -535,42 +549,54 @@ async function prompt(text, image = null, t = {}) {
 }
 const friendly = (err) => {
   const m = String(err?.message ?? err);
-  if (/not logged in|NotLoggedIn|401|unauthori/i.test(m)) return `My ${PROVIDER_LABELS[config.provider] ?? config.provider} login isn't working. Sign in again from the ${TRAY} menu.`;
-  if (/usage|quota|rate.?limit|429/i.test(m)) return `I've hit the usage limit on this model. Try another one from the ${TRAY} menu.`;
+  if (/not logged in|NotLoggedIn|401|unauthori/i.test(m)) return `My ${PROVIDER_LABELS[config.provider] ?? config.provider} login isn't working. Sign in again from ${whereIs('AI')}.`;
+  if (/usage|quota|rate.?limit|429/i.test(m)) return `I've hit the usage limit on this model. Try another one from ${whereIs('AI')}.`;
   return `Something went wrong: ${m.slice(0, 160)}`;
 };
 
 // ---------- asking the user (input bubble in the overlay) ----------
 let askSeq = 0;
 const pending = new Map();
+const askTo = new Map(); // ask id -> the window it was shown in
 // askWithId also returns the request id the host stamped on the answer (typed requests).
-function askWithId(opts, signal) {
+function askWithId(opts, signal, to = onboarding ? ob : ui) {
   const id = `a${++askSeq}`;
-  const to = onboarding ? ob : ui;
   to({ kind: 'ask', id, ...opts });
   return new Promise((done) => {
-    const resolve = (text, requestId = null, sentMs = null) => done({ text, requestId: rid(requestId), sentMs });
+    const resolve = (text, requestId = null, sentMs = null) => { askTo.delete(id); done({ text, requestId: rid(requestId), sentMs }); };
     pending.set(id, resolve);
+    askTo.set(id, to);
     // Another route finished first (e.g. the OAuth callback server): close the input bubble.
     signal?.addEventListener('abort', () => { pending.delete(id); to({ kind: 'cancel_ask', id }); resolve(null); }, { once: true });
   });
 }
-function ask(opts, signal) { return askWithId(opts, signal).then((r) => r.text); }
+// A window closed: nobody can answer its asks any more, so they end as cancelled.
+function dropAsks(to) {
+  for (const [id, t] of askTo) if (t === to) { const resolve = pending.get(id); pending.delete(id); askTo.delete(id); resolve?.(null); }
+}
+function ask(opts, signal, to) { return askWithId(opts, signal, to).then((r) => r.text); }
+// Sign-in progress shows in the setup guide or the Settings window when one is open, else Sidekick says it.
+const panel = (msg) => (onboarding ? ob(msg) : st(msg));
+const inPanel = () => onboarding || settingsOpen;
+// Replies go to the window that started the sign-in (`to`); tray/menu sign-ins use whichever panel is open.
+const loginTarget = (to) => to ?? (inPanel() ? panel : null);
+const loginDone = (to, msg) => { const t = loginTarget(to); if (!t) return false; t(msg); if (to ? to === ob : onboarding) obState(); return true; };
 
 // ---------- logins ----------
 let loggingIn = null;
-async function oauthLogin(provider) {
+async function oauthLogin(provider, { to } = {}) {
   if (loggingIn) return say(`Still finishing the ${PROVIDER_LABELS[loggingIn]} sign-in. One at a time!`, 'concerned', { code: 'login_busy' });
   loggingIn = provider; menu();
   try {
     const creds = await OAUTH[provider]({
       onOpenUrl: (url) => {
         openUrl(url);
-        if (onboarding) ob({ kind: 'login', provider, phase: 'browser' });
+        const t = loginTarget(to);
+        if (t) t({ kind: 'login', provider, phase: 'browser' });
         else say(`Opening ${PROVIDER_LABELS[provider]} in your browser. Sign in there!`, 'happy');
       },
       onPromptCode: async (message, signal) => {
-        const text = await ask({ prompt: 'Paste the code from the browser here.', placeholder: 'code#state' }, signal);
+        const text = await ask({ prompt: 'Paste the code from the browser here.', placeholder: 'code#state' }, signal, to ?? (onboarding ? ob : settingsOpen ? st : ui));
         if (signal?.aborted) return '';
         if (text == null) throw new Error('Sign-in cancelled.');
         return text;
@@ -582,32 +608,31 @@ async function oauthLogin(provider) {
     await refreshAuth();
     if (!config.provider || !signedIn.get(config.provider)) { config.provider = null; ensureModel(); }
     agent = null;
-    if (onboarding) { ob({ kind: 'login', provider, phase: 'done' }); obState(); }
-    else {
+    if (!loginDone(to, { kind: 'login', provider, phase: 'done' })) {
       say(`Signed in to ${PROVIDER_LABELS[provider]}. Let's go!`, 'happy');
       ui({ kind: 'agent', e: { type: 'emote', action: 'hype' } });
     }
   } catch (err) {
     console.error('login failed', err);
     const msg = String(err?.message ?? err).slice(0, 120);
-    if (onboarding) ob({ kind: 'login', provider, phase: 'error', error: msg });
+    const t = loginTarget(to);
+    if (t) t({ kind: 'login', provider, phase: 'error', error: msg });
     else say(`${PROVIDER_LABELS[provider]} sign-in didn't work: ${msg}`, 'concerned', { code: 'login_failed' });
   } finally {
     loggingIn = null; menu();
   }
 }
 
-async function apiKeyLogin(provider, given) {
+async function apiKeyLogin(provider, given, { to } = {}) {
   const meta = AUTH_PROVIDERS.find((p) => p.value === provider);
   if (!meta?.methods?.includes('apikey')) return;
-  const key = given ?? (await ask({ prompt: `Paste your ${PROVIDER_LABELS[provider] ?? provider} API key`, placeholder: 'API key', mask: true }));
+  const key = given ?? (await ask({ prompt: `Paste your ${PROVIDER_LABELS[provider] ?? provider} API key`, placeholder: 'API key', mask: true }, undefined, to));
   if (!key?.trim()) return;
   const variant = meta?.apiKeyVariants?.[0];
   const baseUrl = variant?.baseUrl ?? meta?.apiKeyBaseUrl;
   await auth.setCredentials(variant?.key ?? provider, { accessToken: key.trim(), refreshToken: '', expiresAt: Date.now() + 100 * 365 * 864e5, ...(baseUrl ? { baseUrl } : {}) });
   await refreshAuth(); ensureModel(); agent = null; menu();
-  if (onboarding) { ob({ kind: 'login', provider, phase: 'done' }); obState(); }
-  else say(`Got it. ${PROVIDER_LABELS[provider]} is connected.`, 'happy');
+  if (!loginDone(to, { kind: 'login', provider, phase: 'done' })) say(`Got it. ${PROVIDER_LABELS[provider]} is connected.`, 'happy');
 }
 
 function openUrl(url) {
@@ -698,112 +723,41 @@ async function midnightClean() {
 }
 
 // ---------- menu ----------
-function menu() {
-  const current = getModel(config.model);
-  const status = busy ? 'Sidekick is working…' : loggingIn ? `Signing in to ${PROVIDER_LABELS[loggingIn]}…` : current ? `${current.name} · ${PROVIDER_LABELS[config.provider] ?? config.provider}` : 'Not signed in';
-  const providers = MENU_PROVIDERS.filter((p) => signedIn.get(p));
-  const items = [
-    { id: 'status', label: status, enabled: false },
-    { sep: true },
-    { id: 'show', label: 'Show Sidekick', accel: keys().summon },
-    ...(process.platform === 'darwin' ? [{ id: 'snap', label: 'Ask About an Area…', accel: keys().snap }] : []),
-    { id: 'ask', label: 'Ask Sidekick…', enabled: !busy },
-    ...(VOICE_OK && config.voice && voiceReady() ? [{ id: 'voicehint', label: `Hold ${talkSymbols()} to ${dictating() ? 'Dictate' : 'Talk'} · Tap for Hands-Free`, enabled: false }] : []),
-    { id: 'stop', label: 'Stop', enabled: busy },
-    { id: 'new', label: 'New Conversation', enabled: !busy && !!session?.messages.length },
-    { id: 'list', label: 'Show List', accel: keys().list },
-    {
-      label: 'Commitments',
-      items: (() => {
-        const open = openCommitments().slice(0, 12);
-        if (!open.length) return [{ id: 'none', label: 'Nothing yet. Tell Sidekick what you plan to do.', enabled: false }];
-        return open.map((c) => ({
-          label: `${c.due && c.due < Date.now() ? '⚠︎ ' : ''}${c.text.length > 44 ? c.text.slice(0, 43) + '…' : c.text}${c.due ? ` · ${fmtWhen(c.due)}` : ''}`,
-          items: [{ id: `done:${c.id}`, label: 'Mark Done' }, { id: `drop:${c.id}`, label: 'Drop It' }],
-        }));
-      })(),
-    },
-    { sep: true },
-    {
-      label: 'Model',
-      items: providers.length
-        ? providers.map((p) => ({ label: PROVIDER_LABELS[p] ?? p, items: getModelsForProvider(p).slice(0, 16).map((mm) => ({ id: `model:${p}:${mm.id}`, label: mm.name, checked: config.model === mm.id && config.provider === p })) }))
-        : [{ id: 'none', label: 'Sign in to a provider first', enabled: false }],
-    },
-    {
-      label: 'AI Providers',
-      items: MENU_PROVIDERS.map((p) => {
-        const meta = AUTH_PROVIDERS.find((x) => x.value === p);
-        const label = PROVIDER_LABELS[p] ?? p;
-        if (signedIn.get(p)) return { id: `noop:${p}`, label: `${label}  ✓ Signed in`, enabled: false };
-        if (OAUTH[p] && (!meta || meta.methods.includes('oauth'))) return { id: `login:${p}`, label: `Sign in to ${label}…`, enabled: !loggingIn };
-        return { id: `key:${p}`, label: `Add ${label} API Key…`, enabled: !loggingIn };
-      }),
-    },
-    {
-      label: 'Settings',
-      items: [
-        ...(VOICE_OK ? [{ id: 'voice', label: `Voice Control (${talkSymbols()})`, checked: config.voice }] : []),
-        ...(VOICE_OK ? [{ label: 'Voice Mode', items: [
-          { id: 'voicemode:agent', label: 'Computer Use', checked: !dictating() },
-          { id: 'voicemode:dictation', label: 'Dictation', checked: dictating() },
-        ] }] : []),
-        ...(VOICE_OK && NEEDS_MODEL ? [{ label: 'Voice Engine', items: engineItems() }] : []),
-        ...(NEEDS_MODEL && config.voice && !voiceReady() ? [((vm) => vm.status === 'downloading'
-          ? { id: 'voicedl', label: `Downloading Voice… ${pct(vm)}%`, enabled: false }
-          : { id: 'voicedl', label: vm.status === 'error' ? 'Retry Voice Download' : `Download Voice (${sizeLabel(vm.manifest)})…` })(voiceModels[activeEngine().id])] : []),
-        ...(VOICE_OK && MAC ? [{ id: 'mutetalk', label: 'Mute Mac While Talking', checked: config.muteWhileTalking !== false }] : []),
-        ...(usageToday.requests ? [{ id: 'usage', label: `Today: ${usageToday.requests} requests · ${usageToday.tokens >= 1000 ? `${(usageToday.tokens / 1000).toFixed(1)}k` : usageToday.tokens} new tokens`, enabled: false }, { sep: true }] : []),
-        { id: 'sound', label: 'Sound Effects', checked: config.sound },
-        ...(login.supported ? [{ id: 'login', label: 'Open at Login', checked: login.on }] : []),
-        { id: 'actions', label: 'Allow File Edits & Commands', checked: config.allowActions },
-        { label: 'Telemetry', items: [
-          { id: 'telemetry', label: 'Record Telemetry (stays on this computer)', checked: tel.enabled, enabled: !TEL_OFF },
-          { id: 'telemetrytext', label: 'Include What Was Said', checked: tel.includeText, enabled: tel.enabled },
-          { sep: true },
-          { id: 'telemetryfolder', label: 'Open Telemetry Folder' },
-        ] },
-      ],
-    },
-    {
-      label: `Memory (${listFacts().length})`,
-      items: (() => {
-        const all = listFacts().slice().reverse(), shown = all.slice(0, 15);
-        if (!all.length) return [{ id: 'none', label: 'Nothing remembered yet', enabled: false }];
-        return [
-          ...shown.map((f) => ({ label: f.text.length > 52 ? f.text.slice(0, 51) + '…' : f.text, items: [{ id: `forget:${f.id}`, label: 'Forget This' }] })),
-          ...(all.length > shown.length ? [{ id: 'none', label: `…and ${all.length - shown.length} more`, enabled: false }] : []),
-          { sep: true },
-          { id: 'forgetall', label: 'Forget Everything…' },
-        ];
-      })(),
-    },
-    { sep: true },
-    { id: 'setup', label: 'Setup Guide…' },
-    { id: 'logs', label: 'Show Logs…' },
-    update.available
-      ? { id: 'install_update', label: update.installing ? `Installing ${update.available}…` : `Install Update ${update.available} and Restart`, enabled: !update.installing }
-      : { id: 'update', label: 'Check for Updates…' },
-    { id: 'about', label: `Roamies ${VERSION}`, enabled: false },
-    ...(existsSync(LICENSES) ? [{ id: 'licenses', label: 'Licences…' }] : []),
-    { id: 'quit', label: 'Quit Roamies' },
-  ];
-  send({ type: 'menu', items });
+// One snapshot of everything the tray menu and the Settings window show (menu.mjs, settings-view.mjs).
+function snapshot() {
+  const now = Date.now(), active = activeEngine(), activeVm = voiceModels[active.id];
+  const shadow = NEEDS_MODEL ? shadowEngine({ active: active.id, ready: (id) => voiceModels[id].status === 'ready' }) : null;
+  return {
+    platform: process.platform, version: VERSION, licenses: existsSync(LICENSES),
+    busy, loggingIn, hasSession: !!session?.messages.length,
+    providerLabels: PROVIDER_LABELS, current: getModel(config.model) ?? null, provider: config.provider, model: config.model,
+    providers: MENU_PROVIDERS.map((p) => {
+      const meta = AUTH_PROVIDERS.find((x) => x.value === p), on = !!signedIn.get(p);
+      return { id: p, label: PROVIDER_LABELS[p] ?? p, signedIn: on, method: OAUTH[p] && (!meta || meta.methods.includes('oauth')) ? 'oauth' : 'apikey',
+        models: on ? getModelsForProvider(p).slice(0, 16).map((mm) => ({ id: mm.id, name: mm.name })) : [] };
+    }),
+    oauth: Object.keys(OAUTH).map((id) => ({ id, name: OAUTH_NAMES[id]?.[0] ?? PROVIDER_LABELS[id], company: OAUTH_NAMES[id]?.[1] ?? '', connected: !!signedIn.get(id) })),
+    apikey: AUTH_PROVIDERS.filter((p) => p.methods?.includes('apikey')).map((p) => ({ id: p.value, name: p.label, connected: !!signedIn.get(p.value) })),
+    keys: keys(), talkSymbols: talkSymbols(),
+    update: { available: update.available, installing: update.installing },
+    voiceOk: VOICE_OK, needsModel: NEEDS_MODEL, voice: config.voice, voiceReady: voiceReady(), dictating: dictating(),
+    voiceEngine: config.voiceEngine, activeEngine: { id: active.id, label: engineLabel(active.id) },
+    engines: ENGINES.map((e) => { const vm = voiceModels[e.id]; return { id: e.id, label: e.label, about: e.about, status: vm.status, done: vm.done, total: vm.total, size: sizeLabel(vm.manifest), error: vm.error }; }),
+    shadow: shadow ? { label: engineLabel(shadow.id), ready: shadow.ready, on: !!config.voiceShadow } : null,
+    voiceDl: NEEDS_MODEL && config.voice && !voiceReady() ? { status: activeVm.status, done: activeVm.done, total: activeVm.total, size: sizeLabel(activeVm.manifest) } : null,
+    muteWhileTalking: config.muteWhileTalking !== false,
+    telemetry: { on: tel.enabled, text: tel.includeText, locked: TEL_OFF },
+    usage: { requests: usageToday.requests, tokens: usageToday.tokens },
+    sound: config.sound, login: { supported: login.supported, on: login.on }, allowActions: config.allowActions,
+    facts: listFacts().slice().reverse().map((f) => ({ id: f.id, text: f.text })),
+    commitments: openCommitments().map((c) => ({ id: c.id, text: c.text, when: c.due ? fmtWhen(c.due) : '', overdue: !!(c.due && c.due < now) })),
+  };
 }
-
-// One check item per registry engine with its download state; a line says which engine runs meanwhile.
-function engineItems() {
-  const active = activeEngine();
-  const items = ENGINES.map((e) => {
-    const vm = voiceModels[e.id];
-    const state = vm.status === 'ready' ? `${e.about} ✓ ready` : vm.status === 'downloading' ? `downloading ${pct(vm)}%` : vm.status === 'error' ? 'download failed, retry' : `${e.about} · ${sizeLabel(vm.manifest)} download`;
-    return { id: `voiceengine:${e.id}`, label: `${e.label} · ${state}`, checked: config.voiceEngine === e.id };
-  });
-  if (active.id !== config.voiceEngine) items.push({ id: 'none', label: `Using ${engineLabel(active.id)} until ${engineLabel(config.voiceEngine)} is ready`, enabled: false });
-  // Shadow mode (docs/voice-engines.md): the other engine re-transcribes each take for comparison only.
-  const shadow = shadowEngine({ active: active.id, ready: (id) => voiceModels[id].status === 'ready' });
-  if (shadow) items.push({ sep: true }, { id: 'voiceshadow', label: `Compare With ${engineLabel(shadow.id)} in Background${!shadow.ready ? ' (model not downloaded)' : tel.enabled ? '' : ' (needs telemetry)'}`, checked: !!config.voiceShadow });
-  return items;
+function menu() {
+  const v = snapshot();
+  send({ type: 'menu', items: trayMenu(v, { compact: COMPACT_TRAY }) });
+  send({ type: 'tray_tooltip', text: trayTooltip(v) });
+  if (settingsOpen) st(settingsView(v));
 }
 
 // With no model ready the helper still runs: a press reports `unavailable`, which starts the download.
@@ -823,6 +777,7 @@ function modelUpdate(force) {
   modelShownAt = now;
   ob({ kind: 'voice_model', ...guideModel() });
   if (force || now - modelMenuAt > 3000) { modelMenuAt = now; menu(); }
+  else if (settingsOpen) st({ kind: 'voice_model', engines: settingsView(snapshot()).voice?.engines ?? [] });
 }
 // The setup guide shows the configured engine's model.
 const guideModel = () => {
@@ -934,46 +889,94 @@ async function onMenu(id) {
   }
   else if (id.startsWith('model:')) {
     const [, p, ...rest] = id.split(':');
-    config.provider = p; config.model = rest.join(':'); agent = null; saveConfig(); menu();
-    say(`Switched to ${getModel(config.model)?.name ?? config.model}.`, 'happy');
+    applySetting('model', { provider: p, id: rest.join(':') });
   } else if (id.startsWith('login:')) oauthLogin(id.slice(6));
   else if (id.startsWith('key:')) apiKeyLogin(id.slice(4));
-  else if (id === 'sound') { config.sound = !config.sound; saveConfig(); ui({ kind: 'sound', on: config.sound }); menu(); if (onboarding) obState(); }
-  else if (id === 'actions') {
-    config.allowActions = !config.allowActions; saveConfig(); menu(); if (onboarding) obState(); // live section picks this up
-    say(config.allowActions ? 'File edits and commands are on. I promise to be careful.' : 'File edits and commands are off. Hands to myself!', config.allowActions ? 'determined' : 'happy');
-  } else if (id === 'update') checkUpdates(true);
+  else if (id === 'sound') applySetting('sound', !config.sound);
+  else if (id === 'actions') applySetting('actions', !config.allowActions);
+  else if (id === 'settings') send({ type: 'settings_window' });
+  else if (id === 'update') checkUpdates(true);
   else if (id === 'install_update') installUpdate();
-  else if (id === 'login') setLogin(!login.on);
+  else if (id === 'login') applySetting('login', !login.on);
   else if (id === 'licenses') { if (existsSync(LICENSES)) openUrl(LICENSES); }
   else if (id === 'logs') fs.mkdir(LOG_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(LOG_DIR)).catch(() => {});
   else if (id === 'telemetryfolder') fs.mkdir(TELEMETRY_DIR, { recursive: true, mode: 0o700 }).then(() => openUrl(TELEMETRY_DIR)).catch(() => {});
-  else if (id === 'telemetry') {
-    if (TEL_OFF) return;
-    config.telemetry = !tel.enabled; saveConfig(); tel.setEnabled(config.telemetry); telemetryConfig(); voiceConfig(); menu();
-  } else if (id === 'telemetrytext') {
-    config.telemetryText = !tel.includeText; saveConfig(); tel.setIncludeText(config.telemetryText); menu();
-    if (config.telemetryText) say("Okay, the telemetry log on this computer will include what you say and what I answer. Nothing is sent anywhere.", 'happy');
-  }
+  else if (id === 'telemetry') applySetting('telemetry', !tel.enabled);
+  else if (id === 'telemetrytext') applySetting('telemetryText', !tel.includeText);
   else if (id === 'setup') send({ type: 'onboarding' });
   else if (id === 'snap') areaSnap();
   else if (id === 'list') showList({ seconds: 20 });
-  else if (id === 'mutetalk') { config.muteWhileTalking = config.muteWhileTalking === false; saveConfig(); voiceConfig(); menu(); }
-  else if (id.startsWith('voicemode:')) {
-    config.voiceMode = id === 'voicemode:dictation' ? 'dictation' : 'agent'; saveConfig(); voiceConfig(); menu();
-    say(dictating() ? `Dictation is on. Hold ${talkWords().replace('+', ' and ')} and I'll type what you say into the app in front.` : `Computer Use is on. Hold ${talkWords().replace('+', ' and ')} to talk to me.`, 'happy');
-  } else if (id.startsWith('voiceengine:')) {
-    const e = engine(id.slice('voiceengine:'.length));
+  else if (id === 'mutetalk') applySetting('muteWhileTalking', config.muteWhileTalking === false);
+  else if (id.startsWith('voicemode:')) applySetting('voiceMode', id === 'voicemode:dictation' ? 'dictation' : 'agent');
+  else if (id.startsWith('voiceengine:')) applySetting('voiceEngine', id.slice('voiceengine:'.length));
+  else if (id === 'voiceshadow') applySetting('voiceShadow', !config.voiceShadow);
+  else if (id === 'voicedl') startVoiceDownload();
+  else if (id === 'voice') applySetting('voice', !config.voice);
+}
+
+// One place that changes a setting: tray toggles pass !current; the Settings window passes an explicit value
+// with quiet, because the window already shows the change and Sidekick shouldn't also say it.
+function applySetting(key, value, { quiet = false } = {}) {
+  const talk = () => talkWords().replace('+', ' and ');
+  const tell = (text, mood = 'happy') => { if (!quiet) say(text, mood); };
+  if (key === 'sound') { config.sound = value; saveConfig(); ui({ kind: 'sound', on: config.sound }); menu(); if (onboarding) obState(); }
+  else if (key === 'actions') {
+    config.allowActions = value; saveConfig(); menu(); if (onboarding) obState(); // live section picks this up
+    tell(config.allowActions ? 'File edits and commands are on. I promise to be careful.' : 'File edits and commands are off. Hands to myself!', config.allowActions ? 'determined' : 'happy');
+  } else if (key === 'login') setLogin(value); // the menu and window update when the host reports back
+  else if (key === 'telemetry') {
+    if (TEL_OFF) return;
+    config.telemetry = value; saveConfig(); tel.setEnabled(config.telemetry); telemetryConfig(); voiceConfig(); menu();
+  } else if (key === 'telemetryText') {
+    config.telemetryText = value; saveConfig(); tel.setIncludeText(config.telemetryText); menu();
+    if (config.telemetryText) tell("Okay, the telemetry log on this computer will include what you say and what I answer. Nothing is sent anywhere.");
+  } else if (key === 'model') {
+    config.provider = value.provider; config.model = value.id; agent = null; saveConfig(); menu();
+    tell(`Switched to ${getModel(config.model)?.name ?? config.model}.`);
+  } else if (key === 'muteWhileTalking') { config.muteWhileTalking = value; saveConfig(); voiceConfig(); menu(); }
+  else if (key === 'voiceMode') {
+    config.voiceMode = value; saveConfig(); voiceConfig(); menu();
+    tell(dictating() ? `Dictation is on. Hold ${talk()} and I'll type what you say into the app in front.` : `Computer Use is on. Hold ${talk()} to talk to me.`);
+  } else if (key === 'voiceEngine') {
+    const e = engine(value);
     if (!e) return;
     config.voiceEngine = e.id; saveConfig(); voiceConfig(); menu(); obState();
-    if (voiceModels[e.id].status !== 'ready') return startVoiceDownload(e.id);
-    say(`Switched to ${e.label}${e.streaming ? '' : ". I'll write out what you say when you stop talking"}.`, 'happy');
-  } else if (id === 'voiceshadow') { config.voiceShadow = !config.voiceShadow; saveConfig(); voiceConfig(); menu(); }
-  else if (id === 'voicedl') startVoiceDownload();
-  else if (id === 'voice') {
-    config.voice = !config.voice; saveConfig(); voiceConfig(); menu();
-    if (config.voice && !voiceReady()) return startVoiceDownload();
-    say(config.voice ? `Voice is on. Hold ${talkWords().replace('+', ' and ')} to talk to me.` : `Voice is off. You can still ask me from the ${TRAY} menu.`, 'happy');
+    if (voiceModels[e.id].status !== 'ready') return quiet ? getVoiceModel(e.id) : startVoiceDownload(e.id);
+    tell(`Switched to ${e.label}${e.streaming ? '' : ". I'll write out what you say when you stop talking"}.`);
+  } else if (key === 'voiceShadow') { config.voiceShadow = value; saveConfig(); voiceConfig(); menu(); }
+  else if (key === 'voice') {
+    config.voice = value; saveConfig(); voiceConfig(); menu();
+    if (config.voice && !voiceReady()) return quiet ? getVoiceModel() : startVoiceDownload();
+    tell(config.voice ? `Voice is on. Hold ${talk()} to talk to me.` : `Voice is off. You can still ask me from the ${TRAY} menu.`);
+  }
+}
+
+// ---------- Settings window ----------
+async function onSettings(m) {
+  if (m.type === 'st_hello') { settingsOpen = true; await refreshAuth(); menu(); }
+  else if (m.type === 'st_closed') { settingsOpen = false; dropAsks(st); }
+  else if (m.type === 'st_apikey') {
+    const provider = String(m.provider ?? '');
+    if (!AUTH_PROVIDERS.some((p) => p.value === provider && p.methods?.includes('apikey'))) return st({ kind: 'login', provider, phase: 'error', error: 'Unknown provider.' });
+    if (!String(m.key ?? '').trim()) return st({ kind: 'login', provider, phase: 'error', error: 'Paste a key first.' });
+    await apiKeyLogin(provider, String(m.key), { to: st }).catch((e) => st({ kind: 'login', provider, phase: 'error', error: String(e?.message ?? e).slice(0, 120) }));
+  } else if (m.type === 'settings_set') {
+    const r = validateSetting(m.key, m.value, snapshot());
+    if (!r.ok) { st({ kind: 'error', key: String(m.key), error: r.error }); return menu(); }
+    applySetting(m.key, r.value, { quiet: true });
+  } else if (m.type === 'settings_action') {
+    const id = String(m.id ?? '');
+    if (!validateAction(id, snapshot())) return menu(); // stale button: re-send the current state
+    if (id === 'forgetall_confirmed') { await clearFacts(); menu(); } // confirmed in the window's dialog
+    else if (id === 'setup_keys') {
+      config.onboardStep = 3; saveConfig(); send({ type: 'onboarding' });
+      // An open guide only reads step from its first state, so move it explicitly.
+      if (onboarding) ob({ kind: 'goto', step: 3 });
+    }
+    else if (id.startsWith('voicedl:')) getVoiceModel(id.slice(8));
+    else if (id.startsWith('login:')) oauthLogin(id.slice(6), { to: st });
+    else if (id.startsWith('key:')) apiKeyLogin(id.slice(4), undefined, { to: st }).catch((e) => st({ kind: 'login', provider: id.slice(4), phase: 'error', error: String(e?.message ?? e).slice(0, 120) }));
+    else await onMenu(id);
   }
 }
 
@@ -1057,10 +1060,10 @@ async function filesStatus(request) {
 let keysBefore = null;
 async function onGuide(m) {
   if (m.type === 'ob_hello') { onboarding = true; await refreshAuth(); obState(); }
-  else if (m.type === 'ob_closed') onboarding = false;
+  else if (m.type === 'ob_closed') { onboarding = false; dropAsks(ob); }
   else if (m.type === 'ob_step') { config.onboardStep = Math.max(0, Math.min(4, m.step | 0)); saveConfig(); }
-  else if (m.type === 'ob_login' && OAUTH[m.provider]) oauthLogin(m.provider);
-  else if (m.type === 'ob_apikey') apiKeyLogin(m.provider, String(m.key ?? '')).catch((e) => ob({ kind: 'login', provider: m.provider, phase: 'error', error: String(e?.message ?? e).slice(0, 120) }));
+  else if (m.type === 'ob_login' && OAUTH[m.provider]) oauthLogin(m.provider, { to: ob });
+  else if (m.type === 'ob_apikey') apiKeyLogin(m.provider, String(m.key ?? ''), { to: ob }).catch((e) => ob({ kind: 'login', provider: m.provider, phase: 'error', error: String(e?.message ?? e).slice(0, 120) }));
   else if (m.type === 'ob_files') ob({ kind: 'files', status: await filesStatus(!!m.request) });
   else if (m.type === 'set_actions') { config.allowActions = !!m.on; saveConfig(); menu(); obState(); }
   else if (m.type === 'set_login') setLogin(!!m.on);
@@ -1097,6 +1100,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     ui({ kind: 'sound', on: config.sound });
     if (config.onboarded) ui({ kind: 'greet' });
   } else if (m.type?.startsWith('ob_') || m.type === 'set_keys' || m.type === 'set_actions' || m.type === 'set_login' || m.type === 'keybind_error') onGuide(m).catch((e) => console.error('guide', e));
+  else if (m.type?.startsWith('st_') || m.type === 'settings_set' || m.type === 'settings_action') onSettings(m).catch((e) => console.error('settings', e));
   else if (m.type?.startsWith('voice')) onVoice(m);
   else if (m.type === 'dictation' || m.type === 'dictation_result') onDictation(m);
   else if (m.type === 'snap') areaSnap();

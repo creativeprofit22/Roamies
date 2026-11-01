@@ -5,6 +5,7 @@
 
 mod dictation;
 mod lifecycle;
+mod panels;
 mod sidecar;
 mod telemetry;
 #[cfg(target_os = "macos")]
@@ -24,6 +25,8 @@ use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem,
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry};
 
+use panels::Panel;
+
 use sidecar::spawn_sidecar;
 use voice::{init_hotkeys, perms_binary, set_hotkey, start_voice, stop_voice, to_voice};
 
@@ -32,7 +35,7 @@ static GENERATION: AtomicUsize = AtomicUsize::new(0);
 static ONBOARDING: AtomicBool = AtomicBool::new(false);
 /// Voice Mode is Dictation: a final transcript is pasted into the app in front instead of going to the agent.
 static DICTATION: AtomicBool = AtomicBool::new(false);
-const ONBOARDING_LABEL: &str = "onboarding";
+const ONBOARDING_LABEL: &str = panels::ONBOARDING.label;
 
 struct Sidecar(Mutex<Option<ChildStdin>>);
 struct Roster(Mutex<Vec<String>>);
@@ -76,9 +79,7 @@ fn to_overlays(app: &AppHandle, msg: &Value) {
 }
 
 fn to_onboarding(app: &AppHandle, msg: &Value) {
-    if let Some(w) = app.get_webview_window(ONBOARDING_LABEL) {
-        let _ = w.eval(format!("window.__onboard&&__onboard({msg})"));
-    }
+    panels::send(app, &panels::ONBOARDING, "__onboard", msg);
 }
 
 // ---------- commands called by the page ----------
@@ -216,11 +217,18 @@ fn open_settings(pane: String) {
     let _ = Command::new("open").arg(format!("x-apple.systempreferences:com.apple.preference.security?{pane}")).spawn();
 }
 
-/// The guide calls this once its page has loaded: by then the window is really on screen, so
+/// A panel calls this once its page has loaded: by then the window is really on screen, so
 /// putting it on top sticks (doing it at creation time loses to whatever app is frontmost).
 #[tauri::command]
-fn focus_guide(app: AppHandle) {
-    activate_app(&app);
+fn focus_guide(app: AppHandle, window: WebviewWindow) {
+    panels::activate(&app, window.label());
+}
+
+/// The mascot's right-click opens Settings. (`open_settings` is the OS privacy-pane opener.)
+#[tauri::command]
+// async: building a window inside a sync command deadlocks WebView2 on Windows.
+async fn show_settings(app: AppHandle) {
+    open_settings_window(&app);
 }
 
 /// The guide hides its title bar, so its top strip calls this to move the window.
@@ -317,83 +325,28 @@ fn tray_image() -> tauri::image::Image<'static> {
     tauri::image::Image::new_owned(rgba, n as u32, n as u32)
 }
 
-// ---------- setup guide window ----------
-
-/// While the setup guide is open Roamies is a normal app (Dock icon, ⌘Tab), so it's easy to get
-/// back to after a trip to System Settings. Otherwise it lives only in the menu bar.
-fn set_dock(app: &AppHandle, visible: bool) {
-    #[cfg(target_os = "macos")]
-    {
-        let policy = if visible { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory };
-        if let Err(e) = app.set_activation_policy(policy) {
-            eprintln!("dock icon {}: {e}", if visible { "on" } else { "off" });
-        }
-    }
-    let _ = (app, visible);
-}
+// ---------- setup guide and Settings windows ----------
 
 fn open_onboarding(app: &AppHandle) {
-    set_dock(app, true);
-    if let Some(w) = app.get_webview_window(ONBOARDING_LABEL) {
-        let _ = w.show();
-        let _ = w.set_focus();
-        activate_app(app);
-        return;
-    }
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut b = WebviewWindowBuilder::new(app, ONBOARDING_LABEL, WebviewUrl::App("onboarding/index.html".into()))
-        .title("Welcome to Roamies")
-        .inner_size(780.0, 540.0)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .center()
-        .focused(true)
-        .background_color(tauri::window::Color(5, 16, 18, 255));
-    #[cfg(target_os = "macos")]
-    {
-        b = b.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
-    }
-    match b.build() {
-        Ok(w) => {
-            ONBOARDING.store(true, Ordering::Relaxed);
-            let app2 = app.clone();
-            w.on_window_event(move |e| {
-                if let tauri::WindowEvent::Destroyed = e {
-                    ONBOARDING.store(false, Ordering::Relaxed);
-                    set_dock(&app2, false);
-                    let _ = to_sidecar(&app2, &json!({ "type": "ob_closed" }));
-                }
-            });
-            activate_app(app);
-        }
-        Err(e) => {
-            set_dock(app, false);
-            telemetry::record_error("host.error", None, "guide_open_failed", Default::default());
-            eprintln!("setup guide failed to open: {e}");
-        }
+    let p: &'static Panel = &panels::ONBOARDING;
+    let fresh = app.get_webview_window(p.label).is_none();
+    let opened = panels::open(app, p, |app| {
+        ONBOARDING.store(false, Ordering::Relaxed);
+        let _ = to_sidecar(app, &json!({ "type": "ob_closed" }));
+    });
+    if !opened {
+        telemetry::record_error("host.error", None, "guide_open_failed", Default::default());
+    } else if fresh {
+        ONBOARDING.store(true, Ordering::Relaxed);
     }
 }
 
-/// A menu-bar-only app isn't frontmost, and macOS 14+ ignores requests to activate it from the
-/// background. So the guide window is put on top directly, then the app asks to become active.
-fn activate_app(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        let ptr = app.get_webview_window(ONBOARDING_LABEL).and_then(|w| w.ns_window().ok()).map(|p| p as usize);
-        let _ = app.run_on_main_thread(move || unsafe {
-            use objc2::runtime::{AnyObject, Bool};
-            use objc2::{class, msg_send};
-            if let Some(p) = ptr {
-                let win = p as *mut AnyObject;
-                let _: () = msg_send![win, orderFrontRegardless];
-                let _: () = msg_send![win, makeKeyWindow];
-            }
-            let ns_app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
-            let _: () = msg_send![ns_app, activateIgnoringOtherApps: Bool::YES];
-        });
+fn open_settings_window(app: &AppHandle) {
+    if !panels::open(app, &panels::SETTINGS, |app| {
+        let _ = to_sidecar(app, &json!({ "type": "st_closed" }));
+    }) {
+        telemetry::record_error("host.error", None, "settings_open_failed", Default::default());
     }
-    let _ = app;
 }
 
 // ---------- overlays ----------
@@ -665,6 +618,17 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             }
         }
         Some("onboarding") => open_onboarding(app),
+        Some("settings") => {
+            if let Some(m) = msg.get("msg") {
+                panels::send(app, &panels::SETTINGS, "__settings", m);
+            }
+        }
+        Some("settings_window") => open_settings_window(app),
+        Some("tray_tooltip") => {
+            if let (Some(text), Some(tray)) = (msg.get("text").and_then(Value::as_str), app.tray_by_id("roamies")) {
+                let _ = tray.set_tooltip(Some(text));
+            }
+        }
         Some("keybinds") => {
             for (slot, which) in [(0usize, "summon"), (1, "snap"), (2, "list")] {
                 if which == "snap" && !cfg!(target_os = "macos") {
@@ -762,7 +726,7 @@ fn main() {
         .manage(Voice(Mutex::new(None), lifecycle::Restarts::new()))
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
         .manage(VoiceWant(Mutex::new(voice::Want::default())))
-        .invoke_handler(tauri::generate_handler![set_hot, sidecar_send, set_typing, perm_status, perm_request, open_settings, onboarding_finish, relaunch, focus_guide, drag_window])
+        .invoke_handler(tauri::generate_handler![set_hot, sidecar_send, set_typing, perm_status, perm_request, open_settings, onboarding_finish, relaunch, focus_guide, show_settings, drag_window])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),
             "restart" => spawn_sidecar(app),

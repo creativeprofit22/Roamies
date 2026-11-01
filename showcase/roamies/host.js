@@ -9,6 +9,7 @@
   const typing = (on) => invoke('set_typing', { on }).catch(() => {});
 
   window.__roamieSafe = (s) => Roamie.setSafe?.(s);
+  if (window.Roamie) Roamie.onContext = () => invoke('show_settings').catch(() => {});
   let hot = null;
   window.__roamiePtr = (x, y) => {
     if (!window.Roamie?.ptr) return;

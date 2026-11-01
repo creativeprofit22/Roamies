@@ -513,6 +513,7 @@
       if (o) { e.preventDefault(); o.c.wheel?.(e.deltaY); }
     }, { passive: false });
     canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return; // right-click opens settings instead of grabbing
       const b = list.find((q) => q.c.hit?.(e.clientX, e.clientY));
       if (b) { b.c.press?.(e.clientX, e.clientY); return; }
       const o = hitAt(e.clientX, e.clientY);
@@ -535,6 +536,12 @@
     };
     canvas.addEventListener('pointerup', release);
     canvas.addEventListener('pointercancel', () => { if (down) down.o.c.mover.dragging = false; down = null; });
+    canvas.addEventListener('contextmenu', (e) => {
+      const o = list.find((q) => q.c.hit?.(e.clientX, e.clientY)) || hitAt(e.clientX, e.clientY);
+      if (!o) return;
+      e.preventDefault();
+      R.onContext?.(o.def.id);
+    });
 
     let last = performance.now();
     const frame = (now) => {

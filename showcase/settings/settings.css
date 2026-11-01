@@ -1,0 +1,77 @@
+/* Settings window layout. Tokens, fonts, pixel frames and controls live in ../ui/kit.css (loaded first).
+   Calm on purpose: no mascot, no ambient motion. */
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 12px/1.55 var(--mono);
+  font-stretch: 87.5%;
+  -webkit-font-smoothing: antialiased;
+}
+.shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); height: 100vh; }
+
+/* ---------- section nav ---------- */
+.side { padding: 22px 12px; border-right: 2px solid var(--line); overflow-y: auto; }
+.brand { margin: 0 0 18px 10px; font: 900 26px/1 var(--display); color: var(--ink); text-shadow: 0 0 14px rgba(120, 255, 226, 0.35); }
+.tabs { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.tab {
+  appearance: none; width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 0; cursor: pointer;
+  text-align: left; color: var(--ink-2); font: 700 12px/1.25 var(--mono); font-stretch: 87.5%; letter-spacing: 0.06em; text-transform: uppercase;
+  --bc: transparent; --fill: transparent;
+}
+.tab:hover { color: var(--ink); --bc: var(--line); }
+.tab[aria-current="page"] { color: var(--accent); --bc: var(--line-hi); --fill: #0a2a28; }
+
+/* ---------- panes ---------- */
+.main { position: relative; overflow-y: auto; padding: 26px 32px 32px; }
+.pane { max-width: 620px; }
+.pane h1 { margin: 0 0 6px; font: 900 30px/1.05 var(--display); letter-spacing: 0.01em; text-shadow: 0 0 14px rgba(120, 255, 226, 0.35); }
+.pane h1:focus { outline: none; }
+.lead { margin: 0 0 18px; color: var(--ink-2); }
+.group { margin: 0 0 22px; padding: 0; border: 0; min-width: 0; }
+.group > h2, .group > legend { margin: 0 0 8px; padding: 0; font: 700 11px/1.3 var(--mono); font-stretch: 87.5%; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+h3 { margin: 0; font: 700 13px/1.35 var(--mono); font-stretch: 87.5%; color: var(--ink); }
+.row p { white-space: normal; }
+.row .side-actions { display: inline-flex; align-items: center; gap: 6px; }
+.empty { margin: 0; padding: 14px; color: var(--ink-3); --bc: var(--line); }
+.pane > .empty { margin-bottom: 22px; }
+.rows + .rows { margin-top: 10px; }
+.note { margin: 6px 0 0; font-size: 11px; color: var(--ink-3); }
+.loading { position: absolute; inset: 40% 0 auto; text-align: center; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.actions.spaced { margin-top: 12px; }
+.facts { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; }
+.overdue { color: var(--danger); font-weight: 700; }
+
+/* Choice rows: a native radio inside a framed row. */
+.opt { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 8px 12px; min-height: 42px; --bc: var(--line); }
+.opt label, .opt input { cursor: pointer; }
+.opt:hover { --bc: var(--line-hot); }
+.opt:has(input:checked) { --bc: var(--accent); --fill: #0a2a28; }
+.opt input { flex: none; margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
+.opt p { margin: 1px 0 0; font-size: 11px; color: var(--ink-3); }
+
+/* The API key field: error style keyed on aria-invalid. */
+.field:has(input[aria-invalid="true"]) { --bc: var(--danger); }
+.btn.danger { --bc: var(--danger); --fill: var(--danger); color: #2a0b06; }
+.btn.danger:hover { --fill: #ffcfc6; --bc: #ffcfc6; }
+
+/* ---------- confirm dialog ---------- */
+.dialog { max-width: 420px; padding: 22px 24px; border: 0; color: var(--ink); --bc: var(--line-hot); }
+.dialog::backdrop { background: rgba(2, 8, 9, 0.72); }
+.dialog h2 { margin: 0 0 8px; font: 900 22px/1.1 var(--display); }
+.dialog p { margin: 0 0 18px; color: var(--ink-2); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Narrow windows: the nav becomes a row of tabs on top. */
+@media (max-width: 600px) {
+  .shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .side { padding: 12px; border-right: 0; border-bottom: 2px solid var(--line); }
+  .brand { display: none; }
+  .tabs { display: flex; flex-wrap: wrap; }
+  .tab { width: auto; }
+  .main { padding: 18px 16px 24px; }
+  .providers { grid-template-columns: repeat(2, 1fr); }
+  .field-row { flex-wrap: wrap; }
+  .field.select { flex: 1 0 100%; }
+}

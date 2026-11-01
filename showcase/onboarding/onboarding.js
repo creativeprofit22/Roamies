@@ -540,6 +540,7 @@
         else { if (cur === 1) perms.render(); if (cur === 2) ai.render(); if (cur === 3) keys.render(); }
         break;
       }
+      case 'goto': if (state) go(clamp(msg.step | 0, 0, STEPS.length - 1)); break;
       case 'login': ai.onLogin(msg); break;
       case 'ask':
         askId = msg.id;

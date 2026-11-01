@@ -4,6 +4,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod sidecar;
+#[cfg(target_os = "macos")]
+mod snapshot;
 mod voice;
 
 use std::fs::OpenOptions;
@@ -727,6 +729,8 @@ fn main() {
             }
             build_overlays(app.handle())?;
             pump_cursor(app.handle().clone());
+            #[cfg(target_os = "macos")]
+            snapshot::watch_screenshots(app.handle().clone());
             spawn_sidecar(app.handle());
             Ok(())
         })

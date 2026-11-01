@@ -223,9 +223,12 @@
       const sw = el('button', { className: 'px switch', type: 'button', role: 'switch' });
       sw.setAttribute('aria-checked', String(!!state?.actions));
       sw.setAttribute('aria-label', 'Let me edit files and run commands');
-      sw.onclick = () => { const on = sw.getAttribute('aria-checked') !== 'true'; sw.setAttribute('aria-checked', String(on)); send({ type: 'set_actions', on }); if (on) { act('hype'); quip("I'll be careful!"); } };
+      // The line under the title follows the switch, so it never says Off while the switch is on.
+      const actionsDesc = (on) => (on ? 'On: I can change things, carefully.' : 'Off: I can look, never change.');
+      const swDesc = el('p', { textContent: actionsDesc(!!state?.actions) });
+      sw.onclick = () => { const on = sw.getAttribute('aria-checked') !== 'true'; sw.setAttribute('aria-checked', String(on)); swDesc.textContent = actionsDesc(on); send({ type: 'set_actions', on }); if (on) { act('hype'); quip("I'll be careful!"); } };
       list.append(el('li', { className: 'px row' },
-        el('div', {}, el('h2', { textContent: 'Edit files and run commands' }), el('p', { textContent: 'Off: I can look, never change.' })), sw));
+        el('div', {}, el('h2', { textContent: 'Edit files and run commands' }), swDesc), sw));
       // Only an installed copy can start at login, so the row is hidden otherwise (login is null).
       if (state?.login != null) {
         const ls = el('button', { className: 'px switch', type: 'button', role: 'switch' });

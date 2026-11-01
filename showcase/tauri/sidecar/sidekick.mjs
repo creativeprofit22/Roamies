@@ -7,7 +7,7 @@
 import { Agent } from '@kenkaiiii/gg-agent';
 import { redactArgs } from './safety.mjs';
 import {
-  AUTH_PROVIDERS, AuthStorage, dualAuthProvider, getContextWindow, getDefaultModel, getModel, getModelsForProvider,
+  AUTH_PROVIDERS, AuthStorage, dualAuthProvider, getClaudeCliUserAgent, getContextWindow, getDefaultModel, getModel, getModelsForProvider,
   loginAnthropic, loginGemini, loginKimi, loginOpenAI, loginXai,
 } from '@kenkaiiii/gg-core';
 import { execFile, execFileSync } from 'node:child_process';
@@ -41,6 +41,10 @@ const OAUTH = { anthropic: loginAnthropic, openai: loginOpenAI, gemini: loginGem
 const PROVIDER_LABELS = { gemini: 'Gemini', ...Object.fromEntries(AUTH_PROVIDERS.map((p) => [p.value, p.label])) };
 const MENU_PROVIDERS = ['anthropic', 'openai', 'gemini', ...AUTH_PROVIDERS.map((p) => p.value)].filter((v, i, a) => a.indexOf(v) === i);
 const FAST = { anthropic: 'claude-haiku-5-5', openai: 'gpt-6-luna', gemini: 'gemini-3.8-flash' };
+// Claude sign-in requests must look like a recent Claude Code; gg-ai's built-in default (2.1.75) is too old
+// for newer models like Opus 5.5. Resolved once at startup (latest on npm, cached a day in ~/.gg).
+let claudeUserAgent;
+const claudeUserAgentReady = getClaudeCliUserAgent().then((ua) => { claudeUserAgent = ua; }, () => {});
 
 // ---------- config ----------
 // On Windows, Ctrl+Alt is AltGr on many keyboards (Ctrl+Alt+S types "ś" in Polish), so it uses Ctrl+Shift.
@@ -270,6 +274,8 @@ function makeAgent() {
       return { apiKey: c.accessToken, accountId: c.accountId, projectId: c.projectId };
     },
     baseUrl: credsBaseUrl,
+    // gg-ai only sends this for Anthropic OAuth tokens; API keys are unaffected.
+    userAgent: config.provider === 'anthropic' ? claudeUserAgent : undefined,
   });
 }
 let credsBaseUrl;
@@ -338,6 +344,7 @@ async function prompt(text, image = null) {
   agentStale = false;
   if (!agent) {
     try { credsBaseUrl = (await auth.resolveCredentials(config.provider)).baseUrl; } catch { credsBaseUrl = undefined; }
+    if (config.provider === 'anthropic') await claudeUserAgentReady;
     makeAgent();
   }
   busy = true; quiet = false; menu();

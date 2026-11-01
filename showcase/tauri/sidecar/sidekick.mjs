@@ -929,9 +929,9 @@ async function onMenu(id) {
     say(`Switched to ${getModel(config.model)?.name ?? config.model}.`, 'happy');
   } else if (id.startsWith('login:')) oauthLogin(id.slice(6));
   else if (id.startsWith('key:')) apiKeyLogin(id.slice(4));
-  else if (id === 'sound') { config.sound = !config.sound; saveConfig(); ui({ kind: 'sound', on: config.sound }); menu(); }
+  else if (id === 'sound') { config.sound = !config.sound; saveConfig(); ui({ kind: 'sound', on: config.sound }); menu(); if (onboarding) obState(); }
   else if (id === 'actions') {
-    config.allowActions = !config.allowActions; saveConfig(); menu(); // live section picks this up
+    config.allowActions = !config.allowActions; saveConfig(); menu(); if (onboarding) obState(); // live section picks this up
     say(config.allowActions ? 'File edits and commands are on. I promise to be careful.' : 'File edits and commands are off. Hands to myself!', config.allowActions ? 'determined' : 'happy');
   } else if (id === 'update') checkUpdates(true);
   else if (id === 'install_update') installUpdate();

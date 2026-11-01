@@ -3096,12 +3096,21 @@ dependencies = [
  "global-hotkey",
  "objc2",
  "objc2-service-management",
+ "roamies-voice-core",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "roamies-voice-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

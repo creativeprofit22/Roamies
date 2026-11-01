@@ -721,6 +721,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             } else {
                 stop_voice(app);
             }
+            voice::shadow::sync(app, voice::shadow::want_from(&msg));
         }
         Some("telemetry_config") => {
             let on = msg.get("on").and_then(Value::as_bool).unwrap_or(true);

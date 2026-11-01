@@ -86,6 +86,12 @@ impl Telemetry {
         self.emit(|| event(now_ms(), "event", &step, None, None, None, attrs));
     }
 
+    /// A stepless event with an outcome and code other than error (e.g. a skipped shadow job: cancelled).
+    pub fn record_outcome(&self, name: &'static str, request_id: Option<&str>, outcome: Outcome, code: &str, attrs: Attrs) {
+        let step = new_step(name, request_id, None);
+        self.emit(|| event(now_ms(), "event", &step, None, Some(outcome), Some(code), attrs));
+    }
+
     /// A failure with no step around it: an `event` with outcome error and a stable code.
     pub fn record_error(&self, name: &'static str, request_id: Option<&str>, code: &str, attrs: Attrs) {
         let step = new_step(name, request_id, None);
@@ -127,7 +133,10 @@ pub fn record_error(name: &'static str, request_id: Option<&str>, code: &str, at
     TEL.record_error(name, request_id, code, attrs)
 }
 
-#[allow(dead_code)] // part of the shared start/end/record API; host events use start/end and record_error
+pub fn record_outcome(name: &'static str, request_id: Option<&str>, outcome: Outcome, code: &str, attrs: Attrs) {
+    TEL.record_outcome(name, request_id, outcome, code, attrs)
+}
+
 pub fn record(name: &'static str, request_id: Option<&str>, parent: Option<&Step>, attrs: Attrs) {
     TEL.record(name, request_id, parent, attrs)
 }

@@ -1,6 +1,7 @@
 // Voice helper (macOS: Apple speech; Windows: the engine picked in the tray, see engines.rs) and the global shortcuts.
 
 pub(crate) mod engines;
+pub(crate) mod shadow;
 
 use super::*;
 use std::cell::RefCell;
@@ -32,6 +33,13 @@ pub(crate) struct Talk {
     stt: Option<telemetry::Step>,
     /// The last talk that failed or was cancelled, and when: a new talk soon after is a retry.
     last_failed: Option<(String, Instant)>,
+    /// The running helper's engine id (None: macOS Apple speech).
+    engine: Option<String>,
+    /// `host.stt` end attrs from a `nothing_heard` error's metrics, used when the talk goes idle.
+    stt_attrs: Option<telemetry::Attrs>,
+    /// A `host.stt` left open by an `idle` with no `final`: helpers send `nothing_heard` right after `idle`,
+    /// so it is held one message to pick up that error and its metrics.
+    stt_after_idle: Option<(telemetry::Step, telemetry::Outcome, Option<String>)>,
 }
 
 /// A talk started this soon after a failed or cancelled one is tagged as its retry.
@@ -39,7 +47,7 @@ const RETRY_WINDOW: Duration = Duration::from_secs(10);
 
 impl Talk {
     const fn new() -> Self {
-        Talk { pending: String::new(), helper_rid: None, current: None, session: None, error: None, stt: None, last_failed: None }
+        Talk { pending: String::new(), helper_rid: None, current: None, session: None, error: None, stt: None, last_failed: None, engine: None, stt_attrs: None, stt_after_idle: None }
     }
 
     fn pending(&mut self) -> String {
@@ -153,6 +161,7 @@ pub(crate) fn start_voice(app: &AppHandle) {
         _ => Vec::new(),
     };
     STREAMING.store(engine.is_none_or(|e| e.streaming), Ordering::Relaxed);
+    talk().engine = engine.map(|e| e.id.clone());
     let mut cmd = Command::new(&bin);
     cmd.arg("--chord").arg(chord).args(args);
     let engine_id = engine.map_or("apple", |e| e.id.as_str());
@@ -174,6 +183,9 @@ pub(crate) fn start_voice(app: &AppHandle) {
     to_voice(app, &json!({ "cmd": "request", "request_id": rid }));
     if !telemetry::TEL.enabled() {
         to_voice(app, &json!({ "cmd": "telemetry", "on": false }));
+    }
+    if shadow::on() {
+        to_voice(app, &json!({ "cmd": "shadow", "on": true }));
     }
     voice_log(&format!("start {} pid {pid} model {}", engine.map_or("apple", |e| e.id.as_str()), model.unwrap_or("-")));
     let app = app.clone();
@@ -340,15 +352,41 @@ fn ui_message(msg: &Value, streaming: bool) -> Value {
     ui
 }
 
+/// `host.stt` end attrs from a helper's `metrics` (docs/voice-engines.md): numbers and bools only, nulls left
+/// out, plus the engine and its role. Nothing when the message has no well-formed metrics (macOS).
+fn stt_attrs(engine: Option<&str>, msg: &Value) -> telemetry::Attrs {
+    let mut a = telemetry::Attrs::new();
+    let Some(m) = msg.get("metrics").and_then(|m| serde_json::from_value::<roamies_voice_core::protocol::Metrics>(m.clone()).ok()) else {
+        return a;
+    };
+    if let Ok(Value::Object(fields)) = serde_json::to_value(m) {
+        a.extend(fields.into_iter().filter(|(_, v)| !v.is_null()));
+    }
+    if let Some(e) = engine {
+        a.insert("engine".into(), json!(e));
+    }
+    a.insert("role".into(), json!("primary"));
+    a
+}
+
 /// Follows the talk through the helper's messages: binds its request id and opens/closes `host.voice_session`.
 /// Returns the id of the current talk and, when the pending id was used up, the next one for the helper.
 fn track_talk(tel: &telemetry::Telemetry, t: &mut Talk, msg: &Value, streaming: bool) -> (Option<String>, Option<String>) {
     let mut next = None;
-    match (msg.get("type").and_then(Value::as_str), msg.get("state").and_then(Value::as_str)) {
+    let kind = msg.get("type").and_then(Value::as_str);
+    if let Some((stt, outcome, code)) = t.stt_after_idle.take() {
+        if kind == Some("error") && msg.get("code").and_then(Value::as_str) == Some("nothing_heard") {
+            tel.end(stt, telemetry::Outcome::Error, Some("nothing_heard"), stt_attrs(t.engine.as_deref(), msg));
+        } else {
+            tel.end(stt, outcome, code.as_deref(), Default::default());
+        }
+    }
+    match (kind, msg.get("state").and_then(Value::as_str)) {
         (Some("state"), Some("listening")) if t.session.is_none() => {
             let (rid, n) = t.bind();
             next = n;
             t.error = None;
+            t.stt_attrs = None;
             let mut a = telemetry::attrs(json!({ "streaming": streaming }));
             if let Some(mode) = msg.get("mode").and_then(Value::as_str) {
                 a.insert("mode".into(), json!(mode));
@@ -369,7 +407,9 @@ fn track_talk(tel: &telemetry::Telemetry, t: &mut Talk, msg: &Value, streaming: 
         (Some("final"), _) => {
             if let Some(s) = t.stt.take() {
                 let chars = msg.get("text").and_then(Value::as_str).map_or(0, |x| x.chars().count());
-                tel.end(s, telemetry::Outcome::Ok, None, telemetry::attrs(json!({ "chars": chars })));
+                let mut a = stt_attrs(t.engine.as_deref(), msg);
+                a.insert("chars".into(), json!(chars));
+                tel.end(s, telemetry::Outcome::Ok, None, a);
             }
         }
         (Some("state"), Some("idle")) => {
@@ -382,8 +422,13 @@ fn track_talk(tel: &telemetry::Telemetry, t: &mut Talk, msg: &Value, streaming: 
                 } else {
                     telemetry::Outcome::Ok
                 };
+                let stt_attrs = t.stt_attrs.take();
                 if let Some(stt) = t.stt.take() {
-                    tel.end(stt, outcome, code.as_deref(), Default::default());
+                    match stt_attrs {
+                        Some(a) => tel.end(stt, outcome, code.as_deref(), a),
+                        None if outcome == telemetry::Outcome::Ok => t.stt_after_idle = Some((stt, outcome, code.clone())),
+                        None => tel.end(stt, outcome, code.as_deref(), Default::default()),
+                    }
                 }
                 if outcome != telemetry::Outcome::Ok {
                     if let Some(rid) = s.request_id.clone() {
@@ -393,13 +438,25 @@ fn track_talk(tel: &telemetry::Telemetry, t: &mut Talk, msg: &Value, streaming: 
                 tel.end(s, outcome, code.as_deref(), Default::default());
             }
         }
-        (Some("error"), _) => t.error = Some(msg.get("code").and_then(Value::as_str).unwrap_or("failed").to_string()),
+        (Some("error"), _) => {
+            let code = msg.get("code").and_then(Value::as_str).unwrap_or("failed");
+            if code == "nothing_heard" {
+                t.stt_attrs = Some(stt_attrs(t.engine.as_deref(), msg)).filter(|a| !a.is_empty());
+            }
+            t.error = Some(code.to_string());
+        }
         _ => {}
     }
     (t.current.clone(), next)
 }
 
 fn handle_voice(app: &AppHandle, msg: Value) {
+    // Shadow audio (and anything shadow-shaped) leaves here, before any UI or sidecar route.
+    match shadow::route(&msg) {
+        shadow::Route::Shadow => return shadow::on_audio(&msg),
+        shadow::Route::Drop => return,
+        shadow::Route::Ui => {}
+    }
     match msg.get("type").and_then(Value::as_str) {
         Some("ready") => {
             app.state::<Voice>().1.reset();
@@ -428,6 +485,10 @@ fn handle_voice(app: &AppHandle, msg: Value) {
         to_voice(app, &json!({ "cmd": "request", "request_id": next }));
     }
     let rid = rid.as_deref();
+    if msg.get("type").and_then(Value::as_str) == Some("final") {
+        let engine = talk().engine.clone();
+        shadow::note_final(rid, msg.get("text").and_then(Value::as_str).unwrap_or(""), engine.as_deref());
+    }
     let ui = with_rid(ui_message(&msg, streaming), rid);
     // While the setup guide is open, talking is just the "try it" test: it never reaches the agent.
     if ONBOARDING.load(Ordering::Relaxed) {
@@ -566,6 +627,97 @@ mod tests {
         let last = got.lock().unwrap().iter().rev().find(|e| e["step"] == "host.stt").cloned().unwrap();
         assert_eq!((&last["kind"], &last["outcome"]), (&json!("end"), &json!("cancelled")));
         assert!(t.stt.is_none());
+    }
+
+    fn metrics(streaming: bool) -> Value {
+        let mut m = json!({ "audio_s": 2.0, "compute_s": 0.5, "rtf": 0.25, "warmup_ms": 12.0, "speech_end_to_final_ms": 80.0,
+            "time_to_first_partial_ms": null, "partial_count": 0, "peak_rss_mb": 300.5, "empty": false });
+        if streaming {
+            m["time_to_first_partial_ms"] = json!(400.0);
+            m["partial_count"] = json!(3);
+            m["revision_rate"] = json!(0.1);
+        }
+        m
+    }
+
+    #[test]
+    fn stt_carries_the_helpers_metrics_engine_and_role() {
+        let (tel, got) = capture();
+        let mut t = Talk::new();
+        t.engine = Some("parakeet".into());
+        track_talk(&tel, &mut t, &state("listening"), false);
+        track_talk(&tel, &mut t, &state("processing"), false);
+        track_talk(&tel, &mut t, &json!({ "type": "final", "text": "hello", "metrics": metrics(false) }), false);
+        let end = got.lock().unwrap().iter().rev().find(|e| e["step"] == "host.stt").cloned().unwrap();
+        let a = &end["attrs"];
+        assert_eq!((&a["engine"], &a["role"], &a["chars"]), (&json!("parakeet"), &json!("primary"), &json!(5)));
+        assert_eq!((&a["rtf"], &a["peak_rss_mb"], &a["empty"]), (&json!(0.25), &json!(300.5), &json!(false)));
+        // Nulls and absent streaming-only fields are left out.
+        assert!(a.get("time_to_first_partial_ms").is_none() && a.get("revision_rate").is_none(), "{a}");
+        assert!(a.as_object().unwrap().values().all(|v| v.is_number() || v.is_boolean() || v.is_string()), "{a}");
+
+        // Streaming engine: ttfp and revision rate come through.
+        t.engine = Some("moonshine".into());
+        track_talk(&tel, &mut t, &state("idle"), true);
+        track_talk(&tel, &mut t, &state("listening"), true);
+        track_talk(&tel, &mut t, &state("processing"), true);
+        track_talk(&tel, &mut t, &json!({ "type": "final", "text": "hi", "metrics": metrics(true) }), true);
+        let end = got.lock().unwrap().iter().rev().find(|e| e["step"] == "host.stt").cloned().unwrap();
+        assert_eq!((&end["attrs"]["time_to_first_partial_ms"], &end["attrs"]["revision_rate"]), (&json!(400.0), &json!(0.1)));
+    }
+
+    #[test]
+    fn nothing_heard_stt_is_measured_as_empty() {
+        let (tel, got) = capture();
+        let mut t = Talk::new();
+        t.engine = Some("moonshine".into());
+        track_talk(&tel, &mut t, &state("listening"), true);
+        track_talk(&tel, &mut t, &state("processing"), true);
+        let mut m = metrics(true);
+        m["empty"] = json!(true);
+        track_talk(&tel, &mut t, &json!({ "type": "error", "code": "nothing_heard", "metrics": m }), true);
+        track_talk(&tel, &mut t, &state("idle"), true);
+        let end = got.lock().unwrap().iter().rev().find(|e| e["step"] == "host.stt").cloned().unwrap();
+        assert_eq!((&end["outcome"], &end["error_code"]), (&json!("error"), &json!("nothing_heard")));
+        assert_eq!((&end["attrs"]["empty"], &end["attrs"]["role"]), (&json!(true), &json!("primary")));
+        assert!(t.stt_attrs.is_none());
+    }
+
+    #[test]
+    fn nothing_heard_after_idle_is_measured_and_not_carried_over() {
+        let (tel, got) = capture();
+        let mut t = Talk::new();
+        t.engine = Some("moonshine".into());
+        let mut m = metrics(true);
+        m["empty"] = json!(true);
+        // The helpers' real order: idle, then the error.
+        for msg in [state("listening"), state("processing"), state("idle"), json!({ "type": "error", "code": "nothing_heard", "metrics": m })] {
+            track_talk(&tel, &mut t, &msg, true);
+        }
+        let ends = |g: &Vec<Value>| g.iter().filter(|e| e["step"] == "host.stt" && e["kind"] == "end").cloned().collect::<Vec<_>>();
+        let first = ends(&got.lock().unwrap());
+        assert_eq!(first.len(), 1);
+        assert_eq!((&first[0]["error_code"], &first[0]["attrs"]["empty"]), (&json!("nothing_heard"), &json!(true)));
+        // The next talk is cancelled with no final: its host.stt has no metrics from the last one.
+        for msg in [state("listening"), state("processing"), json!({ "type": "state", "state": "idle", "cancelled": true })] {
+            track_talk(&tel, &mut t, &msg, true);
+        }
+        let all = ends(&got.lock().unwrap());
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[1]["outcome"], "cancelled");
+        assert!(all[1]["attrs"].get("empty").is_none(), "{}", all[1]);
+        // An ok idle with no error after it still closes host.stt on the next message.
+        for msg in [state("listening"), state("processing"), state("idle"), state("listening")] {
+            track_talk(&tel, &mut t, &msg, true);
+        }
+        let all = ends(&got.lock().unwrap());
+        assert_eq!((all.len(), &all[2]["outcome"]), (3, &json!("ok")));
+    }
+
+    #[test]
+    fn macos_finals_without_metrics_are_unchanged() {
+        assert!(stt_attrs(None, &json!({ "type": "final", "text": "hi" })).is_empty());
+        assert!(stt_attrs(Some("moonshine"), &json!({ "type": "final", "metrics": { "bogus": 1 } })).is_empty());
     }
 
     #[test]

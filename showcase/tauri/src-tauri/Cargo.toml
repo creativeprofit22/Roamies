@@ -16,13 +16,15 @@ tauri-plugin-single-instance = "=2.5.4"
 tauri-plugin-updater = "=2.14.1"
 arboard = "=3.7.0"
 enigo = "=0.6.1"
+# Shared with the Windows voice helpers: the `metrics` shape and word scoring.
+roamies-voice-core = { path = "voice-core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
 objc2-service-management = { version = "=0.3.2", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 lto = true

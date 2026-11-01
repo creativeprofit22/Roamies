@@ -62,7 +62,9 @@ by pairing events or subtracting `ts` (for example "chord down → first reply t
 | `voice.stt` | voice | speech end (finish) → final text, Windows engines | `chars` |
 | `voice.warmup` | voice | model load (`prepare()`), no request id | `engine`, `model` |
 | `host.voice_session` | host | `listening` → `idle` (all platforms, incl. macOS) | `mode`, `streaming`, `retry`, `retry_of` |
-| `host.stt` | host | helper `processing` → `final` (any engine, incl. macOS) | |
+| `host.stt` | host | helper `processing` → `final` (any engine, incl. macOS) | Windows engines: `engine`, `role` (`primary`) and the voice metrics from `final` (or the `nothing_heard` error): `audio_s`, `compute_s`, `rtf`, `warmup_ms`, `speech_end_to_final_ms`, `time_to_first_partial_ms`, `partial_count`, `revision_rate`, `peak_rss_mb`, `empty`. Missing values are left out. See `docs/voice-engines.md` |
+| `host.stt_shadow` | host | event: shadow mode's other engine finished the same take (outcome `cancelled` when skipped) | `engine`, `primary_engine`, `role` (`shadow`), the same metrics (no `time_to_first_partial_ms`), `agreement`, `sub`, `ins`, `del`. Never text |
+| `stt_correction` | sidecar | event: a voice request re-asked or a dictation re-dictated within 30 s | `kind` (`reask`, `redictate`), `edit_distance`, `chars`, `of`, `engine`; `text` only with include text on |
 | `host.dictation_paste` | host | paste start → done | |
 | `host.clipboard_save` / `host.clipboard_set` / `host.key_send` / `host.clipboard_restore` | host | the parts of a paste (children of `host.dictation_paste`) | |
 | `host.dictation_copy` | host | copy-only dictation (no paste) | |
@@ -103,6 +105,7 @@ Every error path that shows a bubble or logs also writes an event with outcome `
 | `host.shortcut`, `host.error` | `shortcut_taken`; `hotkeys_unavailable`, `menu_build_failed`, `guide_open_failed` |
 | `sidecar.error` | the `console.error` label (`prompt_failed`, …) or `unexpected` |
 | `host.telemetry_backlog` | `telemetry_dropped` |
+| `host.stt_shadow` (cancelled) | `battery_saver`, `busy`, `not_installed`, `not_running` |
 
 ### Retries and cancels
 
@@ -172,6 +175,7 @@ the same and nothing is written.
 ```sh
 npm run telemetry:report -- chain <request_id>   # one request's steps in order, indented by parent
 npm run telemetry:report -- p95 [days]           # steps ranked by p95, with error and retry rates
+npm run telemetry:report -- stt [days]           # voice engines compared by engine and role (primary, shadow)
 ```
 
 It reads `~/.gg/sidekick/telemetry` (or `ROAMIES_DATA_DIR`, or `--dir <folder>`).

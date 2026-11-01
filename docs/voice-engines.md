@@ -51,6 +51,7 @@ require it.
 ./fetch-testset.sh              # first 200 LibriSpeech test-clean utterances -> bench-data/librispeech
 cargo run --release -- --record bench-data/own   # read bench-prompts.txt aloud, one clip each
 ./bench.sh bench-data/own       # zipformer, moonshine tiny, moonshine small; appends to bench-data/results.log
+../bench-engines.sh              # both shipped engines (Moonshine small, Parakeet) on own + librispeech, one command
 
 cd ../voice-win && ./fetch-model.sh                      # Parakeet int8, sha256-checked
 cargo run --release -- --bench ../voice-rs/bench-data/own
@@ -62,31 +63,37 @@ The bench feeds 100 ms chunks as fast as possible, running one engine per proces
 
 - **WER**: corpus word error rate, after lowercasing and removing punctuation. Numbers and spelling are not
   normalised.
+- **S/I/D**: the word errors split into substitutions, insertions and deletions, with the reference as the truth
+  (jiwer's naming). On a tie the alignment counts a substitution first, then a deletion, then an insertion.
 - **TTFP**: time to the first non-empty partial. This counts audio already fed plus compute, so it includes about
   1 s of the speaker's own lead-in.
 - **Finish**: time spent inside `finish`.
 - **RTF**: compute time ÷ audio time.
 - **Peak RAM**: peak working set of the whole process.
 
-Test machine: Intel i7-8700 @ 3.20 GHz (6 cores / 12 threads), 24 GB RAM, Windows x64, release build, 30 Oct 2026.
+Test machine: Intel i7-8700 @ 3.20 GHz (6 cores / 12 threads), 24 GB RAM, Windows x64, release build. Zipformer and
+Moonshine tiny are from 30 Oct 2026; the two shipped engines were re-run with `bench-engines.sh` on 31 Oct 2026.
 
 ### Own voice (25 Roamies-style commands, 105.5 s, `bench-prompts.txt`)
 
-| Engine / model | WER | TTFP median / p90 | Finish | RTF | Peak RAM |
-|---|---|---|---|---|---|
-| Zipformer int8 | 31.7 % | 1.61 / 1.96 s | 0.03 s | 0.10 | 157 MiB |
-| Moonshine tiny streaming | 17.3 % | 1.23 / 1.78 s | 0.19 s | 0.64 | 152 MiB |
-| **Moonshine small streaming** | **8.6 %** | 1.49 / 2.20 s | 0.19 s | 1.16 | 299 MiB |
-| Parakeet TDT 0.6B v3 int8 | 4.9 % | n/a (finish-only) | 0.56 s | 0.13 | 808 MiB |
+| Engine / model | WER | S/I/D | TTFP median / p90 | Finish | RTF | Peak RAM |
+|---|---|---|---|---|---|---|
+| Zipformer int8 | 31.7 % | – | 1.61 / 1.96 s | 0.03 s | 0.10 | 157 MiB |
+| Moonshine tiny streaming | 17.3 % | – | 1.23 / 1.78 s | 0.19 s | 0.64 | 152 MiB |
+| **Moonshine small streaming** | **8.6 %** | 13 / 4 / 4 | 1.25 / 2.00 s | 0.10 s | 0.58 | 317 MiB |
+| Parakeet TDT 0.6B v3 int8 | 4.9 % | 9 / 2 / 1 | n/a (finish-only) | 0.31 s | 0.07 | 820 MiB |
 
 ### LibriSpeech test-clean (first 200 utterances, 1818.5 s; CC BY 4.0, openslr SLR12)
 
-| Engine / model | WER | TTFP median / p90 | Finish | RTF | Peak RAM |
-|---|---|---|---|---|---|
-| Zipformer int8 | 3.04 % | 1.29 / 1.61 s | 0.03 s | 0.11 | 154 MiB |
-| Moonshine tiny streaming | 4.92 % | 1.19 / 1.28 s | 0.19 s | 0.55 | 175 MiB |
-| **Moonshine small streaming** | **2.91 %** | 1.35 / 1.94 s | 0.38 s | 1.03 | 356 MiB |
-| Parakeet TDT 0.6B v3 int8 | 1.99 % | n/a (finish-only) | 1.97 s | 0.25 | 1073 MiB |
+| Engine / model | WER | S/I/D | TTFP median / p90 | Finish | RTF | Peak RAM |
+|---|---|---|---|---|---|---|
+| Zipformer int8 | 3.04 % | – | 1.29 / 1.61 s | 0.03 s | 0.11 | 154 MiB |
+| Moonshine tiny streaming | 4.92 % | – | 1.19 / 1.28 s | 0.19 s | 0.55 | 175 MiB |
+| **Moonshine small streaming** | **2.91 %** | 99 / 27 / 9 | 1.24 / 1.86 s | 0.24 s | 0.66 | 353 MiB |
+| Parakeet TDT 0.6B v3 int8 | 1.99 % | 76 / 6 / 10 | n/a (finish-only) | 0.57 s | 0.07 | 1072 MiB |
+
+Moonshine makes more insertions (27 vs 6 on LibriSpeech); Parakeet's errors are mostly substitutions. Timings moved between the two runs (Moonshine RTF 1.03 → 0.66, Parakeet 0.25 → 0.07)
+with the same build and data, so treat timing differences under about 2× as machine noise.
 
 Parakeet's WER uses the same normalisation (`voice-core` `score::normalize`). Its finish time is the whole
 transcription, since nothing runs during the take. Model load takes about 7 s, once per helper start.
@@ -121,6 +128,88 @@ On the user's voice, Zipformer (trained only on LibriSpeech) breaks down on conv
 "Open my downloads folder" became "OPEN MY DULLNESS FULLER", and "in Lisbon this weekend" became "ELIZABETH WAKINS".
 Most of Moonshine small's remaining errors are formatting: "Summarize" vs "Summarise", "24th" vs "twenty fourth",
 and "25" vs "twenty five". The real miss rate is lower than 8.6 %.
+
+## Voice metrics
+
+Both Windows helpers add `metrics` to every `final` (and to the `nothing_heard` error, so empty takes count). It is
+defined once in `voice-core/src/protocol.rs` and measured by `voice-core/src/metrics.rs`. The host logs it on the
+`host.stt` telemetry step with `engine` and `role`; macOS speech has no metrics.
+
+| Field | Meaning |
+|---|---|
+| `audio_s` | seconds of 16 kHz audio fed to the engine this take |
+| `compute_s` | wall time inside the engine's `accept`/`partial`/`endpoint`/`finish` calls |
+| `rtf` | `compute_s / audio_s` (missing with no audio); below 1 is faster than real time |
+| `warmup_ms` | this take's engine `start()`, including the model load when it was cold |
+| `speech_end_to_final_ms` | speech end (chord up or endpoint) → `final` sent, tail included |
+| `time_to_first_partial_ms` | session start → first non-empty text; null for engines that don't stream (Parakeet) |
+| `partial_count` | partials sent |
+| `revision_rate` | characters revised / characters shown across successive partials and the final, from their common prefix; streaming only |
+| `peak_rss_mb` | the helper's peak working set |
+| `empty` | the final text is empty |
+
+`npm run telemetry:report -- stt [days]` compares them per engine and role: count, empty rate, p50/p95 RTF,
+speech end → final and first partial, mean revision rate, max peak RAM, mean shadow agreement and the
+`stt_correction` rate per selected engine.
+
+## Shadow mode
+
+Settings › Voice Engine › "Compare With <other> in Background" (Windows, off by default) runs the engine you didn't
+pick on the same take, as GitHub Scientist does with a control and a candidate: the selected engine's text is always
+the one that is pasted, sent to the agent or shown; the other engine's result is only logged.
+
+- While it's on, the primary helper keeps the take's 16 kHz audio in memory (60 s cap) and, right after `final`,
+  sends it to the host as one `audio` line. It is never written to disk.
+- The host forwards it as `transcribe` to a second helper started with `--shadow`: no mic, no keys, below-normal
+  priority, model kept loaded while the setting is on. It answers only with `shadow` lines. Those go to telemetry
+  (`host.stt_shadow`) and nowhere else; `src/voice/shadow.rs` tests that they can't reach dictation, the agent or
+  the UI.
+- It is skipped (logged as cancelled with `battery_saver`, `busy` or `not_installed`) when Windows battery saver is
+  on, while the previous shadow job is still running, or when the other engine's model isn't downloaded. It never
+  downloads a model.
+- `host.stt_shadow` carries the shadow's metrics and `agreement` = 1 − word edits / longer word count between the two
+  transcripts, plus `sub/ins/del` with the selected engine as reference. No text.
+
+### Cost (measured 31 Oct 2026, same i7-8700, 25 own-voice takes, 105.5 s audio)
+
+Each helper in `--shadow` mode, fed the takes one after another. CPU time and working set are read from the process
+(`GetProcessTimes`, `GetProcessMemoryInfo`).
+
+| Shadow engine | Compute (RTF) | CPU time | CPU while busy | Resident idle / after | Peak working set |
+|---|---|---|---|---|---|
+| Moonshine small (when Parakeet is selected) | 60.5 s (0.57) | 512 s | ~8.4 cores | 198 / 222 MiB | 301 MiB |
+| Parakeet (when Moonshine is selected) | 7.4 s (0.07) | 32 s | ~3.1 cores | 676 / 809 MiB | 810 MiB |
+
+- Parakeet as the shadow costs about 0.8 GB of RAM for as long as the setting is on, and a short CPU burst (about
+  0.3 s CPU per second of speech).
+- Moonshine as the shadow is light on RAM but heavy on CPU: it kept about 8 of 12 threads busy for the whole job (about 4.9 s CPU
+  per second of speech), because it's a streaming model run as fast as it can. Below-normal priority keeps it behind
+  the foreground app, but it will spin the fans.
+- Both run after the selected engine's `final`, so they never delay the text you see.
+
+## Correction signal
+
+An `stt_correction` event is a free hint that a transcript was wrong. It holds the edit distance only; the text is
+added only when "include text" is on. It fires on all platforms when:
+
+- **Re-ask:** you send a request (typed or spoken) within 30 s of a spoken one, and the two differ by at most 40 % of
+  the longer text (character-level Levenshtein over the normalized text).
+- **Re-dictate:** you dictate again within 30 s of a dictation, with the same 40 % rule.
+
+**Decision: Roamies does not watch the pasted field on Windows.** The spike (31 Oct 2026, read-only UI Automation
+probe, Value then TextPattern over the target window) failed the gate of reading the pasted text back in ≥ 5 of 6
+apps:
+
+| App | Result |
+|---|---|
+| Notepad (Windows 11) | not readable: the window exposes 2 elements to the UIA client |
+| Chrome textarea | readable only when Chrome is started with `--force-renderer-accessibility` |
+| VS Code | not readable: Electron hides the editor text unless screen-reader mode is on |
+| Word, Slack/Teams, Windows Terminal | not installed on the test PC, so they can't count towards the gate |
+
+Making it work would mean turning on accessibility modes in other apps, adding the heavy `windows` crate, and
+reading other apps' text fields for 30 s after every paste. That costs more privacy than a hint is worth. Re-ask and
+re-dictate cover the criterion. Revisit only if a cheap, reliable read path shows up.
 
 ## Licences
 
@@ -170,6 +259,14 @@ stays available but is not shipped by default.
 **Packaging uses:** `moonshine.dll` + `onnxruntime.dll` + licences from `models/moonshine-runtime/`, the
 `models/moonshine-small/` model files, and the MSVC runtime. The helper runs with its defaults (`--engine moonshine`,
 `--moonshine-size small`).
+
+### When to revisit the default
+
+The offline bench above stays the trusted accuracy number; real use decides whether Parakeet earns its size. The
+default is reviewed with `telemetry:report -- stt` after **two weeks of use or 300 voice requests, whichever comes
+first, with at least 100 requests per engine as the selected one** (turn shadow mode on so each take also scores
+the other engine). The decision and the registry's `default` in `voice-engines.json` change together. Until that
+data exists, Moonshine small stays the default.
 
 ## Packaging (Windows)
 

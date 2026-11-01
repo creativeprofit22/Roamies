@@ -189,6 +189,7 @@ pub(crate) fn start_voice(app: &AppHandle) {
     }
     voice_log(&format!("start {} pid {pid} model {}", engine.map_or("apple", |e| e.id.as_str()), model.unwrap_or("-")));
     let app = app.clone();
+    let exit_engine = engine_id.to_string();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
@@ -213,7 +214,7 @@ pub(crate) fn start_voice(app: &AppHandle) {
             (ours, code)
         };
         end_helper_start(pid, telemetry::Outcome::Error, Some("helper_crashed"));
-        if state.1.on_exit(&telemetry::TEL, ours, code, started) {
+        if state.1.on_exit(&telemetry::TEL, ours, code, Some(&exit_engine), started) {
             thread::sleep(Duration::from_secs(1));
             let app2 = app.clone();
             let _ = app.run_on_main_thread(move || start_voice(&app2));

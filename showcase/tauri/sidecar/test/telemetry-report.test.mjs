@@ -122,6 +122,7 @@ assert.deepEqual(
     life.helper_crashes, life.helper_restarted, life.helper_gave_up, life.shadow_crashes, life.telemetry_dropped],
   [2, 3, 3, 1, 1, 1, 2, 1, 1, 1, 3],
 );
+assert.deepEqual(life.helper_crashes_by_engine, { moonshine: 1, parakeet: 1 });
 assert.deepEqual(life.shadow_crashes_by_engine, { moonshine: 1 });
 
 assert.equal(rep.memory.samples, 4);

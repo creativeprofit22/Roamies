@@ -123,7 +123,7 @@ No request id. Startup and restarts:
 | `host.sidecar_exit` | host | event: the sidecar exited | `code`; outcome `error`, `sidecar_exited` |
 | `sidecar.boot` | sidecar | Node process start → start-up done | |
 | `host.helper_start` | host | voice helper spawn → `ready` | `engine`, `attempt` |
-| `host.helper_exit` | host | event: the helper exited on its own | `code`, `crashes`, `restart`; `helper_crashed` |
+| `host.helper_exit` | host | event: the helper exited on its own | `code`, `engine`, `crashes`, `restart`; `helper_crashed` |
 | `host.update_check` / `host.update_download` | host | updater check / download and install | `found` |
 | `app.memory` | sidecar | event, every 60 s while there was a request, talk or dictation in the last 60 s | `host_mb`, `sidecar_mb`, `helper_mb`, `heap_mb` |
 | `host.shortcut` | host | event: a shortcut couldn't be registered | `which` |

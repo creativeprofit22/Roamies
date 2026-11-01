@@ -91,14 +91,14 @@ impl Restarts {
 
     /// The helper started at `started` exited with `code`. `ours`: it was still the wanted helper, so it crashed.
     /// Records `host.helper_exit` and returns whether to start it again.
-    pub fn on_exit(&self, tel: &Telemetry, ours: bool, code: Option<i32>, started: Instant) -> bool {
+    pub fn on_exit(&self, tel: &Telemetry, ours: bool, code: Option<i32>, engine: Option<&str>, started: Instant) -> bool {
         if !ours {
             return false;
         }
         let crashes = self.0.fetch_add(1, Ordering::Relaxed) + 1;
         let restart = crashes <= Self::MAX;
         let step = tel.start_at("host.helper_exit", None, None, started, Default::default());
-        let a = telemetry::attrs(json!({ "code": code, "crashes": crashes, "restart": restart }));
+        let a = telemetry::attrs(json!({ "code": code, "engine": engine, "crashes": crashes, "restart": restart }));
         tel.end(step, Outcome::Error, Some("helper_crashed"), a);
         restart
     }
@@ -172,7 +172,7 @@ mod tests {
         let (tel, got) = capture();
         let r = Restarts::new();
         let t = Instant::now();
-        let restarts: Vec<bool> = (0..4).map(|i| r.on_exit(&tel, true, Some(100 + i), t)).collect();
+        let restarts: Vec<bool> = (0..4).map(|i| r.on_exit(&tel, true, Some(100 + i), Some("parakeet"), t)).collect();
         assert_eq!(restarts, [true, true, true, false]);
         let ends: Vec<Value> = got.lock().unwrap().iter().filter(|e| e["kind"] == "end").cloned().collect();
         assert_eq!(ends.len(), 4);
@@ -181,6 +181,7 @@ mod tests {
             assert_eq!(e["outcome"], "error");
             assert_eq!(e["error_code"], "helper_crashed");
             assert_eq!(e["attrs"]["code"], 100 + i as i64);
+            assert_eq!(e["attrs"]["engine"], "parakeet");
             assert_eq!(e["attrs"]["crashes"], i as u64 + 1);
             assert_eq!(e["attrs"]["restart"], i < 3);
         }
@@ -191,13 +192,13 @@ mod tests {
         let (tel, got) = capture();
         let r = Restarts::new();
         for _ in 0..3 {
-            assert!(r.on_exit(&tel, true, None, Instant::now()));
+            assert!(r.on_exit(&tel, true, None, None, Instant::now()));
         }
         r.reset();
-        assert!(r.on_exit(&tel, true, Some(1), Instant::now()));
+        assert!(r.on_exit(&tel, true, Some(1), None, Instant::now()));
         assert_eq!(r.count(), 1);
         let n = got.lock().unwrap().len();
-        assert!(!r.on_exit(&tel, false, Some(0), Instant::now()));
+        assert!(!r.on_exit(&tel, false, Some(0), None, Instant::now()));
         assert_eq!(got.lock().unwrap().len(), n, "a helper we stopped is not a crash");
         assert_eq!(r.count(), 1);
     }

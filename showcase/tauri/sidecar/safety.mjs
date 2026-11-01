@@ -284,13 +284,20 @@ const RUNNABLE = /\.(app|command|sh|bash|zsh|tool|terminal|scpt|scptd|applescrip
 const APP_DIRS = ['/Applications/', '/System/Applications/', '/System/Library/CoreServices/'];
 
 /** open: websites and mail, documents and folders, and apps by name. Not scripts, installers or odd links. */
-export function checkOpen(target, home, { executable = false } = {}) {
+export function checkOpen(target, home, { executable = false, startApps = null } = {}) {
   home = slash(home);
   const t = String(target ?? '').trim();
   if (!t) return verdict(BLOCK, 'Nothing to open.');
+  // Windows Start-menu launch targets are fine only when they came from the Start-menu list itself,
+  // never when the model types a shell: link (shell:startup, other folders) or a shortcut path.
+  if (/^shell:/i.test(t) || /\.lnk$/i.test(t)) {
+    if (/^shell:AppsFolder\\/i.test(t) || /\.lnk$/i.test(t)) { if (startApps?.has(t)) return verdict(SAFE); }
+    return verdict(BLOCK, "Can only open shortcuts and shell: links that came from the Start-menu app list.");
+  }
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(t)?.[1]?.toLowerCase();
   if (scheme && !/^[a-z]:\\/i.test(t)) {
     if (scheme === 'http' || scheme === 'https' || scheme === 'mailto') return verdict(SAFE);
+    if (scheme === 'ms-settings') return verdict(SAFE);
     return verdict(BLOCK, `I only open web and mail links, not ${scheme}: links.`);
   }
   if (/^[~/.]/.test(t) || /^[a-z]:\\/i.test(t)) {

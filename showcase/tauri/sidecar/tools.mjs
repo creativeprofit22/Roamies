@@ -10,6 +10,7 @@ import { parseSipsSize, readProblem, rematch, sameBounds, shotMap, shotProblem, 
 import { performance } from 'node:perf_hooks';
 import * as safety from './safety.mjs';
 import { ASK, BLOCK, SAFE, isYes } from './safety.mjs';
+import { LIST_SCRIPT, closest, createAppFinder, launchTarget, parseApps } from './winapps.mjs';
 import { addCommitment, addFact, forgetFact, parseDue, updateCommitment } from './store.mjs';
 
 const HOME = os.homedir();
@@ -19,7 +20,39 @@ const clip = (s, n) => (s.length > n ? s.slice(0, n) + `\n…(${s.length - n} mo
 export const run = (cmd, args, opts = {}) => new Promise((res) => execFile(cmd, args, { maxBuffer: 8 << 20, timeout: 60_000, ...opts, windowsHide: true }, (err, stdout, stderr) => res({ err, stdout: String(stdout), stderr: String(stderr) })));
 // Windows "open": Start-Process gets the target through an environment variable, so nothing in it is ever
 // parsed as a command (cmd's start split URLs at "&", and quotes in names broke it).
-export const winOpen = (target) => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:ROAMIES_OPEN'], { env: { ...process.env, ROAMIES_OPEN: target } });
+// With arg (one already-quoted argument, e.g. a link for a browser shortcut) it goes the same way, in ROAMIES_ARG.
+export const winOpen = (target, arg) => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', `Start-Process -FilePath $env:ROAMIES_OPEN${arg ? ' -ArgumentList $env:ROAMIES_ARG' : ''}`], { env: { ...process.env, ROAMIES_OPEN: target, ...(arg ? { ROAMIES_ARG: arg } : {}) } });
+// Start-menu launch targets (shell:AppsFolder links, shortcuts, ms-settings:) go the same safe way.
+export const winLaunch = (target) => winOpen(target);
+// "Open this link in Chrome" on Windows: only a Start-menu shortcut (.lnk) can be handed the link as an argument;
+// shell:AppsFolder and ms-settings: targets can't take one, so those get a plain error instead of a silent default.
+export function winInAppPlan(app, file) {
+  if (!app?.lnk) return { error: `I can't open links or files in ${app?.name ?? 'that app'} on Windows, only in the default browser or app. Ask again without naming an app.` };
+  // Quoted so a path with spaces stays one argument; Windows paths can't hold ", and in a link it's %22.
+  return { target: launchTarget(app), arg: `"${String(file).replace(/"/g, '%22')}"` };
+}
+const notFound = (t, apps) => {
+  const near = closest(t, apps);
+  return new Error(`Couldn't find an app called "${t}". ${near.length ? `Closest Start-menu apps: ${near.join(', ')}.` : 'No similar apps found.'}`);
+};
+// A bare Start-menu app name (not a link like mailto:/ms-settings:/https:, nor a path), so it goes to the app finder.
+export const isWinAppName = (t) => {
+  t = String(t).trim();
+  const isPath = /^[~/.]/.test(t) || /^[a-z]:\\/i.test(t);
+  return !isPath && !/^[a-z][a-z0-9+.-]*:/i.test(t);
+};
+// Windows Start-menu apps, listed once per sidecar session (PowerShell takes about a second) and re-listed on a miss.
+// Listing errors (timeout, no PowerShell, blocked by policy) throw, so they aren't mistaken for "not installed".
+const appFinder = createAppFinder({
+  list: async () => {
+    const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(LIST_SCRIPT, 'utf16le').toString('base64')], { timeout: 30_000 });
+    const apps = parseApps(r.stdout);
+    if (r.err && !apps.length) throw Object.assign(new Error('Start-menu app list failed'), { detail: winSaid(r.stderr) });
+    return apps;
+  },
+});
+// Windows error text comes in the system language, so it's only ever a short detail after an English message.
+const winSaid = (stderr) => { const d = String(stderr ?? '').trim().split(/\r?\n/)[0].slice(0, 120); return d ? ` (Windows said: ${d})` : ''; };
 const actionsOff = `File edits and commands are switched off. Tell the user to turn on "Allow File Edits & Commands" in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'} menu if they want this.`;
 
 // macOS "hands": the bundled helper that captures one window or area and reads/controls other apps.
@@ -378,7 +411,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       },
     },
     {
-      name: 'open', description: 'Open a website, a file or folder, or a Mac app by name (e.g. "Safari", "https://skool.com", "~/Documents"). Links open in the default browser; set app to open one in a particular browser or app (e.g. app "Safari" when the user says "in Safari").',
+      name: 'open', description: `Open a website, a file or folder, or ${process.platform === 'win32' ? 'an app by its Start-menu name (e.g. "Spotify", "Settings", "Calculator", "https://skool.com", "~\\Documents")' : 'a Mac app by name (e.g. "Safari", "https://skool.com", "~/Documents")'}. Links open in the default browser; set app to open one in a particular browser or app (e.g. app "Safari" when the user says "in Safari").`,
       parameters: z.object({ target: z.string(), app: z.string().optional() }),
       execute: async ({ target, app }) => {
         const t = String(target).trim();
@@ -388,9 +421,30 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         let r;
         const inApp = app && process.platform === 'darwin' && (isUrl || isPath) ? ['-a', String(app)] : [];
         if (process.platform === 'darwin') r = await run('open', isUrl || isPath ? [...inApp, isPath ? expand(t) : t] : ['-a', t]);
-        else if (process.platform === 'win32') r = await winOpen(isPath ? expand(t) : t);
+        else if (process.platform === 'win32' && isWinAppName(t)) {
+          const { match, apps, failed, error } = await appFinder.find(t);
+          if (failed) throw new Error(`Couldn't read the Start-menu app list, so I can't open apps by name right now${error?.detail ?? ''}.`);
+          if (!match) throw notFound(t, apps);
+          const target = launchTarget(match.app);
+          allowed(checkOpen(target, HOME, { startApps: new Set(apps.map(launchTarget)) }));
+          r = await winLaunch(target);
+          if (r.err) throw new Error(`Couldn't open ${match.app.name}${winSaid(r.stderr)}.`);
+          if (lastShot) lastShot.used = true;
+          return `Opened ${match.app.name}.`;
+        } else if (process.platform === 'win32' && app && (isUrl || isPath)) {
+          const { match, apps, failed, error } = await appFinder.find(String(app));
+          if (failed) throw new Error(`Couldn't read the Start-menu app list, so I can't open things in ${app} right now${error?.detail ?? ''}.`);
+          if (!match) throw notFound(String(app), apps);
+          const plan = winInAppPlan(match.app, isPath ? expand(t) : t);
+          if (plan.error) throw new Error(plan.error);
+          allowed(checkOpen(plan.target, HOME, { startApps: new Set(apps.map(launchTarget)) }));
+          r = await winOpen(plan.target, plan.arg);
+          if (r.err) throw new Error(`Couldn't open ${t} in ${match.app.name}${winSaid(r.stderr)}.`);
+          if (lastShot) lastShot.used = true;
+          return `Opened ${t} in ${match.app.name}.`;
+        } else if (process.platform === 'win32') r = await winOpen(isPath ? expand(t) : t);
         else r = await run('xdg-open', [isPath ? expand(t) : t]);
-        if (r.err) throw new Error(r.stderr.trim() || `Couldn't open ${t}.`);
+        if (r.err) throw new Error(process.platform === 'win32' ? `Couldn't open ${t}${winSaid(r.stderr)}.` : r.stderr.trim() || `Couldn't open ${t}.`);
         if (lastShot) lastShot.used = true;
         return `Opened ${t}${inApp.length ? ` in ${app}` : ''}.`;
       },

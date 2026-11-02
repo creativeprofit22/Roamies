@@ -174,7 +174,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       const bounds = res.window?.bounds ?? res.bounds;
       lastShot = size && bounds ? { ...shotMap(bounds, ...size), bounds, win: res.window?.id ?? null, turn } : null;
       const what = res.window ? `the ${res.window.app} window${res.window.title ? ` "${res.window.title}"` : ''}` : 'the whole screen';
-      const dims = size ? ` (${size[0]}×${size[1]} px; for point_at or click_at give absolute pixel x, y (or a box [x1, y1, x2, y2]) in this ${size[0]}×${size[1]} image, not a 0–1000 scale)` : '';
+      const dims = size ? ` (${size[0]}×${size[1]} px; give absolute pixel coordinates in this ${size[0]}×${size[1]} image, not a 0–1000 scale: x, y for point_at or click_at, or a box [x1, y1, x2, y2] for point_at)` : '';
       return { content: [{ type: 'text', text: `Screenshot of ${what}${dims}.` }, await imageBlock(file, 'image/jpeg')] };
     } else if (process.platform === 'win32') {
       // DPI-aware (or scaled displays capture only the top-left part), resized to exactly the size the model

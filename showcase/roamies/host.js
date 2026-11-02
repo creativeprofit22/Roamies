@@ -153,7 +153,8 @@
       case 'point': {
         // Teach mode: control bounds arrive in global screen points → this overlay's coordinates.
         endTalk();
-        const o = Roamie.origin ?? { x: 0, y: 0 }, [x, y, w, h] = e.rect;
+        // local: the host already converted it (Windows, physical pixels per monitor).
+        const o = (!e.local && Roamie.origin) || { x: 0, y: 0 }, [x, y, w, h] = e.rect;
         a.point({ rect: [x - o.x, y - o.y, w, h], say: e.say, step: e.step, of: e.of, label: e.label })
           .then(() => send({ type: 'point_shown', id: e.id }));
         break;
@@ -162,7 +163,7 @@
         // The real window being captured, in global screen points → this overlay's coordinates.
         const job = current?.id === e.id ? current : jobs.find((j) => j.id === e.id);
         if (!job || !e.window?.bounds) break;
-        const [x, y, w, h] = e.window.bounds, o = Roamie.origin ?? { x: 0, y: 0 };
+        const [x, y, w, h] = e.window.bounds, o = (!e.local && Roamie.origin) || { x: 0, y: 0 };
         const rect = [x - o.x, y - o.y, x - o.x + w, y - o.y + h];
         job.target = rect; job.targetName = e.window.app;
         job.h?.target(rect, e.window.app);
@@ -221,10 +222,26 @@
     }
   }
 
+  // One Sidekick shows at a time. Overlays on other monitors (guests) hold a hidden copy that takes
+  // over when the host moves it there to point at something.
+  let active = !window.ROAMIE_GUEST;
+  function setActive(on) {
+    active = !!on;
+    const a = getAgent();
+    if (active || !a) return;
+    if (ask) finishAsk(null);
+    endTalk();
+    listen?.close(); listen = null; heard?.close(); heard = null;
+    for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
+    a.endGuide?.();
+    a.hide();
+  }
+
   window.__roamieHost = (m) => {
     if (m.kind === 'sound') { if (Roamie.sfx) Roamie.sfx.enabled = m.on; return; }
     if (m.kind === 'telemetry') { tel?.setEnabled(m.on); return; }
-    if (!getAgent()) return;
+    if (m.kind === 'active') { setActive(m.on); return; }
+    if (!active || !getAgent()) return;
     if (m.kind === 'greet') { getAgent().act('wave'); return; }
     if (m.kind === 'intro') { getAgent().intro(m.x, m.text); return; }
     if (m.kind === 'summon') {
@@ -262,7 +279,10 @@
     a.setAuto(true);
     a.onListToggle = (id) => send({ type: 'list_toggle', id });
     a.hide({ instant: true });
-    send({ type: 'ui_ready' });
+    if (!window.ROAMIE_GUEST) return send({ type: 'ui_ready' });
+    send({ type: 'ui_ready', guest: true });
+    // Built on demand for a point on this monitor: the first messages came with the page.
+    for (const m of window.ROAMIE_PENDING ?? []) window.__roamieHost(m);
   };
   ready();
 })();

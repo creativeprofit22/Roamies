@@ -10,6 +10,7 @@ mod sidecar;
 mod telemetry;
 #[cfg(target_os = "macos")]
 mod snapshot;
+mod screen_map;
 mod voice;
 
 use std::fs::OpenOptions;
@@ -45,6 +46,15 @@ struct Voice(Mutex<Option<Child>>, lifecycle::Restarts);
 struct TalkChord(Mutex<Vec<String>>);
 /// Windows: the engine the sidecar chose and its model folder (the sidecar owns downloads and the choice).
 struct VoiceWant(Mutex<voice::Want>);
+/// Overlay labels: `home` holds the real Sidekick, `active` is the one showing it now (a target on
+/// another monitor moves it there; the next request brings it home).
+#[derive(Default)]
+struct Overlays(Mutex<OverlaySet>);
+#[derive(Default)]
+struct OverlaySet {
+    home: Option<String>,
+    active: Option<String>,
+}
 
 /// Windows: helpers are console programs, so without this each one opens a console window.
 fn hide_console(cmd: &mut Command) -> &mut Command {
@@ -69,12 +79,128 @@ fn to_sidecar(app: &AppHandle, msg: &Value) -> bool {
     }
 }
 
-fn to_overlays(app: &AppHandle, msg: &Value) {
+fn broadcast(app: &AppHandle, msg: &Value) {
     let js = format!("window.__roamieHost&&__roamieHost({msg})");
     for (label, w) in app.webview_windows() {
         if is_overlay(&label) {
             let _ = w.eval(&js);
         }
+    }
+}
+
+fn to_overlay(w: &WebviewWindow, msg: &Value) {
+    let _ = w.eval(format!("window.__roamieHost&&__roamieHost({msg})"));
+}
+
+/// Every message for the overlays goes through here. Inactive overlays ignore all but sound and
+/// telemetry, so a broadcast reaches only the Sidekick that's showing.
+fn to_overlays(app: &AppHandle, msg: &Value) {
+    let kind = msg.get("kind").and_then(Value::as_str);
+    if kind != Some("agent") {
+        if !matches!(kind, Some("sound" | "telemetry" | "cancel_ask")) {
+            go_home(app);
+        }
+        return broadcast(app, msg);
+    }
+    let e = &msg["e"];
+    let px = e.get("unit").and_then(Value::as_str) == Some("px");
+    let routed = match e.get("type").and_then(Value::as_str) {
+        Some("start") => {
+            go_home(app);
+            false
+        }
+        Some("point") if px => point_on_monitor(app, msg).is_some(),
+        Some("tool_target") if px => target_on_active(app, msg).is_some(),
+        _ => false,
+    };
+    if !routed {
+        broadcast(app, msg);
+    }
+}
+
+/// Make `label` the overlay showing the Sidekick; the one showing it before hides its copy.
+fn activate(app: &AppHandle, label: &str, tell: bool) {
+    let state = app.state::<Overlays>();
+    let old = {
+        let mut set = state.0.lock().unwrap();
+        if set.active.as_deref() == Some(label) {
+            return;
+        }
+        set.active.replace(label.to_owned())
+    };
+    if let Some(w) = old.and_then(|l| app.get_webview_window(&l)) {
+        to_overlay(&w, &json!({ "kind": "active", "on": false }));
+    }
+    if tell {
+        if let Some(w) = app.get_webview_window(label) {
+            to_overlay(&w, &json!({ "kind": "active", "on": true }));
+        }
+    }
+}
+
+fn go_home(app: &AppHandle) {
+    let home = app.state::<Overlays>().0.lock().unwrap().home.clone();
+    if let Some(h) = home {
+        activate(app, &h, true);
+    }
+}
+
+fn monitor_area(m: &tauri::Monitor) -> screen_map::Area {
+    let (p, z) = (m.position(), m.size());
+    screen_map::Area { x: p.x as f64, y: p.y as f64, w: z.width as f64, h: z.height as f64, scale: m.scale_factor() }
+}
+
+/// The window's own physical origin and scale, so the numbers match the page that draws them.
+fn window_area(w: &WebviewWindow) -> Option<screen_map::Area> {
+    let (p, z, s) = (w.inner_position().ok()?, w.inner_size().ok()?, w.scale_factor().ok()?);
+    Some(screen_map::Area { x: p.x as f64, y: p.y as f64, w: z.width as f64, h: z.height as f64, scale: s })
+}
+
+/// A point in physical pixels: send it to the overlay on the monitor holding it (building one if
+/// that monitor has none) in that overlay's CSS pixels, and move the Sidekick there.
+fn point_on_monitor(app: &AppHandle, msg: &Value) -> Option<()> {
+    app.state::<Overlays>().0.lock().unwrap().home.as_ref()?;
+    let r = screen_map::rect(&msg["e"]["rect"])?;
+    let mons = app.available_monitors().ok()?;
+    let areas: Vec<screen_map::Area> = mons.iter().map(monitor_area).collect();
+    let i = screen_map::pick(&areas, r)?;
+    let gen = GENERATION.load(Ordering::Relaxed);
+    let label = overlay_label(gen, &mons[i]);
+    let mut m = msg.clone();
+    m["e"]["local"] = json!(true);
+    if let Some(w) = app.get_webview_window(&label) {
+        m["e"]["rect"] = json!(screen_map::to_css(&window_area(&w).unwrap_or(areas[i]), r));
+        activate(app, &label, true);
+        to_overlay(&w, &m);
+    } else {
+        m["e"]["rect"] = json!(screen_map::to_css(&areas[i], r));
+        let pending = json!([{ "kind": "active", "on": true }, m]);
+        build_overlay(app, gen, &mons[i], &[], true, Some(&pending)).ok()?;
+        activate(app, &label, false);
+    }
+    Some(())
+}
+
+/// The window being captured, in physical pixels → the showing overlay's CSS pixels.
+fn target_on_active(app: &AppHandle, msg: &Value) -> Option<()> {
+    let r = screen_map::rect(&msg["e"]["window"]["bounds"])?;
+    let label = app.state::<Overlays>().0.lock().unwrap().active.clone()?;
+    let w = app.get_webview_window(&label)?;
+    let mut m = msg.clone();
+    m["e"]["window"]["bounds"] = json!(screen_map::to_css(&window_area(&w)?, r));
+    m["e"]["local"] = json!(true);
+    to_overlay(&w, &m);
+    Some(())
+}
+
+/// tao can crash when click-through is toggled on a hidden window.
+fn may_toggle_click_through(visible: Option<bool>) -> bool {
+    visible == Some(true)
+}
+
+fn set_click_through(w: &WebviewWindow, ignore: bool) {
+    if may_toggle_click_through(w.is_visible().ok()) {
+        let _ = w.set_ignore_cursor_events(ignore);
     }
 }
 
@@ -87,7 +213,7 @@ fn to_onboarding(app: &AppHandle, msg: &Value) {
 /// Cursor entered or left something clickable: flip click-through.
 #[tauri::command]
 fn set_hot(window: WebviewWindow, hot: bool) {
-    let _ = window.set_ignore_cursor_events(!hot);
+    set_click_through(&window, !hot);
 }
 
 #[tauri::command]
@@ -276,8 +402,8 @@ fn intro_at_tray(app: &AppHandle, tray: Option<tauri::Rect>, text: &str) {
             Some(_) => continue,
             None => size.width as f64 / scale - 120.0,
         };
-        let msg = json!({ "kind": "intro", "x": x, "text": text });
-        let _ = w.eval(format!("window.__roamieHost&&__roamieHost({msg})"));
+        activate(app, w.label(), true);
+        to_overlay(w, &json!({ "kind": "intro", "x": x, "text": text }));
         return;
     }
 }
@@ -357,37 +483,84 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
             w.destroy()?;
         }
     }
-    let gen = GENERATION.fetch_add(1, Ordering::Relaxed);
+    let gen = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     let monitors = app.available_monitors()?;
     let ids = app.state::<Roster>().0.lock().unwrap().clone();
+    let agent = ids.iter().any(|id| id == "sidekick");
     let n = monitors.len().max(1);
+    let mut home = None;
+    // Monitors with no Roamie get an overlay only when something is pointed at there.
     for (i, mon) in monitors.iter().enumerate() {
-        let mine: Vec<String> = ids.iter().enumerate().filter(|(j, _)| j % n == i).map(|(_, id)| format!("{id:?}")).collect();
+        let mine: Vec<String> = ids.iter().enumerate().filter(|(j, _)| j % n == i).map(|(_, id)| id.clone()).collect();
         if mine.is_empty() {
             continue;
         }
-        let scale = mon.scale_factor();
-        let pos = mon.position().to_logical::<f64>(scale);
-        let size = mon.size().to_logical::<f64>(scale);
-        let init = format!("window.ROAMIE_ONLY=[{}];window.ROAMIE_AUTOSOUND=true;window.ROAMIE_UNIT=400;", mine.join(","));
-        let w = WebviewWindowBuilder::new(app, format!("overlay-{gen}-{i}"), WebviewUrl::App("desktop.html".into()))
-            .title("Roamies")
-            .transparent(true)
-            .decorations(false)
-            .shadow(false)
-            .resizable(false)
-            .always_on_top(true)
-            .visible_on_all_workspaces(true)
-            .skip_taskbar(true)
-            .focused(false)
-            .focusable(false)
-            .position(pos.x, pos.y)
-            .inner_size(size.width, size.height)
-            .initialization_script(init)
-            .build()?;
-        w.set_ignore_cursor_events(true)?;
+        let guest = agent && !mine.iter().any(|id| id == "sidekick");
+        let w = build_overlay(app, gen, mon, &mine, guest, None)?;
+        if agent && !guest {
+            home = Some(w.label().to_owned());
+        }
     }
+    *app.state::<Overlays>().0.lock().unwrap() = OverlaySet { active: home.clone(), home };
     Ok(())
+}
+
+fn overlay_label(gen: usize, mon: &tauri::Monitor) -> String {
+    let p = mon.position();
+    format!("overlay-{gen}-{}_{}", p.x, p.y)
+}
+
+/// One click-through overlay covering `mon`. A guest also gets a hidden, inactive Sidekick so the
+/// real one can move to this monitor; `pending` is handed to the page before it says it's ready.
+fn build_overlay(app: &AppHandle, gen: usize, mon: &tauri::Monitor, ids: &[String], guest: bool, pending: Option<&Value>) -> tauri::Result<WebviewWindow> {
+    let mut ids = ids.to_vec();
+    if guest && !ids.iter().any(|id| id == "sidekick") {
+        ids.push("sidekick".into());
+    }
+    let only: Vec<String> = ids.iter().map(|id| format!("{id:?}")).collect();
+    let mut init = format!("window.ROAMIE_ONLY=[{}];window.ROAMIE_AUTOSOUND=true;window.ROAMIE_UNIT=400;", only.join(","));
+    if guest {
+        init.push_str("window.ROAMIE_GUEST=true;");
+    }
+    if let Some(p) = pending {
+        init.push_str(&format!("window.ROAMIE_PENDING={p};"));
+    }
+    let scale = mon.scale_factor();
+    let pos = mon.position().to_logical::<f64>(scale);
+    let size = mon.size().to_logical::<f64>(scale);
+    let w = WebviewWindowBuilder::new(app, overlay_label(gen, mon), WebviewUrl::App("desktop.html".into()))
+        .title("Roamies")
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .resizable(false)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .focusable(false)
+        .position(pos.x, pos.y)
+        .inner_size(size.width, size.height)
+        .initialization_script(init)
+        .build()?;
+    #[cfg(windows)]
+    {
+        // Logical units land wrong on mixed-DPI setups. Position first: the move can rescale the window.
+        let _ = w.set_position(*mon.position());
+        let _ = w.set_size(*mon.size());
+        exclude_from_capture(&w);
+    }
+    set_click_through(&w, true);
+    Ok(w)
+}
+
+/// Keep the overlays (the Sidekick and its bubbles) out of the helper's screenshots.
+#[cfg(windows)]
+fn exclude_from_capture(w: &WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
+    if let Ok(h) = w.hwnd() {
+        unsafe { SetWindowDisplayAffinity(h.0 as _, WDA_EXCLUDEFROMCAPTURE) };
+    }
 }
 
 /// Edges of a monitor covered by the menu bar, Dock or taskbar, in CSS px, as a JS call.
@@ -723,6 +896,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecar(Mutex::new(None)))
         .manage(Roster(Mutex::new(vec!["sidekick".into()])))
+        .manage(Overlays::default())
         .manage(Voice(Mutex::new(None), lifecycle::Restarts::new()))
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
         .manage(VoiceWant(Mutex::new(voice::Want::default())))
@@ -782,4 +956,16 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run Roamies");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::may_toggle_click_through;
+
+    #[test]
+    fn click_through_only_on_visible_windows() {
+        assert!(may_toggle_click_through(Some(true)));
+        assert!(!may_toggle_click_through(Some(false)));
+        assert!(!may_toggle_click_through(None));
+    }
 }

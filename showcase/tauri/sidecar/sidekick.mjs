@@ -28,7 +28,7 @@ import {
 import { EMOTES, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, talkLabel, totalBytes } from './voice-model.mjs';
 import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor, shadowEngine, shadowPayload } from './voice-engines.mjs';
-import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
+import { createTools, expand, fitImage, imageBlock, screenPrompt, winOpen } from './tools.mjs';
 import { imageLimits } from './pointing.mjs';
 import { createTelemetry, newRequestId } from './telemetry.mjs';
 import { createCorrections, recordCorrection } from './stt-correction.mjs';
@@ -212,7 +212,7 @@ function anim(name, args) {
   switch (name) {
     case 'take_screenshot': {
       const t = String(args.target ?? 'screen');
-      return t === 'screen' ? { tool: 'screenshot', variant: 'screen', detail: 'screen' } : { tool: 'screenshot', variant: 'window', detail: t.startsWith('window:') ? 'window' : t.slice(0, 18) };
+      return /^screen(:\d+)?$/.test(t) ? { tool: 'screenshot', variant: 'screen', detail: 'screen' } : { tool: 'screenshot', variant: 'window', detail: t.startsWith('window:') ? 'window' : t.slice(0, 18) };
     }
     case 'list_windows': return { tool: 'read', variant: 'many', detail: 'windows' };
     case 'read_window': return { tool: 'read', variant: 'search', detail: String(args.target ?? 'front').slice(0, 18) };
@@ -255,9 +255,9 @@ Several things in one request ("do x, then y, then z", numbered steps): do every
 Long pages, feeds and lists: to find something on a page, use point_at text or click_text with words you're looking for (they search parts scrolled out of view and scroll there), not scroll after scroll. For "every post" or "each item" tasks: if the page loads more as you scroll, first act_in_app scroll with to_end; then one read_window shows the whole page (on screen and elsewhere); then do every item in one act_in_app call (fill with near and click_text with near for each, near = words from that item). Don't survey a page by scrolling and screenshotting. Never stop at the first screenful.
 A cookie or consent banner, sign-up pop-up or "open in app" prompt in the way of the task: close it and carry on (for cookies pick the reject or essential-only option, else close; never accept on their behalf), and mention it in a few words. Don't stop to ask about it.
 Personality: warm, funny, a little cheeky. You pump ${userName} up, remind them of what they said they'd do, get playfully upset when they're procrastinating, and motivate them to start.
-You can really help: look at the screen or just one app's window, open apps, websites and files, read and search files, fetch web pages, and, when the user has allowed it, write files, run shell commands${process.platform === 'darwin' ? ' and work other apps for them: fill in forms, type, click buttons (read_window, then act_in_app)' : ''}. Whether that's allowed right now is in the <live-state> block.
+You can really help: look at the screen or just one app's window, open apps, websites and files, read and search files, fetch web pages, and, when the user has allowed it, write files, run shell commands${screenPrompt().abilities}. Whether that's allowed right now is in the <live-state> block.
 When they mention a specific app ("my browser", "this form", "Figma"), screenshot that app, not the whole screen.
-${process.platform === 'darwin' ? 'Screenshot coordinates are always absolute pixels of your latest screenshot, never a 0–1000 scale; for anything bigger than an icon, give point_at a box.\n' : ''}When they ask how to do something in an app (${process.platform === 'darwin' ? '"how do I add a layer mask"' : 'a how-to'}), show them with point_at, one step per call, in order. Don't also explain the steps in your reply; the pointing is the explanation. Finish with one short line.
+${screenPrompt().coords}When they ask how to do something in an app (${screenPrompt().howTo}), show them with point_at, one step per call, in order. Don't also explain the steps in your reply; the pointing is the explanation. Finish with one short line.
 Be fast: every tool call is a round trip, so use as few as the task needs. To point at or click something whose exact words you know (the user said them, or you've seen them), use point_at text or act_in_app click_text right away, with no read_window or screenshot first. Don't guess words: for "the version number" or "the settings icon" you don't know what's written, so look first. When they ask where something is on screen, point at it with point_at; don't just describe where it is. Put several steps in one act_in_app call. Forms: one act_in_app call with a fill step per field (field = its label or placeholder as shown), choose for dropdowns, fill for typed dates; a field that opens a calendar is clicked, then its month arrows and day are clicked with click_text. Check the field values in the result before saying it's done. When act_in_app shows the page after a click, use that instead of reading again. read_window and act_in_app results include the text on screen, so read pages from them; screenshot only when you need to see something words can't tell you (images, layout, colours).
 Trust your earlier answers: screenshots and window reads are trimmed from the conversation after a while to save space, so an earlier answer may rest on something you can no longer see. That doesn't make it wrong; never "correct" or take back an earlier answer for that reason.
 The screen keeps changing: ${userName} switches pages, tabs, apps and windows between messages. For every new request about the screen ("this page", "here", "where's X"), work from a fresh look (point_at text, click_text, read_window or a screenshot made now), never from what you saw for an earlier request. If they say you're pointing at the wrong thing, look again before retrying.
@@ -276,7 +276,7 @@ const livePrompt = (context = '') => {
   return `Live state (current as of this moment):
 - Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF in ${whereIs('General')} (tell the user to turn on "${COMPACT_TRAY ? 'Edit files & run commands' : 'Allow File Edits & Commands'}" if they want it)`}.
 ${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? (NEEDS_MODEL ? `using the ${engineLabel(activeEngine().id)} speech engine, ` : '') + (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : `on, but the speech model isn't downloaded yet (${voiceModels[activeEngine().id].status === 'downloading' ? 'downloading now' : (COMPACT_TRAY ? 'Download in Settings → Voice' : `Settings > Download Voice in the ${TRAY} menu`)})`}.` : ''}
-- Shortcuts: show or hide you ${keyWords(keys().summon)}${MAC ? `; ask about an area ${keyWords(keys().snap)}` : ''}; show the list ${keyWords(keys().list)}.${MAC ? '' : ' take_screenshot works here (it always captures the whole screen), so look when asked what is on screen. Asking about an area, reading app windows, pointing and working other apps are Mac only for now.'}
+- Shortcuts: show or hide you ${keyWords(keys().summon)}${MAC ? `; ask about an area ${keyWords(keys().snap)}` : ''}; show the list ${keyWords(keys().list)}.${screenPrompt().live}
 ${open ? `Open commitments:\n${open}` : 'No open commitments.'}${doneTodayText() ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${doneTodayText()}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}`;
 };
@@ -1100,7 +1100,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.type === 'telemetry') tel.ingest(m.events);
   else if (m.type === 'ui_ready') {
     ui({ kind: 'sound', on: config.sound });
-    if (config.onboarded) ui({ kind: 'greet' });
+    // Guest overlays (other monitors) only take over when the Sidekick moves there; no second hello.
+    if (config.onboarded && !m.guest) ui({ kind: 'greet' });
   } else if (m.type?.startsWith('ob_') || m.type === 'set_keys' || m.type === 'set_actions' || m.type === 'set_login' || m.type === 'keybind_error') onGuide(m).catch((e) => console.error('guide', e));
   else if (m.type?.startsWith('st_') || m.type === 'settings_set' || m.type === 'settings_action') onSettings(m).catch((e) => console.error('settings', e));
   else if (m.type?.startsWith('voice')) onVoice(m);

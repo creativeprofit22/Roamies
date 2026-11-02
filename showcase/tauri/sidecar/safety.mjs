@@ -360,3 +360,39 @@ export function checkDictationTarget(app, text) {
   if (DICTATION_TERMINALS.has(id)) return { ...verdict(SAFE), text: t.replace(/[\u0000-\u001f\u007f]/g, ' ') };
   return { ...verdict(SAFE), text: t };
 }
+
+// Screen helper input from the model. The helper reads flags (--budget-ms, --fake-exe, --fit) anywhere in its
+// arguments, so nothing the model sends may start with "-".
+const SCREEN_TARGET = /^(front|screen|screen:[1-9]\d?|window:\d{1,12}|(app:)?[\p{L}\p{N}][\p{L}\p{N} ._&'()+-]*)$/iu;
+const blockedApp = (name) => {
+  const n = String(name ?? '').trim().toLowerCase();
+  if (!n) return null;
+  for (const [id, label] of DICTATION_BLOCK) {
+    const stem = id.endsWith('.exe') ? id.slice(0, -4) : null, l = label.toLowerCase();
+    if (n === id || n === stem || (!/^(the|a) /.test(l) && (n === l || n.includes(l)))) return label;
+  }
+  return null;
+};
+
+/** A take_screenshot / list_windows / read_window / point_at target. Returns { level, reason }. */
+export function checkScreenTarget(target) {
+  const t = String(target ?? '').trim();
+  if (!t) return verdict(BLOCK, 'No target given.');
+  if (t.startsWith('-')) return verdict(BLOCK, "A target can't start with \"-\".");
+  if (t.length > 80) return verdict(BLOCK, 'That target is too long.');
+  if (!SCREEN_TARGET.test(t)) return verdict(BLOCK, `"${t}" isn't a window, app or screen I know how to look at.`);
+  const app = /^(front|screen|screen:\d+|window:\d+)$/i.test(t) ? null : blockedApp(t.replace(/^app:/i, ''));
+  if (app) return verdict(BLOCK, `I don't look inside ${app}.`);
+  return verdict(SAFE);
+}
+
+/** Text to find on screen (point_at). Returns { level, reason }. */
+export function checkFindText(text) {
+  const t = String(text ?? '').trim();
+  if (!t) return verdict(BLOCK, 'No text to look for.');
+  if (t.startsWith('-')) return verdict(BLOCK, "The text to find can't start with \"-\".");
+  if (t.length > 200) return verdict(BLOCK, 'That text is too long to look for.');
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(t)) return verdict(BLOCK, 'The text to find has control characters in it.');
+  return verdict(SAFE);
+}

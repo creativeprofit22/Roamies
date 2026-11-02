@@ -118,3 +118,22 @@ export function parseWinShot(stdout) {
   const get = (k) => { const m = new RegExp(String.raw`^${k} (\d+) (\d+)\s*$`, 'm').exec(String(stdout ?? '')); return m ? [+m[1], +m[2]] : null; };
   return { size: get('size'), sent: get('sent') };
 }
+
+// Which helper monitor ({bounds:[x,y,w,h]}) holds a rect: the one containing its centre, else the largest overlap,
+// else the nearest. Returns the index into monitors, or -1 when there are none.
+export function monitorFor(monitors, [x, y, w, h]) {
+  const list = Array.isArray(monitors) ? monitors : [];
+  if (!list.length) return -1;
+  const cx = x + w / 2, cy = y + h / 2;
+  const b = (m) => m?.bounds ?? [0, 0, 0, 0];
+  const inside = list.findIndex((m) => { const [mx, my, mw, mh] = b(m); return cx >= mx && cx < mx + mw && cy >= my && cy < my + mh; });
+  if (inside >= 0) return inside;
+  const overlap = (m) => { const [mx, my, mw, mh] = b(m); return Math.max(0, Math.min(x + w, mx + mw) - Math.max(x, mx)) * Math.max(0, Math.min(y + h, my + mh) - Math.max(y, my)); };
+  const gap = (m) => { const [mx, my, mw, mh] = b(m); return Math.hypot(Math.max(mx - cx, 0, cx - (mx + mw)), Math.max(my - cy, 0, cy - (my + mh))); };
+  let best = 0;
+  for (let i = 1; i < list.length; i++) {
+    const o = overlap(list[i]) - overlap(list[best]);
+    if (o > 0 || (o === 0 && overlap(list[best]) === 0 && gap(list[i]) < gap(list[best]))) best = i;
+  }
+  return best;
+}

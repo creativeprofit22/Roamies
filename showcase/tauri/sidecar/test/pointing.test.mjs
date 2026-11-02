@@ -131,3 +131,27 @@ console.log('screenshot coordinate tests: passed');
   assert.deepEqual(parseWinShot(''), { size: null, sent: null });
   console.log('windows capture output tests: passed');
 }
+
+// Which monitor a window or box is on: 100% at (0,0) and 150% to the left with a negative origin.
+{
+  const { monitorFor } = await import('../pointing.mjs');
+  const mons = [{ bounds: [0, 0, 1920, 1080], scale: 1 }, { bounds: [-2880, -200, 2880, 1620], scale: 1.5 }];
+  assert.equal(monitorFor(mons, [960, 540, 100, 50]), 0, 'centre on A');
+  assert.equal(monitorFor(mons, [-1500, 300, 150, 75]), 1, 'centre on B');
+  assert.equal(monitorFor(mons, [-300, 100, 400, 100]), 1, 'straddling the edge: centre decides (-100 is on B)');
+  assert.equal(monitorFor(mons, [500, 1500, 400, 100]), 0, 'below both, overlapping neither: the nearest (A)');
+  assert.equal(monitorFor(mons, [-1000, 1300, 100, 600]), 1, 'centre off both, overlaps B only');
+  assert.equal(monitorFor([], [0, 0, 10, 10]), -1, 'no monitors');
+  assert.equal(monitorFor(undefined, [0, 0, 10, 10]), -1, 'no monitor list');
+  console.log('monitor pick tests: passed');
+}
+
+// The Windows helper's --fit resizes with a Rust port of resizedSize; both must give the same sizes.
+{
+  const { readFileSync } = await import('node:fs');
+  const { resizedSize } = await import('../pointing.mjs');
+  const { cases } = JSON.parse(readFileSync(new URL('../../src-tauri/hands-win/tests/fixtures/resize.json', import.meta.url), 'utf8'));
+  assert.ok(cases.length >= 10, 'resize vectors loaded');
+  for (const c of cases) assert.deepEqual(resizedSize(...c.in, c.maxEdge, c.maxTokens || Infinity), c.out, JSON.stringify(c));
+  console.log('shared resize vector tests: passed');
+}

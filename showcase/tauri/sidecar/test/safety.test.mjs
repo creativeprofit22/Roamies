@@ -243,3 +243,23 @@ console.log('redirect into new file tests: all passed');
   for (const exe of exes) assert.equal(dict({ id: exe, name: exe }, 'hello').level, BLOCK, `${exe} is blocked for dictation too`);
   console.log('hands-off cross-check tests: passed');
 }
+
+// Screen helper targets and find text: nothing the model sends can become a helper flag or open a hands-off app.
+{
+  const { checkScreenTarget: tgt, checkFindText: find } = await import('../safety.mjs');
+  const table = (fn, label, rows) => { for (const [input, want] of rows) assert.equal(fn(input).level, want, `${label} ${JSON.stringify(input)}`); };
+  table(tgt, 'target', [
+    ['front', SAFE], ['screen', SAFE], ['screen:1', SAFE], ['screen:2', SAFE], ['window:262642', SAFE], ['app:chrome', SAFE],
+    ['app:browser', SAFE], ['Notepad', SAFE], ['Google Chrome', SAFE], ['Microsoft Edge', SAFE], ['app:Visual Studio Code', SAFE],
+    ['', BLOCK], [null, BLOCK], ['--fake-exe', BLOCK], ['-x', BLOCK], ['--budget-ms=1', BLOCK], ['screen:0', BLOCK], ['screen:-1', BLOCK],
+    ['window:abc', BLOCK], ['app:', BLOCK], ['a'.repeat(81), BLOCK], ['chrome; rm -rf ~', BLOCK], ['app:chrome\n--fit', BLOCK],
+    ['KeePass', BLOCK], ['app:keepassxc', BLOCK], ['1Password', BLOCK], ['app:1password.exe', BLOCK], ['Bitwarden', BLOCK],
+    ['Windows Security', BLOCK], ['app:sechealthui', BLOCK], ['Registry Editor', BLOCK], ['regedit', BLOCK], ['Keychain Access', BLOCK],
+    ['app:LastPass', BLOCK],
+  ]);
+  table(find, 'find text', [
+    ['Save', SAFE], ['Shorts', SAFE], ['Sign in', SAFE], ['50% off', SAFE], ['a-b', SAFE],
+    ['', BLOCK], [null, BLOCK], ['--fake-exe', BLOCK], ['-5', BLOCK], ['x'.repeat(201), BLOCK], ['Save\n--fit', BLOCK],
+  ]);
+  console.log('screen target tests: passed');
+}

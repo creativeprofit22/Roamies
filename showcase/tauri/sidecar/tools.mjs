@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { parseSipsSize, parseWinShot, readProblem, rematch, resizedSize, sameBounds, shotBox, shotMap, shotPixel, shotProblem } from './pointing.mjs';
+import { monitorFor, parseSipsSize, parseWinShot, readProblem, rematch, resizedSize, sameBounds, shotBox, shotMap, shotPixel, shotProblem } from './pointing.mjs';
 import { performance } from 'node:perf_hooks';
 import * as safety from './safety.mjs';
 import { ASK, BLOCK, SAFE, isYes } from './safety.mjs';
@@ -55,8 +55,21 @@ const appFinder = createAppFinder({
 const winSaid = (stderr) => { const d = String(stderr ?? '').trim().split(/\r?\n/)[0].slice(0, 120); return d ? ` (Windows said: ${d})` : ''; };
 const actionsOff = `File edits and commands are switched off. Tell the user to turn on "Allow File Edits & Commands" in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'} menu if they want this.`;
 
-// macOS "hands": the bundled helper that captures one window or area and reads/controls other apps.
+// "hands": the bundled screen helper (macOS: hands/main.swift; Windows x64: hands-win, see docs/hands.md).
 const HANDS = process.env.ROAMIES_HANDS || '';
+// What the model is told about seeing and pointing on each platform (sidekick.mjs puts these in its prompt).
+export function screenPrompt({ platform = process.platform, hands = HANDS } = {}) {
+  const mac = platform === 'darwin', winSees = platform === 'win32' && !!hands;
+  return {
+    abilities: mac ? ' and work other apps for them: fill in forms, type, click buttons (read_window, then act_in_app)'
+      : winSees ? ', and list and read app windows and point at things on screen (list_windows, read_window, point_at)' : '',
+    coords: mac || winSees ? 'Screenshot coordinates are always absolute pixels of your latest screenshot, never a 0–1000 scale; for anything bigger than an icon, give point_at a box.\n' : '',
+    howTo: mac ? '"how do I add a layer mask"' : 'a how-to',
+    live: mac ? ''
+      : winSees ? ' take_screenshot works here: the whole screen, one monitor (screen:2, list_windows lists them) or one app window, so look when asked what is on screen. list_windows, read_window and point_at work here too, so when asked where something is, point at it. Asking about an area and working other apps (act_in_app, clicking or typing for them) are Mac only for now; point and tell them what to click.'
+      : ' take_screenshot works here (it always captures the whole screen), so look when asked what is on screen. Asking about an area, reading app windows, pointing and working other apps are Mac only for now.',
+  };
+}
 const STALE_ID = 'The page changed since read_window, so that id is out of date. Call read_window again and use the new ids.';
 // The text point_at should use: a whole label or heading (exact or word match), not the words buried in a
 // paragraph, which is what a guessed word like "version" or "settings" tends to hit.
@@ -65,13 +78,13 @@ function pickTextMatch(matches, find) {
   return (matches ?? []).find((m) => m.match !== 'partial' && m.text.trim().length <= Math.max(40, q.length * 3)) ?? null;
 }
 // read_window and act_in_app output: visible controls first, then up to 15 scrolled out of view.
-function controlList(controls, texts = []) {
+function controlList(controls, texts = [], canAct = true) {
   const vis = controls.filter((c) => !c.offscreen), off = controls.filter((c) => c.offscreen).slice(0, 15);
   const line = (c) => `${c.id} ${c.role}${c.label ? ` "${c.label}"` : ''}${c.value ? ` = "${c.value}"` : ''}${c.focused ? ' (focused)' : ''}`;
   const labels = new Set(controls.map((c) => c.label));
   const words = texts.filter((t) => !labels.has(t));
   return vis.map(line).join('\n')
-    + (off.length ? `\nFurther down (point_at or click_text scrolls to them): ${off.map((c) => `${c.id} "${c.label || c.role}"`).join(', ')}` : '')
+    + (off.length ? `\nFurther down (${canAct ? 'point_at or click_text scrolls' : 'point_at with their text scrolls'} to them): ${off.map((c) => `${c.id} "${c.label || c.role}"`).join(', ')}` : '')
     + (words.length ? `\nText on screen: ${words.join(' | ')}` : '');
 }
 // A safety verdict: blocked throws with the reason, otherwise returns the checked absolute path.
@@ -94,7 +107,11 @@ export const imageBlock = async (file, mediaType) => {
 };
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }) }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS }) {
+  const MAC = platform === 'darwin', WIN = platform === 'win32';
+  // Seeing and pointing need the helper; working other apps (act_in_app, clicks) is macOS only for now.
+  const CAN_SEE = MAC || (WIN && !!handsBin), CAN_ACT = MAC;
+  const pxUnit = WIN ? { unit: 'px' } : {}; // Windows rects are physical pixels; the host converts them per monitor
   // Each safety check reports its verdict and time (telemetry agent.safety); the checks themselves are unchanged.
   const timed = (check, fn) => (...a) => {
     const t0 = performance.now(), v = fn(...a);
@@ -103,6 +120,12 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   };
   const checkRead = timed('read', safety.checkRead), checkWrite = timed('write', safety.checkWrite), checkUrl = timed('url', safety.checkUrl);
   const checkOpen = timed('open', safety.checkOpen), classifyCommand = timed('command', safety.classifyCommand), isRiskyClick = timed('click', safety.isRiskyClick);
+  const checkTarget = timed('screen_target', safety.checkScreenTarget), checkFind = timed('find_text', safety.checkFindText);
+  // Model-written targets and text reach the helper's command line, so each is checked first (no "-flags", no hands-off apps).
+  const screenTarget = (t) => { const v = checkTarget(t); if (v.level === BLOCK) throw new Error(`Blocked for safety: ${v.reason}`); return String(t).trim(); };
+  const findText = (t) => { const v = checkFind(t); if (v.level === BLOCK) throw new Error(`Blocked for safety: ${v.reason}`); return t; };
+  // A target as the helper takes it: bare app names become app:<name>.
+  const spec = (t) => (/^(front|screen|screen:\d+|window:\d+|app:.*)$/i.test(t) ? t : `app:${t}`);
   let axNudged = 0;
   const pointWaits = new Map(); // point_at call id → resolve, settled when the overlay has shown the step
   let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)
@@ -132,12 +155,12 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     };
   }
   async function hands(...args) {
-    if (!HANDS) throw new Error('This needs the Roamies app on macOS.');
-    const r = await run(HANDS, args, { timeout: 120_000 });
+    if (!handsBin) throw new Error(MAC ? 'This needs the Roamies app on macOS.' : WIN ? "Reading and pointing at other apps isn't available on this PC (the Roamies screen helper only ships for 64-bit Intel/AMD Windows)." : "Reading and pointing at other apps isn't available on this system.");
+    const r = await run(handsBin, args, { timeout: 120_000 });
     let res;
     try { res = JSON.parse(r.stdout.trim().split('\n').pop() || '{}'); } catch { throw new Error(`hands helper failed: ${r.stderr.trim().slice(0, 200) || 'no output'}`); }
     if (res.ok === false && !res.cancelled) {
-      if (/Accessibility/i.test(res.error ?? '')) {
+      if (MAC && /Accessibility/i.test(res.error ?? '')) {
         // Open the exact Settings pane (once a minute at most) so the fix is one click away.
         if (Date.now() - axNudged > 60_000) { axNudged = Date.now(); openUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'); }
         throw new Error('Accessibility is off for Roamies, so I can\'t read or control other apps yet. I just opened System Settings → Privacy & Security → Accessibility: switch on Roamies there, then ask again. Tell the user exactly that, briefly.');
@@ -157,26 +180,36 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   async function screenshot({ target = 'screen' } = {}, ctx) {
     const file = path.join(os.tmpdir(), `sidekick-${Date.now()}.jpg`);
     let sent = null;
-    if (process.platform === 'darwin') {
-      const t = String(target || 'screen').trim();
-      const spec = t === 'screen' || t === 'front' || t.startsWith('window:') ? t : `app:${t}`;
+    if (CAN_SEE) {
+      const s = spec(screenTarget(String(target || 'screen').trim()));
       // Find the window first so the camera animation can frame the real thing (screen points), then shoot.
-      if (spec !== 'screen' && ctx?.toolCallId) {
-        const at = await hands('locate', spec).catch(() => null);
+      if (!/^screen(:\d+)?$/i.test(s) && ctx?.toolCallId) {
+        const at = await hands('locate', s).catch(() => null);
         if (at?.window) {
-          ui({ kind: 'agent', e: { type: 'tool_target', id: ctx.toolCallId, window: at.window } });
+          ui({ kind: 'agent', e: { type: 'tool_target', id: ctx.toolCallId, window: at.window, ...pxUnit } });
           await new Promise((r) => setTimeout(r, 250));
         }
       }
-      const res = await hands('capture', file, spec);
       // Sent at exactly the size the model processes; any other size gets resized again and coordinates drift.
-      const size = await fitImage(file, imageLimits());
+      // Windows: the helper resizes (same rule, shared test vectors) and says the size it sent.
+      const limits = imageLimits();
+      const res = WIN
+        ? await hands('capture', file, s, '--fit', `${limits.maxEdge}x${Number.isFinite(limits.maxTokens) ? limits.maxTokens : 0}`)
+        : await hands('capture', file, s);
+      const size = WIN ? (Array.isArray(res.sent) ? res.sent : null) : await fitImage(file, limits);
       const bounds = res.window?.bounds ?? res.bounds;
-      lastShot = size && bounds ? { ...shotMap(bounds, ...size), bounds, win: res.window?.id ?? null, turn } : null;
-      const what = res.window ? `the ${res.window.app} window${res.window.title ? ` "${res.window.title}"` : ''}` : 'the whole screen';
-      const dims = size ? ` (${size[0]}×${size[1]} px; give absolute pixel coordinates in this ${size[0]}×${size[1]} image, not a 0–1000 scale: x, y for point_at or click_at, or a box [x1, y1, x2, y2] for point_at)` : '';
+      let where = {};
+      if (WIN && bounds) {
+        const i = monitorFor(res.monitors, bounds);
+        where = { unit: 'px', monitor: i + 1, scale: res.monitors?.[i]?.scale ?? 1 };
+      }
+      lastShot = size && bounds ? { ...shotMap(bounds, ...size), bounds, win: res.window?.id ?? null, turn, ...where } : null;
+      const what = res.window ? `the ${res.window.app} window${res.window.title ? ` "${res.window.title}"` : ''}` : /^screen:\d+$/i.test(s) ? `monitor ${s.slice(7)}` : 'the whole screen';
+      const dims = size ? ` (${size[0]}×${size[1]} px; give absolute pixel coordinates in this ${size[0]}×${size[1]} image, not a 0–1000 scale: x, y for point_at${CAN_ACT ? ' or click_at' : ''}, or a box [x1, y1, x2, y2] for point_at)` : '';
       return { content: [{ type: 'text', text: `Screenshot of ${what}${dims}.` }, await imageBlock(file, 'image/jpeg')] };
-    } else if (process.platform === 'win32') {
+    } else if (WIN) {
+      // No helper (e.g. Windows on ARM): primary screen only, and no pointing, so lastShot stays empty.
+      lastShot = null;
       // DPI-aware (or scaled displays capture only the top-left part), resized to exactly the size the model
       // processes, and the file path passed by environment variable so odd characters in it can't break the script.
       // The target size depends on the screen size, so the script refuses (exit 3, prints "size W H") when the screen
@@ -220,35 +253,43 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   const tools = [
     {
       name: 'take_screenshot',
-      description: "Look at the user's screen. target: 'front' = just the window they're working in (best default when they say 'this' or 'here'), an app name like 'browser', 'Safari', 'Figma' or 'Notes' (works even if it's hidden behind other windows), 'window:<id>' from list_windows, or 'screen' for everything.",
+      description: WIN && CAN_SEE
+        ? "Look at the user's screen. target: 'front' = just the window they're working in (best default when they say 'this' or 'here'), an app name like 'browser', 'Chrome', 'Notepad' or 'Excel' (works even if it's behind other windows), 'window:<id>' from list_windows, 'screen' for the main monitor, or 'screen:<n>' for monitor n (list_windows lists them)."
+        : WIN ? "Look at the user's screen (always the whole main monitor)."
+          : "Look at the user's screen. target: 'front' = just the window they're working in (best default when they say 'this' or 'here'), an app name like 'browser', 'Safari', 'Figma' or 'Notes' (works even if it's hidden behind other windows), 'window:<id>' from list_windows, or 'screen' for everything.",
       parameters: z.object({ target: z.string().optional() }), execute: screenshot,
     },
-    ...(process.platform === 'darwin' ? [
+    ...(CAN_SEE ? [
       {
-        name: 'list_windows', description: 'List the open app windows (app, title, id), front to back.',
+        name: 'list_windows', description: WIN ? 'List the open app windows (app, title, id), front to back, and the monitors (screen:<n>).' : 'List the open app windows (app, title, id), front to back.',
         parameters: z.object({}),
         execute: async () => {
           const res = await hands('windows');
-          return res.windows.map((w) => `window:${w.id}  ${w.app}${w.title ? ` — ${w.title}` : ''}${w.frontApp ? '  (frontmost app)' : ''}`).join('\n') || 'No windows open.';
+          const wins = res.windows.map((w) => `window:${w.id}  ${w.app}${w.title ? ` — ${w.title}` : ''}${w.frontApp ? '  (frontmost app)' : ''}`).join('\n') || 'No windows open.';
+          const mons = WIN && Array.isArray(res.monitors) ? res.monitors.map((m, i) => `screen:${i + 1}  ${m.bounds[2]}×${m.bounds[3]} at ${Math.round((m.scale ?? 1) * 100)}%${m.primary ? ' (main)' : ''}`) : [];
+          return mons.length ? `${wins}\nMonitors:\n${mons.join('\n')}` : wins;
         },
       },
       {
         name: 'read_window',
-        description: "List the buttons, links, fields, checkboxes and other controls in an app's front window (id, role, label, value), plus the text on screen and the text scrolled out of view above and below it, so you can read a whole page without scrolling or a screenshot. Needed before act_in_app steps that use ids. To point at or click something by its visible words you don't need this: use point_at or click_text with text. target: 'front', an app name, or 'browser'.",
+        description: CAN_ACT
+          ? "List the buttons, links, fields, checkboxes and other controls in an app's front window (id, role, label, value), plus the text on screen and the text scrolled out of view above and below it, so you can read a whole page without scrolling or a screenshot. Needed before act_in_app steps that use ids. To point at or click something by its visible words you don't need this: use point_at or click_text with text. target: 'front', an app name, or 'browser'."
+          : "List the buttons, links, fields, checkboxes and other controls in an app's front window (id, role, label, value), plus the text on screen and the text scrolled out of view above and below it, so you can read a whole page without scrolling or a screenshot. To point at something by its visible words you don't need this: use point_at with text. target: 'front', an app name, 'browser' or 'window:<id>'.",
         parameters: z.object({ target: z.string().optional() }),
         execute: async ({ target = 'front' }) => {
-          const t = String(target || 'front');
-          const [res, all] = await Promise.all([hands('ui', t === 'front' ? 'front' : `app:${t}`), hands('windows').catch(() => null)]);
+          const t = screenTarget(String(target || 'front'));
+          if (/^screen(:\d+)?$/i.test(t)) throw new Error("read_window reads one app window: use 'front', an app name or 'window:<id>', not a screen.");
+          const [res, all] = await Promise.all([hands('ui', spec(t)), hands('windows').catch(() => null)]);
           lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
           const others = (all?.windows ?? []).filter((w) => w.app === res.window.app && w.id !== res.window.id).length;
           const head = `${res.window.app}${res.window.title ? ` — ${res.window.title}` : ''}${others ? ` (front window; ${res.window.app} has ${others} more, which point_at with text also searches)` : ''}`;
           if (!res.controls.length) return `${head}\n${res.note}`;
-          return `${head}\n${controlList(res.controls, res.texts)}${res.elsewhere?.length ? `\nElsewhere on the page (scrolled out of view): ${res.elsewhere.join(' | ')}` : ''}`;
+          return `${head}\n${controlList(res.controls, res.texts, CAN_ACT)}${res.elsewhere?.length ? `\nElsewhere on the page (scrolled out of view): ${res.elsewhere.join(' | ')}` : ''}`;
         },
       },
       {
         name: 'point_at',
-        description: "Teach by showing: fly to something on screen and point at it while you explain one step. Use it to walk the user through how to do something (e.g. 'how do I add a layer mask'), one point_at per step, in order, with a short instruction each (under 12 words). Three ways to say where, best first: text, the exact words shown on screen (button and link labels, headings, version numbers, menu names; searches every window of the target app, or the whole screen with target 'screen', so no read_window is needed first); id from read_window, for controls without visible words; or x, y or box [x1, y1, x2, y2] in absolute pixels of your latest screenshot (never 0–1000), only when neither finds it; prefer a box for anything bigger than an icon. Set click true only if the user asked you to do it for them; otherwise just point and let them click. wait_for_user true pauses until they do the step (or 20 s), for multi-step lessons.",
+        description: `Teach by showing: fly to something on screen and point at it while you explain one step. Use it to walk the user through how to do something (e.g. 'how do I add a layer mask'), one point_at per step, in order, with a short instruction each (under 12 words). Three ways to say where, best first: text, the exact words shown on screen (button and link labels, headings, version numbers, menu names; searches every window of the target app, or the whole screen with target 'screen', so no read_window is needed first); id from read_window, for controls without visible words; or x, y or box [x1, y1, x2, y2] in absolute pixels of your latest screenshot (never 0–1000), only when neither finds it; prefer a box for anything bigger than an icon. ${CAN_ACT ? 'Set click true only if the user asked you to do it for them; otherwise just point and let them click.' : "Clicking for them isn't available here: just point and tell them what to click."} wait_for_user true pauses until they do the step (or 20 s), for multi-step lessons.`,
         parameters: z.object({
           target: z.string().optional(),
           id: z.number().int().optional(), text: z.string().min(1).max(80).optional(), x: z.number().optional(), y: z.number().optional(),
@@ -259,15 +300,15 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         }),
         executionMode: 'sequential',
         execute: async ({ target = 'front', id, text: find, x, y, box, say: text, step, of: total, click, wait_for_user }, ctx) => {
-          const t = String(target || 'front'), spec = t === 'front' ? 'front' : t === 'screen' ? 'screen' : `app:${t}`;
+          const t = screenTarget(String(target || 'front')), where = spec(t);
           let rect, label = '', at, liveId;
           if (id != null) {
-            const c = (await liveControls(spec))(id);
+            const c = (await liveControls(where))(id);
             if (c.offscreen) throw new Error(`"${c.label || c.role}" is further down the page. Use point_at with its text instead; that scrolls to it.`);
             rect = c.bounds; label = c.label || c.role; liveId = c.id;
           } else if (find) {
             // "front" searches every window of the front app; text is often in a window behind the frontmost one.
-            const res = await hands('find-text', spec, find, 'scroll');
+            const res = await hands('find-text', where, findText(find), 'scroll');
             const m = pickTextMatch(res.matches, find);
             if (!m) {
               const near = (res.matches ?? []).slice(0, 3).map((x) => `"${x.text.replace(/\s+/g, ' ').slice(0, 50)}"`).join(', ');
@@ -284,8 +325,9 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
           } else throw new Error('Give an id from read_window, text shown on screen, or x, y or a box from a screenshot.');
           // The overlay flies there, points, shows the step and holds; this tool resolves once it's on screen.
           const done = new Promise((resolve) => pointWaits.set(ctx.toolCallId, resolve));
-          ui({ kind: 'agent', e: { type: 'point', id: ctx.toolCallId, rect, say: text, step, of: total, label } });
+          ui({ kind: 'agent', e: { type: 'point', id: ctx.toolCallId, rect, say: text, step, of: total, label, ...pxUnit } });
           await done;
+          if (click && !CAN_ACT) return `Pointed at ${label || 'the spot'}. Clicking isn't available on Windows yet, so ask the user to click it.`;
           if (click) {
             if (!allowActions()) throw new Error(actionsOff);
             if (id != null) await hands('act', JSON.stringify({ steps: [{ do: 'click', id: liveId }], ...(t === 'front' ? {} : { app: t }) }));
@@ -298,6 +340,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
           return `Pointed at ${label || 'the spot'}${click ? ' and clicked it' : ''}.`;
         },
       },
+    ] : []),
+    ...(CAN_ACT ? [
       {
         name: 'act_in_app',
         description: "Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and point_at find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape', 'cmd+l'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} absolute pixels in your latest screenshot (never 0–1000), last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.",

@@ -92,12 +92,17 @@ fn to_overlay(w: &WebviewWindow, msg: &Value) {
     let _ = w.eval(format!("window.__roamieHost&&__roamieHost({msg})"));
 }
 
+/// Background kinds stay on whichever overlay is active, so they don't cut off a lesson on another monitor.
+fn goes_home(kind: Option<&str>) -> bool {
+    !matches!(kind, Some("sound" | "telemetry" | "cancel_ask" | "progress"))
+}
+
 /// Every message for the overlays goes through here. Inactive overlays ignore all but sound and
 /// telemetry, so a broadcast reaches only the Sidekick that's showing.
 fn to_overlays(app: &AppHandle, msg: &Value) {
     let kind = msg.get("kind").and_then(Value::as_str);
     if kind != Some("agent") {
-        if !matches!(kind, Some("sound" | "telemetry" | "cancel_ask")) {
+        if goes_home(kind) {
             go_home(app);
         }
         return broadcast(app, msg);
@@ -960,7 +965,15 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::may_toggle_click_through;
+    use super::{goes_home, may_toggle_click_through};
+
+    #[test]
+    fn background_kinds_stay_on_active_overlay() {
+        for k in ["progress", "sound", "telemetry", "cancel_ask"] {
+            assert!(!goes_home(Some(k)), "{k}");
+        }
+        assert!(goes_home(Some("summon")));
+    }
 
     #[test]
     fn click_through_only_on_visible_windows() {

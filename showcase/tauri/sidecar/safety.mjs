@@ -338,6 +338,9 @@ const DICTATION_BLOCK = new Map(Object.entries({
   'keepass.exe': 'KeePass', 'keepassxc.exe': 'KeePassXC', '1password.exe': '1Password', 'bitwarden.exe': 'Bitwarden',
   'dashlane.exe': 'Dashlane', 'enpass.exe': 'Enpass', 'sechealthui.exe': 'Windows Security', 'systemsettings.exe': 'Settings',
   'regedit.exe': 'Registry Editor', 'msiexec.exe': 'Windows Installer', 'consent.exe': 'the admin prompt',
+  // Also in src-tauri/hands-win/hands-off.json, which the screen helper refuses to read.
+  'nordpass.exe': 'NordPass', 'roboform.exe': 'RoboForm', 'keeperpasswordmanager.exe': 'Keeper', 'lastpass.exe': 'LastPass',
+  'credentialuibroker.exe': 'a Windows sign-in prompt', 'lockapp.exe': 'the lock screen', 'logonui.exe': 'the sign-in screen',
 }));
 // Terminals: pasting is fine, but a newline would run the command, so control characters become spaces.
 const DICTATION_TERMINALS = new Set([

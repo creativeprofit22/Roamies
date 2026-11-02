@@ -232,3 +232,14 @@ console.log('redirect into new file tests: all passed');
   }
   console.log('dictation target tests: passed');
 }
+
+// Every app the Windows screen helper won't read is also one dictation won't paste into.
+{
+  const { readFileSync } = await import('node:fs');
+  const { checkDictationTarget: dict } = await import('../safety.mjs');
+  const handsOff = JSON.parse(readFileSync(new URL('../../src-tauri/hands-win/hands-off.json', import.meta.url), 'utf8'));
+  const exes = Object.keys(handsOff.exes);
+  assert.ok(exes.length >= 10, 'hands-off list loaded');
+  for (const exe of exes) assert.equal(dict({ id: exe, name: exe }, 'hello').level, BLOCK, `${exe} is blocked for dictation too`);
+  console.log('hands-off cross-check tests: passed');
+}

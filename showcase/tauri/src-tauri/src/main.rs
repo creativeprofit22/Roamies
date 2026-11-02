@@ -114,7 +114,7 @@ fn to_overlays(app: &AppHandle, msg: &Value) {
             go_home(app);
             false
         }
-        Some("point") if px => point_on_monitor(app, msg).is_some(),
+        Some("point") if px => point_on_monitor(app, msg).or_else(|| point_on_fallback(app, msg)).is_some(),
         Some("tool_target") if px => target_on_active(app, msg).is_some(),
         _ => false,
     };
@@ -183,6 +183,25 @@ fn point_on_monitor(app: &AppHandle, msg: &Value) -> Option<()> {
         build_overlay(app, gen, &mons[i], &[], true, Some(&pending)).ok()?;
         activate(app, &label, false);
     }
+    Some(())
+}
+
+/// The point's monitor couldn't take it: show it on the active (else home) overlay in that
+/// overlay's CSS pixels, so the page never reads physical pixels as points and still answers point_shown.
+fn point_on_fallback(app: &AppHandle, msg: &Value) -> Option<()> {
+    let r = screen_map::rect(&msg["e"]["rect"])?;
+    let state = app.state::<Overlays>();
+    let (active, home) = {
+        let set = state.0.lock().unwrap();
+        (set.active.clone(), set.home.clone())
+    };
+    let label = screen_map::fallback(active.as_deref(), home.as_deref(), |l| app.get_webview_window(l).is_some())?;
+    let w = app.get_webview_window(label)?;
+    let mut m = msg.clone();
+    m["e"]["rect"] = json!(screen_map::to_css(&window_area(&w)?, r));
+    m["e"]["local"] = json!(true);
+    activate(app, label, true);
+    to_overlay(&w, &m);
     Some(())
 }
 

@@ -50,6 +50,12 @@ pub fn to_css(a: &Area, [x, y, w, h]: [f64; 4]) -> [f64; 4] {
     [(x - a.x) / s, (y - a.y) / s, w / s, h / s]
 }
 
+/// The overlay to show a point on when its own monitor can't: the active one if its window still
+/// exists, else home.
+pub fn fallback<'a>(active: Option<&'a str>, home: Option<&'a str>, exists: impl Fn(&str) -> bool) -> Option<&'a str> {
+    active.into_iter().chain(home).find(|l| exists(l))
+}
+
 /// `[x, y, w, h]` from JSON, if it's four numbers.
 pub fn rect(v: &Value) -> Option<[f64; 4]> {
     let a = v.as_array()?;
@@ -107,6 +113,16 @@ mod tests {
     #[test]
     fn no_monitors() {
         assert_eq!(pick(&[], [0.0, 0.0, 1.0, 1.0]), None);
+    }
+
+    #[test]
+    fn fallback_prefers_a_live_active_overlay_then_home() {
+        let all = |_: &str| true;
+        assert_eq!(fallback(Some("overlay-1-b"), Some("overlay-1-a"), all), Some("overlay-1-b"));
+        assert_eq!(fallback(None, Some("overlay-1-a"), all), Some("overlay-1-a"));
+        assert_eq!(fallback(Some("gone"), Some("overlay-1-a"), |l: &str| l != "gone"), Some("overlay-1-a"));
+        assert_eq!(fallback(Some("gone"), None, |l: &str| l != "gone"), None);
+        assert_eq!(fallback(None, None, all), None);
     }
 
     #[test]

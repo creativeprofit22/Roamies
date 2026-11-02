@@ -1,7 +1,8 @@
 // Builds the platform helpers into the sidecar paths Tauri bundles (externalBin):
 // macOS: the Swift roamies-voice (talk chord + speech) and roamies-hands (window capture, app control).
 // Windows x64: one Rust helper per engine in voice-engines.json (roamies-voice-moonshine from voice-rs,
-// whose Moonshine runtime ships as resources, and roamies-voice-parakeet from voice-win).
+// whose Moonshine runtime ships as resources, and roamies-voice-parakeet from voice-win), plus the
+// screen helper roamies-hands from hands-win (see docs/hands.md).
 fn main() {
     #[cfg(target_os = "macos")]
     {
@@ -9,7 +10,10 @@ fn main() {
         build_swift_helper("hands");
     }
     #[cfg(windows)]
-    build_rust_helpers();
+    {
+        build_rust_helpers();
+        build_hands_helper();
+    }
     tauri_build::build()
 }
 
@@ -56,6 +60,16 @@ fn build_rust_helpers() {
         let field = |k: &str| e[k].as_str().unwrap_or_else(|| panic!("voice-engines.json: engine without {k}"));
         build_rust_helper(&root, &target, field("crate"), field("helper"));
     }
+}
+
+// The Windows twin of hands/main.swift; x64 only, like the voice helpers asserted above.
+#[cfg(windows)]
+fn build_hands_helper() {
+    let target = std::env::var("TARGET").expect("cargo sets TARGET");
+    let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets this"));
+    println!("cargo:rerun-if-changed=hands-win/hands-off.json");
+    println!("cargo:rerun-if-changed=hands-win/licenses");
+    build_rust_helper(&root, &target, "hands-win", "roamies-hands");
 }
 
 // Always a release build: a debug one is far too slow at reading speech.

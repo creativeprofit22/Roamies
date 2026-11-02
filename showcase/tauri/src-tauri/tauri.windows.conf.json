@@ -3,6 +3,7 @@
     "externalBin": [
       "binaries/roamies-voice-moonshine",
       "binaries/roamies-voice-parakeet",
+      "binaries/roamies-hands",
       "binaries/node"
     ],
     "resources": {
@@ -13,7 +14,8 @@
       "voice-rs/models/moonshine-runtime/vcruntime140.dll": "vcruntime140.dll",
       "voice-rs/models/moonshine-runtime/vcruntime140_1.dll": "vcruntime140_1.dll",
       "voice-rs/models/moonshine-runtime/licenses/": "licenses/moonshine/",
-      "voice-win/licenses/": "licenses/parakeet/"
+      "voice-win/licenses/": "licenses/parakeet/",
+      "hands-win/licenses/": "licenses/hands/"
     }
   }
 }

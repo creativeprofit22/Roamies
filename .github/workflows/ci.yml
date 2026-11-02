@@ -172,6 +172,37 @@ jobs:
           echo "$out" | grep '"type":"final"' | grep -q nightfall
           echo "$out" | grep '"type":"final"' | grep -q '"metrics":{'
 
+  # The Windows screen helper (hands-win). The runner may have no open windows, so the smoke test
+  # only checks the reply shape; the Notepad/browser checks are local (#[ignore] and docs/hands.md).
+  hands-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri/src-tauri/hands-win
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: showcase/tauri/src-tauri/hands-win -> target
+
+      - name: Test screen helper
+        run: cargo test --locked
+
+      - name: Lint screen helper
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Smoke test the windows verb
+        run: |
+          out=$(cargo run --release --locked -- windows)
+          echo "$out"
+          echo "$out" | tail -n 1 | grep -q '"ok":true'
+          echo "$out" | tail -n 1 | grep -q '"unit":"px"'
+
   # Sidecar tests on Windows on their own, so a Windows-only failure (slow fsyncs, paths) shows up fast.
   sidecar-windows:
     runs-on: windows-latest
@@ -227,6 +258,7 @@ jobs:
             showcase/tauri/src-tauri -> target
             showcase/tauri/src-tauri/voice-rs -> target
             showcase/tauri/src-tauri/voice-win -> target
+            showcase/tauri/src-tauri/hands-win -> target
 
       # rust-cache can restore sherpa-onnx's prebuilt folder without its .lib files; drop it so the build re-downloads.
       - name: Drop a partial sherpa-onnx download
@@ -247,8 +279,9 @@ jobs:
       - name: Check the helper and runtime sit next to the app
         run: |
           D=src-tauri/target/debug
-          for f in roamies.exe roamies-voice-moonshine.exe roamies-voice-parakeet.exe node.exe moonshine.dll onnxruntime.dll vcruntime140.dll msvcp140.dll; do
+          for f in roamies.exe roamies-voice-moonshine.exe roamies-voice-parakeet.exe roamies-hands.exe node.exe moonshine.dll onnxruntime.dll vcruntime140.dll msvcp140.dll; do
             [ -s "$D/$f" ] || { echo "::error::$f missing from $D"; exit 1; }
           done
           "$D/roamies-voice-moonshine.exe" --perms | grep -q '"type":"perms"'
           "$D/roamies-voice-parakeet.exe" --perms | grep -q '"type":"perms"'
+          "$D/roamies-hands.exe" windows | tail -n 1 | grep -q '"ok":true'

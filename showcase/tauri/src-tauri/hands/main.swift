@@ -222,12 +222,12 @@ func walk(_ app: AXUIElement, _ w: Win? = nil, limit: Int = 260) -> [(AXUIElemen
 /// exact matches, then whole words, then contains; on screen in this window; smallest first (the text, not its container).
 func findText(_ app: AXUIElement, _ w: Win, _ query: String) -> [[String: Any]] { findTextEls(app, w, query).map { $0.1 } }
 
-func findTextEls(_ app: AXUIElement, _ w: Win, _ query: String, hidden: Bool = false) -> [(AXUIElement, [String: Any])] {
+func findTextEls(_ app: AXUIElement, _ w: Win, _ query: String, hidden: Bool = false, limit: Int = 8) -> [(AXUIElement, [String: Any])] {
     guard let root = axWindow(app, w) else { return [] }
     let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !q.isEmpty else { return [] }
     let win = CGRect(x: w.x, y: w.y, width: w.w, height: w.h)
-    var hits: [(score: Int, area: CGFloat, el: AXUIElement, item: [String: Any])] = []
+    var hits: [(score: Int, web: Bool, area: CGFloat, el: AXUIElement, item: [String: Any])] = []
     var stack: [(AXUIElement, Int)] = [(root, 0)]
     var visited = 0
     while let (el, depth) = stack.popLast(), visited < 12000 {
@@ -237,14 +237,15 @@ func findTextEls(_ app: AXUIElement, _ w: Win, _ query: String, hidden: Bool = f
             let low = t.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let score = low == q ? 0 : low.range(of: "\\b\(NSRegularExpression.escapedPattern(for: q))\\b", options: .regularExpression) != nil ? 1 : 2
             let role = str(el, kAXRoleAttribute) ?? ""
-            hits.append((score, f.width * f.height, el, ["text": String(t.prefix(80)), "match": ["exact", "word", "partial"][score], "role": ROLE_NAME[role] ?? role.replacingOccurrences(of: "AX", with: "").lowercased(),
+            hits.append((score, inWebPage(el), f.width * f.height, el, ["text": String(t.prefix(80)), "match": ["exact", "word", "partial"][score], "role": ROLE_NAME[role] ?? role.replacingOccurrences(of: "AX", with: "").lowercased(),
                                                      "bounds": [Int(f.minX), Int(f.minY), Int(f.width), Int(f.height)]]))
         }
         if depth < 60, let kids = attr(el, kAXChildrenAttribute) as? [AXUIElement] {
             for k in kids.reversed() { stack.append((k, depth + 1)) }
         }
     }
-    return hits.sorted { $0.score != $1.score ? $0.score < $1.score : $0.area < $1.area }.prefix(8).map { ($0.el, $0.item) }
+    // Words on the page beat the same words in the browser's own tabs and toolbar (a tab titled "Sign in").
+    return hits.sorted { $0.score != $1.score ? $0.score < $1.score : $0.web != $1.web ? $0.web : $0.area < $1.area }.prefix(limit).map { ($0.el, $0.item) }
 }
 
 /// Activates what a piece of text belongs to: focuses a text field, else presses the element or the nearest
@@ -341,6 +342,10 @@ func isEditable(_ e: AXUIElement?) -> Bool {
 /// Puts the cursor in a field, replaces its text and reads back what it shows. Never types unless the field
 /// really has focus, so text can't land in some other field or set off page shortcuts.
 func typeInto(_ app: AXUIElement, _ e: AXUIElement, _ text: String) -> (ok: Bool, shows: String) {
+    // A field further down the page: scroll it into view first, or the click lands on whatever is at its old spot.
+    if let f = frame(e), let wf = axWindowFrame(e), !wf.contains(CGPoint(x: f.midX, y: min(f.midY, f.minY + 12))) {
+        AXUIElementPerformAction(e, "AXScrollToVisible" as CFString); Thread.sleep(forTimeInterval: 0.3)
+    }
     AXUIElementSetAttributeValue(e, kAXFocusedAttribute as CFString, kCFBooleanTrue)
     if let f = frame(e) { click(CGPoint(x: f.midX, y: min(f.midY, f.minY + 12))) }
     Thread.sleep(forTimeInterval: 0.08)
@@ -370,6 +375,9 @@ func typeInto(_ app: AXUIElement, _ e: AXUIElement, _ text: String) -> (ok: Bool
         // and don't always move on by themselves). Parts go in the order the segments appear.
         let digitKey: [Character: CGKeyCode] = ["0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25]
         let parts = text.split { !$0.isNumber }.map(String.init)
+        var pid: pid_t = 0
+        AXUIElementGetPid(e, &pid)
+        let before = Set(windows().filter { $0.pid == pid }.map { $0.id })
         let pairs: [((AXUIElement, CGRect)?, String)] = segs.count == parts.count ? zip(segs, parts).map { ($0, $1) } : [(segs.first, parts.joined())]
         for (seg, part) in pairs {
             if let seg { click(CGPoint(x: seg.1.midX, y: seg.1.midY)); Thread.sleep(forTimeInterval: 0.08) }
@@ -382,6 +390,11 @@ func typeInto(_ app: AXUIElement, _ e: AXUIElement, _ text: String) -> (ok: Bool
             }
         }
         Thread.sleep(forTimeInterval: 0.15)
+        // Safari opens a calendar in its own little window over the form; later clicks would land on its days.
+        // Tab closes it and keeps the date (Return would submit the form).
+        if windows().contains(where: { $0.pid == pid && !before.contains($0.id) && $0.title.isEmpty && $0.w < 500 && $0.h < 500 }) {
+            _ = pressKey("tab"); Thread.sleep(forTimeInterval: 0.2)
+        }
         return (true, segs.compactMap { str($0.0, kAXValueAttribute) }.joined(separator: "/"))
     } else {
         _ = pressKey("cmd+a"); typeText(text)
@@ -392,7 +405,7 @@ func typeInto(_ app: AXUIElement, _ e: AXUIElement, _ text: String) -> (ok: Bool
 
 /// A menu item or list option with this text anywhere in the app: open dropdown menus and pickers often
 /// live outside the window. Exact text first, then text that starts with it.
-func findOption(_ app: AXUIElement, _ w: Win, _ option: String) -> AXUIElement? {
+func findOption(_ app: AXUIElement, _ w: Win, _ option: String, excluding: AXUIElement? = nil) -> AXUIElement? {
     let q = fold(option)
     var roots: [AXUIElement] = (attr(app, kAXChildrenAttribute) as? [AXUIElement]) ?? []
     if let win = axWindow(app, w) { roots.insert(win, at: 0) }
@@ -402,6 +415,8 @@ func findOption(_ app: AXUIElement, _ w: Win, _ option: String) -> AXUIElement? 
         visited += 1
         let role = axRole(el)
         if role == "AXMenuBar" { continue }
+        // The dropdown's own text (a search box shows what was typed) isn't an option.
+        if let x = excluding, CFEqual(el, x) { continue }
         if ["AXMenuItem", "AXStaticText", "AXCell", "AXRow", "AXButton", "AXRadioButton", "AXLink", "AXGroup", "AXListItem", "AXOption"].contains(role) {
             for t in [str(el, kAXTitleAttribute), str(el, kAXValueAttribute), str(el, kAXDescriptionAttribute)].compactMap({ $0 }).map(fold) where !t.isEmpty {
                 if t == q { exact = el; break }
@@ -411,6 +426,84 @@ func findOption(_ app: AXUIElement, _ w: Win, _ option: String) -> AXUIElement? 
         if depth < 60, let kids = attr(el, kAXChildrenAttribute) as? [AXUIElement] { for k in kids.reversed() { stack.append((k, depth + 1)) } }
     }
     return exact ?? prefix
+}
+
+/// The frame of the window an element is in.
+func axWindowFrame(_ e: AXUIElement) -> CGRect? { attr(e, kAXWindowAttribute).flatMap { frame($0 as! AXUIElement) } }
+
+/// Of many matches (every post's "Reply" button), the one that belongs with the anchor text: the first one at
+/// or below the anchor's top, nearest first; if none is below, the nearest one above.
+func nearestAfter(_ anchor: CGRect, _ cands: [(AXUIElement, [String: Any])]) -> (AXUIElement, [String: Any])? {
+    let placed = cands.compactMap { c in frame(c.0).map { (c, $0) } }
+    let below = placed.filter { $0.1.minY >= anchor.minY - 4 }.min { ($0.1.minY - anchor.minY) + abs($0.1.minX - anchor.minX) * 0.2 < ($1.1.minY - anchor.minY) + abs($1.1.minX - anchor.minX) * 0.2 }
+    return below?.0 ?? placed.min { anchor.minY - $0.1.maxY < anchor.minY - $1.1.maxY }?.0
+}
+/// Where the `near` text is (on screen or scrolled out of view), for nearestAfter.
+func anchorFrame(_ app: AXUIElement, _ w: Win, _ near: String) -> CGRect? {
+    findTextEls(app, w, near, hidden: true).first.flatMap { frame($0.0) }
+}
+
+/// The text of an option-like element: title, value or description.
+func optionText(_ el: AXUIElement) -> [String] { [str(el, kAXTitleAttribute), str(el, kAXValueAttribute), str(el, kAXDescriptionAttribute)].compactMap { $0 }.map(fold) }
+func isInside(_ el: AXUIElement, _ ancestor: AXUIElement) -> Bool {
+    var cur: AXUIElement? = el
+    for _ in 0..<12 { guard let c = cur else { return false }; if CFEqual(c, ancestor) { return true }; cur = attr(c, kAXParentAttribute).map { $0 as! AXUIElement } }
+    return false
+}
+/// The list a dropdown opened: the on-screen list, menu or table nearest below the dropdown (or above it).
+func openList(_ app: AXUIElement, _ w: Win, near: CGRect) -> AXUIElement? {
+    guard let root = axWindow(app, w) else { return nil }
+    let win = CGRect(x: w.x, y: w.y, width: w.w, height: w.h)
+    var best: (CGFloat, AXUIElement)?, stack: [(AXUIElement, Int)] = [(root, 0)], visited = 0
+    while let (el, depth) = stack.popLast(), visited < 8000 {
+        visited += 1
+        if ["AXList", "AXMenu", "AXTable", "AXOutline", "AXListBox"].contains(axRole(el)), let f = frame(el), f.intersects(win), f.height > 20 {
+            let d = abs(f.minY - near.maxY) + abs(f.minX - near.minX) * 0.5
+            if best == nil || d < best!.0 { best = (d, el) }
+        }
+        if depth < 60, let kids = attr(el, kAXChildrenAttribute) as? [AXUIElement] { for k in kids.reversed() { stack.append((k, depth + 1)) } }
+    }
+    return best?.1
+}
+/// The rows of a list that are in view right now (a virtualized list only has these).
+func visibleRows(_ list: AXUIElement, _ win: CGRect) -> [AXUIElement] {
+    let kids = (attr(list, "AXVisibleChildren") as? [AXUIElement]) ?? (attr(list, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+    return kids.filter { frame($0).map { win.intersects($0) } ?? false }
+}
+func optionIn(_ list: AXUIElement, _ q: String) -> AXUIElement? {
+    var stack: [(AXUIElement, Int)] = [(list, 0)], prefix: AXUIElement?, visited = 0
+    while let (el, d) = stack.popLast(), visited < 3000 {
+        visited += 1
+        let t = optionText(el)
+        if t.contains(q) { return el }
+        if prefix == nil, t.contains(where: { $0.hasPrefix(q) && $0.count <= q.count + 25 }) { prefix = el }
+        if d < 8, let kids = attr(el, kAXChildrenAttribute) as? [AXUIElement] { for k in kids.reversed() { stack.append((k, d + 1)) } }
+    }
+    return prefix
+}
+/// Scrolls an open list a screenful at a time, down to its end and then back up, until the option shows up.
+/// Works for long lists and virtualized ones, where rows out of view don't exist until scrolled to.
+func scrollListFor(_ app: AXUIElement, _ w: Win, _ list: AXUIElement, _ option: String) -> AXUIElement? {
+    let q = fold(option), win = CGRect(x: w.x, y: w.y, width: w.w, height: w.h)
+    let deadline = Date().addingTimeInterval(20)
+    for dir: Int32 in [-1, 1] {
+        var last = "", same = 0
+        while Date() < deadline {
+            if let o = optionIn(list, q) { return o }
+            let rows = visibleRows(list, win)
+            let box = rows.compactMap(frame).reduce(CGRect.null) { $0.union($1) }.intersection(win)
+            guard !box.isNull, box.height > 4 else { return nil }
+            let sig = rows.map { optionText($0).first ?? "" }.joined(separator: "|")
+            if sig == last { same += 1; if same >= 2 { break } } else { same = 0 }
+            last = sig
+            // Most of a screenful, so a virtualized list never skips rows between looks.
+            let px = Int32(max(40, box.height * 0.7))
+            CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: box.midX, y: box.midY), mouseButton: .left)?.post(tap: .cghidEventTap)
+            if let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel, wheelCount: 1, wheel1: dir * px, wheel2: 0, wheel3: 0) { e.flags = []; e.post(tap: .cghidEventTap) }
+            Thread.sleep(forTimeInterval: 0.07)
+        }
+    }
+    return optionIn(list, q)
 }
 
 /// Presses an element, or clicks its middle if it can't be pressed. Scrolls it into view first.
@@ -451,6 +544,30 @@ func scrollToText(_ app: AXUIElement, _ w: Win, _ q: String) -> Bool {
 
 /// Readable text in the window (headings, paragraphs, labels), top to bottom, so pages can be read without
 /// a screenshot. Visible text only, capped so a long page can't flood the reply.
+/// Text on the page that's scrolled out of view, top to bottom. When it's long, the start and the end are
+/// kept (headings up top, contact details and footers at the bottom), with a note for what's in between.
+func offscreenText(_ app: AXUIElement, _ w: Win, cap: Int) -> [String] {
+    guard let root = axWindow(app, w) else { return [] }
+    let win = CGRect(x: w.x, y: w.y, width: w.w, height: w.h)
+    var found: [(CGFloat, String)] = [], seen = Set<String>(), visited = 0
+    var stack: [(AXUIElement, Int)] = [(root, 0)]
+    while let (el, depth) = stack.popLast(), visited < 12000 {
+        visited += 1
+        let role = str(el, kAXRoleAttribute) ?? ""
+        if role == "AXStaticText" || role == "AXHeading", let t = str(el, kAXValueAttribute) ?? str(el, kAXTitleAttribute), let f = frame(el), f.height > 1, !win.intersects(f) {
+            let line = t.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+            if line.count >= 2, seen.insert(line).inserted { found.append((f.minY, String(line.prefix(160)))) }
+        }
+        if depth < 60, let kids = attr(el, kAXChildrenAttribute) as? [AXUIElement] { for k in kids.reversed() { stack.append((k, depth + 1)) } }
+    }
+    let lines = found.sorted { $0.0 < $1.0 }.map { $0.1 }
+    if lines.reduce(0, { $0 + $1.count + 1 }) <= cap { return lines }
+    var head: [String] = [], tail: [String] = [], h = 0, t = 0
+    for l in lines { if h + l.count > cap / 2 { break }; head.append(l); h += l.count + 1 }
+    for l in lines.reversed() { if t + l.count > cap / 2 { break }; tail.insert(l, at: 0); t += l.count + 1 }
+    return head + ["…(\(lines.count - head.count - tail.count) more lines in between; point_at or click_text with their words scrolls there)"] + tail
+}
+
 func pageText(_ app: AXUIElement, _ w: Win, cap: Int = 1800) -> [String] {
     guard let root = axWindow(app, w) else { return [] }
     let win = CGRect(x: w.x, y: w.y, width: w.w, height: w.h)
@@ -467,8 +584,9 @@ func pageText(_ app: AXUIElement, _ w: Win, cap: Int = 1800) -> [String] {
         if depth < 60, let kids = attr(el, kAXChildrenAttribute) as? [AXUIElement] { for k in kids.reversed() { stack.append((k, depth + 1)) } }
     }
     var out: [String] = [], total = 0
-    for (_, _, t) in found.sorted(by: { abs($0.0 - $1.0) > 4 ? $0.0 < $1.0 : $0.1 < $1.1 }) {
-        if total + t.count > cap { break }
+    let sorted = found.sorted(by: { abs($0.0 - $1.0) > 4 ? $0.0 < $1.0 : $0.1 < $1.1 })
+    for (k, (_, _, t)) in sorted.enumerated() {
+        if total + t.count > cap { out.append("…(\(sorted.count - k) more lines further down this screen; read_window shows them all)"); break }
         out.append(t); total += t.count + 1
     }
     return out
@@ -609,7 +727,7 @@ case "ui":
     guard args.count >= 2, let w = resolve(args[1]) else { fail("No matching window is open.") }
     let uiApp = axApp(w)
     let items = walk(uiApp, w).map { $0.1 }
-    out(["ok": true, "window": winInfo(w), "controls": items, "texts": pageText(uiApp, w), "note": items.isEmpty ? "This app shares no controls. Use a screenshot plus click at coordinates instead." : ""])
+    out(["ok": true, "window": winInfo(w), "controls": items, "texts": pageText(uiApp, w, cap: 5000), "elsewhere": offscreenText(uiApp, w, cap: 4000), "note": items.isEmpty ? "This app shares no controls. Use a screenshot plus click at coordinates instead." : ""])
 
 case "locate-control":
     guard AXIsProcessTrusted() else { fail("Roamies needs Accessibility permission to read other apps.") }
@@ -725,8 +843,25 @@ case "act":
             // Click by the words on screen: no read_window needed first. Exact text wins over partial.
             // A whole label or heading, not words buried in a paragraph.
             let q = s["text"] as? String ?? ""
-            var hit = findTextEls(app, w, q).first(where: { wholeMatch($0.1, q) })
-            if hit == nil, !q.isEmpty, scrollToText(app, w, q) { hit = findTextEls(app, w, q).first(where: { wholeMatch($0.1, q) }) }
+            var hit: (AXUIElement, [String: Any])?
+            // A checkbox or radio by its label: press the control itself; clicking the words doesn't always tick it.
+            if let box = controls.first(where: { ["AXCheckBox", "AXRadioButton"].contains(axRole($0.0)) && fold(($0.1["label"] as? String) ?? "") == fold(q) && ($0.1["offscreen"] as? Bool) != true }) {
+                hit = (box.0, ["text": box.1["label"] ?? q])
+            } else if let near = s["near"] as? String, !near.isEmpty {
+                // Many matches (a "Reply" under every post): the one that goes with the near text.
+                guard let a = anchorFrame(app, w, near) else {
+                    out(["ok": false, "error": "Step \(i + 1): no text \"\(near)\" on this page to find \"\(q)\" near.", "done": done])
+                }
+                let all = findTextEls(app, w, q, hidden: true, limit: 200).filter { wholeMatch($0.1, q) }
+                let best = all.first?.1["match"] as? String
+                hit = nearestAfter(a, all.filter { ($0.1["match"] as? String) == best })
+                if let (e, _) = hit, let f = frame(e), !CGRect(x: w.x, y: w.y, width: w.w, height: w.h).contains(CGPoint(x: f.midX, y: f.midY)) {
+                    AXUIElementPerformAction(e, "AXScrollToVisible" as CFString); Thread.sleep(forTimeInterval: 0.3)
+                }
+            } else {
+                hit = findTextEls(app, w, q).first(where: { wholeMatch($0.1, q) })
+                if hit == nil, !q.isEmpty, scrollToText(app, w, q) { hit = findTextEls(app, w, q).first(where: { wholeMatch($0.1, q) }) }
+            }
             guard !q.isEmpty, let (e, info) = hit else {
                 out(["ok": false, "error": "Step \(i + 1): no visible text \"\(s["text"] ?? "")\" in \(w.app). Check the exact words with a screenshot or read_window.", "done": done])
             }
@@ -757,7 +892,17 @@ case "act":
             if s["id"] == nil, let n = Int((s["field"] as? String ?? "").trimmingCharacters(in: .whitespaces)) { s["id"] = n }
             let name = (s["field"] as? String) ?? ""
             if el(s) == nil, fieldFor(app, w, controls, name, roles: FIELD_ROLES) == nil { Thread.sleep(forTimeInterval: 0.3); controls = walk(app, w) }
-            guard let (e, info) = el(s) ?? fieldFor(app, w, controls, name, roles: FIELD_ROLES) else {
+            // Same field under every post ("Write a reply…"): the one that goes with the near text.
+            var nearField: (AXUIElement, [String: Any])?
+            if let near = s["near"] as? String, !near.isEmpty {
+                guard let a = anchorFrame(app, w, near) else {
+                    out(["ok": false, "error": "Step \(i + 1): no text \"\(near)\" on this page to find the field near.", "done": done])
+                }
+                let q = fold(name)
+                let fields = walk(app, w, limit: 400).filter { c in FIELD_ROLES.contains(axRole(c.0)) && (q.isEmpty || [(c.1["label"] as? String) ?? "", str(c.0, "AXPlaceholderValue") ?? ""].map(fold).contains { $0.contains(q) }) }
+                nearField = nearestAfter(a, fields)
+            }
+            guard let (e, info) = nearField ?? el(s) ?? fieldFor(app, w, controls, name, roles: FIELD_ROLES) else {
                 out(["ok": false, "error": "Step \(i + 1): no text field called \"\(name)\" here. Check its label with read_window.", "done": done])
             }
             let label = (info["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? name
@@ -777,7 +922,7 @@ case "act":
                 if shows.isEmpty, !settable.boolValue || ((attr(e, "AXReadOnly") as? Bool) == true) {
                     out(["ok": false, "error": "Step \(i + 1): \"\(label)\" can't be typed in; it opens a picker. Use click_text on it, then on the month arrows (e.g. 'Next Month') and the day (its label reads like 'Choose Monday, November 16th, 2026').", "done": done])
                 }
-                out(["ok": false, "error": "Step \(i + 1): typed into \"\(label)\" but it shows \"\(shows.prefix(80))\". Check the field with read_window.", "done": done])
+                out(["ok": false, "error": "Step \(i + 1): typed into \"\(label)\" but it shows \"\(shows.prefix(80))\". If a cookie banner or pop-up covers the page, close it first (click_text its button), then fill again; otherwise check the field with read_window.", "done": done])
             }
             done.append("\(label) = \"\(axRole(e) == "AXSecureTextField" ? "••••" : String(shows.prefix(60)))\"")
             controls = walk(app, w)
@@ -800,8 +945,17 @@ case "act":
             }
             activate(e)
             Thread.sleep(forTimeInterval: 0.35)
-            if let o = findOption(app, w, option) {
+            let typeable = ["AXComboBox", "AXTextField", "AXSearchField"].contains(axRole(e))
+            if let o = findOption(app, w, option, excluding: e) {
                 activate(o)
+            } else if typeable, typeInto(app, e, option).ok, { Thread.sleep(forTimeInterval: 0.5); return true }(),
+                      let o = findOption(app, w, option, excluding: e) {
+                // Type-to-search: the suggestions appear once there's text in the box.
+                activate(o)
+            } else if !typeable, let f = frame(e), let list = openList(app, w, near: f), let o = scrollListFor(app, w, list, option) {
+                activate(o)
+            } else if typeable {
+                _ = pressKey("return")
             } else {
                 // Typing only goes where focus is a field or the dropdown itself.
                 if isEditable(focusedEl(app)) || (focusedEl(app).map { CFEqual($0, e) } ?? false) || axRole(e) == "AXPopUpButton" {
@@ -813,16 +967,38 @@ case "act":
             }
             Thread.sleep(forTimeInterval: 0.45)
             let shows = [str(e, kAXValueAttribute), str(e, kAXTitleAttribute)].compactMap { $0 }.first { !$0.isEmpty } ?? ""
-            done.append("chose \"\(option)\" in \(label)\(shows.isEmpty ? "" : " (shows \"\(shows.prefix(60))\")")")
+            let took = shows.isEmpty || fold(shows).contains(fold(option).prefix(40))
+            done.append(took ? "chose \"\(option)\" in \(label)\(shows.isEmpty ? "" : " (shows \"\(shows.prefix(60))\")")" : "tried to choose \"\(option)\" in \(label), but it still shows \"\(shows.prefix(60))\"")
             controls = walk(app, w)
         case "scroll":
             // Scroll the page, or a list/dropdown/panel under a control or text: direction up/down/left/right, amount in steps.
             let dir = (s["direction"] as? String ?? "down").lowercased()
             let n = max(1, min(30, (s["amount"] as? Int) ?? 5))
             var p = CGPoint(x: w.x + w.w / 2, y: w.y + w.h / 2)
-            if let (e, _) = el(s), let f = frame(e) { p = CGPoint(x: f.midX, y: f.midY) }
-            else if let q = s["text"] as? String, let (e, _) = findTextEls(app, w, q).first, let f = frame(e) { p = CGPoint(x: f.midX, y: f.midY) }
+            let winRect = CGRect(x: w.x, y: w.y, width: w.w, height: w.h).insetBy(dx: 4, dy: 4)
+            let inWin = { (f: CGRect) -> CGPoint? in let c = CGPoint(x: f.midX, y: f.midY); return winRect.contains(c) ? c : nil }
+            if let (e, _) = el(s), let f = frame(e), let c = inWin(f) { p = c }
+            else if let q = s["text"] as? String, let c = findTextEls(app, w, q).compactMap({ frame($0.0).flatMap(inWin) }).first { p = c }
             let (dy, dx): (Int32, Int32) = dir == "up" ? (3, 0) : dir == "left" ? (0, 3) : dir == "right" ? (0, -3) : (-3, 0)
+            if (s["to_end"] as? Bool) == true, dir == "up" || dir == "down" {
+                // To the very end (or top): keep scrolling, giving a feed time to load more, until nothing changes.
+                let sign: Int32 = dir == "up" ? 1 : -1, deadline = Date().addingTimeInterval(25)
+                var last = "", same = 0, rounds = 0
+                while Date() < deadline, same < 2 {
+                    for _ in 0..<4 {
+                        CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
+                        if let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel, wheelCount: 1, wheel1: sign * 1500, wheel2: 0, wheel3: 0) { e.flags = []; e.post(tap: .cghidEventTap) }
+                        Thread.sleep(forTimeInterval: 0.05)
+                    }
+                    Thread.sleep(forTimeInterval: 0.9)
+                    let sig = pageText(app, w, cap: 4000).joined(separator: "|")
+                    if sig == last { same += 1 } else { same = 0; rounds += 1 }
+                    last = sig
+                }
+                done.append("scrolled to the \(dir == "up" ? "top" : "end")\(rounds > 2 ? " (more loaded \(rounds - 1) times)" : "")")
+                controls = walk(app, w)
+                continue
+            }
             for _ in 0..<n { scrollAt(p, dy: dy, dx: dx); Thread.sleep(forTimeInterval: 0.04) }
             Thread.sleep(forTimeInterval: 0.25)
             done.append("scrolled \(dir)")
@@ -847,7 +1023,7 @@ case "act":
         let w2 = resolve(target) ?? w
         let app2 = w2.pid == w.pid ? app : axApp(w2)
         let now = settle(app2, w2).map { $0.1 }
-        out(["ok": true, "done": done, "window": winInfo(w2), "controls": now, "texts": pageText(app2, w2, cap: 1200)])
+        out(["ok": true, "done": done, "window": winInfo(w2), "controls": now, "texts": pageText(app2, w2, cap: 2000)])
     }
     out(["ok": true, "done": done, "window": winInfo(w)])
 

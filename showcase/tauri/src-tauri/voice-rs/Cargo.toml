@@ -7,16 +7,21 @@ description = "Roamies on-device voice helper (Windows): mic capture, streaming 
 publish = false
 
 [[bin]]
-name = "roamies-voice"
+name = "roamies-voice-moonshine"
 path = "src/main.rs"
 
 [dependencies]
+roamies-voice-core = { path = "../voice-core" }
 sherpa-onnx = "=2.0.1"
 cpal = "=0.18.2"
 rubato = "=5.0.1"
 hound = "=3.5.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+libloading = "=0.9.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_Threading"] }
 
 [dev-dependencies]
 serde_json = "=1.0.154"

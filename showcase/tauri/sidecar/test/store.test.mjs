@@ -181,3 +181,77 @@ console.log('store tests: all passed');
   assert.match(cur.at(-1).content[0].content, /link "Billing"/, 'a read from the current request stays whole');
   console.log('cache stability tests: passed');
 }
+
+// Quitting right after a reply: the sidecar exits on stdin close, which used to cut off the session save.
+{
+  const { spawnSync } = await import('node:child_process');
+  const fsx = await import('node:fs');
+  const os2 = await import('node:os');
+  const path2 = await import('node:path');
+  const dir = fsx.mkdtempSync(path2.join(os2.tmpdir(), 'roamies-flush-'));
+  const store = new URL('../store.mjs', import.meta.url).href;
+  // Queue a big save, then exit the way the sidecar does on close: after flushWrites.
+  const code = `const S = await import(${JSON.stringify(store)});
+    const s = S.newSession('p', 'm'); s.messages = Array.from({ length: 4000 }, (_, i) => ({ role: 'user', content: 'message ' + i }));
+    S.saveSession(s); S.writeJson(${JSON.stringify(path2.join(dir, 'x.json'))}, { ok: 1 });
+    await S.flushWrites(); process.exit(0);`;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, ROAMIES_DATA_DIR: dir } });
+  assert.equal(r.status, 0, String(r.stderr));
+  const saved = fsx.readdirSync(path2.join(dir, 'sidekick', 'sessions'));
+  assert.equal(saved.length, 1, 'session saved before exit');
+  assert.equal(JSON.parse(fsx.readFileSync(path2.join(dir, 'sidekick', 'sessions', saved[0]), 'utf8')).messages.length, 4000);
+  assert.ok(fsx.existsSync(path2.join(dir, 'x.json')), 'every queued write landed');
+  fsx.rmSync(dir, { recursive: true, force: true });
+  console.log('flush on exit tests: passed');
+}
+
+// A plain reminder is done once it has fired; a commitment stays open until the user finishes it.
+{
+  const S6 = await import('../store.mjs?kinds');
+  // Regression: the timer block's 'ping' (due in 5s) shares this memory.json and fired here whenever the
+  // slower Windows fsyncs pushed the run past 5s. Start clean and pin the clock.
+  for (const c of S6.openCommitments()) await S6.updateCommitment(c.id, { status: 'dropped' });
+  const now = Date.now();
+  const r = await S6.addCommitment('Call mom', now - 1000, 'reminder');
+  const k = await S6.addCommitment('Finish the slides', now - 1000);
+  const notYet = await S6.addCommitment('Not yet', now + 5_000, 'reminder');
+  const fired = await S6.takeDueReminders(now);
+  assert.deepEqual(fired.map((c) => c.id).sort(), [r.id, k.id].sort(), 'both fire');
+  assert.ok(S6.openCommitments().some((c) => c.id === notYet.id && !c.remindedAt), 'one due after now waits, however slow the run');
+  const open = S6.openCommitments().map((c) => c.id);
+  assert.ok(!open.includes(r.id), 'reminder cleared after firing');
+  assert.ok(open.includes(k.id), 'commitment still open after its nudge');
+  assert.notEqual(S6.nextDue(), r.due, 'the cleared reminder never fires again');
+  console.log('reminder kinds tests: passed');
+}
+
+// The on-screen list: Today / Later, finished ones struck through until midnight, then deleted.
+{
+  const S7 = await import('../store.mjs?list');
+  for (const c of S7.openCommitments()) await S7.updateCommitment(c.id, { status: 'dropped' });
+  await S7.clearFinished(Date.now() + 2 * 864e5);
+  const now = new Date(); now.setHours(12, 0, 0, 0);
+  const t = now.getTime(), H = 36e5;
+  const late = await S7.addCommitment('Late one', t - H);
+  const soon = await S7.addCommitment('This afternoon', t + 3 * H, 'reminder');
+  const tmrw = await S7.addCommitment('Tomorrow thing', t + 24 * H);
+  const any = await S7.addCommitment('Someday');
+  const fin = await S7.addCommitment('Finished today', t + H);
+  await S7.updateCommitment(fin.id, { status: 'done' });
+  const drop = await S7.addCommitment('Dropped', t + H);
+  await S7.updateCommitment(drop.id, { status: 'dropped' });
+  let L = S7.listItems(t);
+  assert.deepEqual(L.today.map((i) => i.text), ['Late one', 'This afternoon', 'Finished today'], 'today: overdue, then soonest, done last');
+  assert.deepEqual(L.later.map((i) => i.text), ['Tomorrow thing', 'Someday'], 'later: dated, then undated');
+  assert.ok(L.today[0].overdue && !L.today[1].overdue, 'overdue flagged');
+  assert.ok(L.today[2].done, 'done shown struck');
+  assert.equal(L.today[1].kind, 'reminder');
+  // Next day: finished entries from yesterday are deleted; open ones stay, whatever their age.
+  const removed = await S7.clearFinished(t + 24 * H);
+  assert.equal(removed, 2, 'done and dropped from yesterday deleted');
+  const left = S7.listItems(t + 24 * H);
+  assert.deepEqual([...left.today, ...left.later].map((i) => i.text).sort(), ['Late one', 'Someday', 'This afternoon', 'Tomorrow thing'].sort());
+  assert.equal(await S7.clearFinished(t + 24 * H), 0, 'nothing more to delete');
+  void late; void soon; void tmrw; void any;
+  console.log('list tests: passed');
+}

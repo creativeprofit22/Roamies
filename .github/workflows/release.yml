@@ -1,6 +1,8 @@
 # Release: tag a version (e.g. `git tag v0.1.0 && git push origin v0.1.0`) or run it by hand.
 # Builds a signed + notarized macOS DMG (Apple silicon and Intel) and a Windows installer, then attaches
-# them to a draft GitHub release for you to review and publish. CI (ci.yml) stays on Linux only.
+# them to a draft GitHub release for you to review and publish. The Windows installer ships both voice
+# helpers (Moonshine and Parakeet, picked at runtime) with the Moonshine runtime, MSVC runtime and both
+# licence sets (models download on demand), and is installed silently and each helper smoke-tested before upload.
 # Each build also uploads a signed update bundle; the manifest job writes latest.json, the feed the
 # in-app updater reads from the newest published release.
 name: Release
@@ -43,7 +45,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: showcase/tauri/sidecar/package-lock.json
 
@@ -61,8 +63,42 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: showcase/tauri/src-tauri -> target
+          workspaces: |
+            showcase/tauri/src-tauri -> target
+            showcase/tauri/src-tauri/voice-rs -> target
+            showcase/tauri/src-tauri/voice-win -> target
           key: ${{ matrix.target }}
+
+      # Moonshine runtime + CRT (bundled by tauri.windows.conf.json) and the small model for the smoke test.
+      # rust-cache can restore sherpa-onnx's prebuilt folder without its .lib files; drop it so the build re-downloads.
+      - name: Drop a partial sherpa-onnx download
+        shell: bash
+        run: |
+          P="$GITHUB_WORKSPACE/showcase/tauri/src-tauri/voice-rs/target/sherpa-onnx-prebuilt"
+          ls "$P"/*/lib/sherpa-onnx-c-api.lib >/dev/null 2>&1 || rm -rf "$P"
+
+      - uses: actions/cache@v6
+        if: runner.os == 'Windows'
+        with:
+          path: |
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-runtime
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-small
+          key: moonshine-small-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
+
+      - name: Fetch Moonshine
+        if: runner.os == 'Windows'
+        run: bash src-tauri/voice-rs/fetch-moonshine.sh small
+
+      # Parakeet model, only for smoke-testing the installed Parakeet helper.
+      - uses: actions/cache@v6
+        if: runner.os == 'Windows'
+        with:
+          path: showcase/tauri/src-tauri/voice-win/models/parakeet
+          key: parakeet-${{ hashFiles('showcase/tauri/src-tauri/voice-win/fetch-model.sh') }}
+
+      - name: Fetch Parakeet
+        if: runner.os == 'Windows'
+        run: bash src-tauri/voice-win/fetch-model.sh
 
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
@@ -119,6 +155,28 @@ jobs:
           for f in .DS_Store .background/background.tiff Applications; do [ -e "$MNT/$f" ] || { echo "::error::DMG is missing $f"; ok=0; }; done
           hdiutil detach -quiet "$MNT"
           [ $ok -eq 1 ]
+
+      # Install the NSIS setup silently, check the voice files landed next to the app, then run the installed
+      # helpers with their bundled runtime on a test clip; each must produce a final.
+      - name: Install and smoke test the Windows installer
+        if: runner.os == 'Windows'
+        run: |
+          SETUP=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe | head -1)
+          DEST="$RUNNER_TEMP\smoke"
+          powershell -NoProfile -Command "Start-Process -Wait -FilePath '$(cygpath -w "$SETUP")' -ArgumentList '/S','/D=$DEST'"
+          D=$(cygpath -u "$DEST")
+          ls -la "$D"
+          for f in roamies.exe roamies-voice-moonshine.exe roamies-voice-parakeet.exe node.exe moonshine.dll onnxruntime.dll vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
+            [ -s "$D/$f" ] || { echo "::error::installer is missing $f"; exit 1; }
+          done
+          [ -n "$(ls "$D/licenses/moonshine")" ] || { echo "::error::installer is missing the Moonshine licences"; exit 1; }
+          [ -n "$(ls "$D/licenses/parakeet")" ] || { echo "::error::installer is missing the Parakeet licences"; exit 1; }
+          out=$("$D/roamies-voice-moonshine.exe" --wav src-tauri/voice-rs/tests/fixtures/en-short.wav --model-dir src-tauri/voice-rs/models/moonshine-small)
+          echo "$out"
+          echo "$out" | grep '"type":"final"' | grep -q nightfall || { echo "::error::installed Moonshine helper produced no final"; exit 1; }
+          out=$("$D/roamies-voice-parakeet.exe" --wav src-tauri/voice-win/tests/fixtures/en-short-1s.wav --model-dir src-tauri/voice-win/models/parakeet)
+          echo "$out"
+          echo "$out" | grep '"type":"final"' | grep -q nightfall || { echo "::error::installed Parakeet helper produced no final"; exit 1; }
 
       - name: Remove the signing keychain
         if: always() && runner.os == 'macOS'

@@ -1,0 +1,50 @@
+{
+  "default": "moonshine",
+  "engines": [
+    {
+      "id": "moonshine",
+      "label": "Moonshine",
+      "about": "live text",
+      "helper": "roamies-voice-moonshine",
+      "crate": "voice-rs",
+      "streaming": true,
+      "args": ["--engine", "moonshine", "--moonshine-size", "small", "--moonshine-lib", "{bin}/moonshine.dll"],
+      "model": {
+        "dir": "moonshine-small",
+        "rev": "quantized_26_08_21",
+        "base": "https://download.moonshine.ai/model/small-streaming-en/quantized_26_08_21/",
+        "licence": { "spdx": "MIT", "bundled": "licenses/moonshine/" },
+        "files": [
+          { "name": "frontend.model.ort", "size": 26944, "sha256": "09b1210ae30dc5f0f3e45f0ebab914c254741323114f53fbbe5ae62cca35058f" },
+          { "name": "frontend.weights.ort", "size": 7769464, "sha256": "7ef97521bd4bad3928f5bb6808586f4fcc6e92bd5990394112eed7d4052ec338" },
+          { "name": "encoder.ort", "size": 44148576, "sha256": "2d4d973e91e8aca08c51e7e7efa28a46ab265b63d809d5294d18b86bcd85b993" },
+          { "name": "adapter.ort", "size": 2870368, "sha256": "c665f742364febad597cc9ac1e0b341ffbee0e24a1466e2f3bde95e6e4771762" },
+          { "name": "cross_kv.ort", "size": 5356536, "sha256": "e2d3417144e9514055ebfefe8dcc4c0a55a55adcb8530435844c75c53e352bf6" },
+          { "name": "decoder_kv.ort", "size": 81878600, "sha256": "1a05465b1dd955858dfcbee039c0020fb5dd982b0f5094c34e61735d518d771b" },
+          { "name": "streaming_config.json", "size": 512, "sha256": "26f02b6afb22d60871a5efd85c3d38e569cc0ddb6c5eb6e93d3260152ae8a47a" },
+          { "name": "tokenizer.bin", "size": 249974, "sha256": "6884b35fd6377d4c4d32336a0bc152f36b64d1e45b6503683cdc238250a8472d" }
+        ]
+      }
+    },
+    {
+      "id": "parakeet",
+      "label": "Parakeet",
+      "about": "most accurate",
+      "helper": "roamies-voice-parakeet",
+      "crate": "voice-win",
+      "streaming": false,
+      "args": [],
+      "model": {
+        "dir": "parakeet-tdt-0.6b-v3-int8",
+        "rev": "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+        "base": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/",
+        "licence": { "spdx": "CC-BY-4.0", "bundled": "licenses/parakeet/" },
+        "files": [
+          { "name": "encoder-model.int8.onnx", "size": 652183999, "sha256": "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09" },
+          { "name": "decoder_joint-model.int8.onnx", "size": 18202004, "sha256": "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70" },
+          { "name": "vocab.txt", "size": 93939, "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d" }
+        ]
+      }
+    }
+  ]
+}

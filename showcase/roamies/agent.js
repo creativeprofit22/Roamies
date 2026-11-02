@@ -595,6 +595,163 @@
       ctx.restore();
     };
 
+    // ---- the list: Today / Later, an LED card beside the sidekick ----
+    // Rows are item lines and section heads. Items tick off with a click; a tick strikes the words through.
+    const LIST_TEXT = 34, LIST_WHEN = 12;
+    const list = {
+      data: { today: [], later: [] }, open: false, until: 0, age: 0, closing: 0, hover: -1, over: false,
+      x: sp(0), y: sp(0), scroll: 0, known: null, added: new Map(), ticked: new Map(), onToggle: null, geo: null,
+    };
+    const listRows = () => {
+      const { today, later } = list.data, rows = [];
+      rows.push({ head: 'TODAY', n: today.filter((i) => !i.done).length });
+      if (today.length) for (const i of today) rows.push({ item: i });
+      else rows.push({ note: later.length ? 'Nothing due today' : 'Nothing on your list yet' });
+      if (later.length) { rows.push({ head: 'LATER', n: later.length, gap: true }); for (const i of later) rows.push({ item: i }); }
+      return rows;
+    };
+    const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+    const whenText = (i) => (i.done ? 'done' : i.overdue ? `late ${i.when}` : i.when);
+    const listGeom = () => {
+      const t = T(), P = k.P, ip = Math.round(pad() / P), rows = listRows();
+      const rowC = Math.ceil((CH * t + P * 1.6) / P), box = clamp(Math.round((CH * t * 0.85) / P), 5, 8);
+      const items = rows.filter((r) => r.item).map((r) => r.item);
+      const textCols = clamp(Math.max(16, ...items.map((i) => i.text.length), ...rows.filter((r) => r.note).map((r) => r.note.length)), 16, LIST_TEXT);
+      const whenCols = clamp(Math.max(4, ...items.map((i) => whenText(i).length)), 4, LIST_WHEN);
+      const textX = ip + box + 2, whenX = textX + Math.ceil((textCols * CW * t) / P) + 3;
+      const w = whenX + Math.ceil((whenCols * CW * t) / P) + ip;
+      const S = bounds(), maxRows = Math.max(4, Math.floor((S.b - S.t - P * 24) / (rowC * P)) - 1);
+      const vis = Math.min(rows.length, maxRows), h = ip * 2 + vis * rowC;
+      return { t, P, ip, rows, rowC, box, textCols, whenCols, textX, whenX, w, h, vis };
+    };
+    const listOpen = (secs) => {
+      if (!list.open || list.closing) { list.open = true; list.closing = 0; list.age = 0; list.placed = false; k.S('page'); }
+      list.until = Math.max(list.until, now + secs);
+    };
+    const listClose = () => { if (list.open && !list.closing) { list.closing = 0.0001; k.S('poof'); } };
+    const listUpdate = (dt, env) => {
+      if (!list.open) return;
+      const g = listGeom(), P = k.P, S = bounds(), wpx = g.w * P, hpx = g.h * P;
+      // Beside the sidekick on the roomier side (away from a speech bubble that's beside it), centred on it.
+      const bubbleSide = b && !b.closing ? b.side : null;
+      let side = m.x < (S.l + S.r) / 2 ? 'right' : 'left';
+      if (bubbleSide === side) side = side === 'right' ? 'left' : 'right';
+      const gap = k.R * 1.35 + P * 3;
+      let tx = side === 'right' ? m.x + gap : m.x - gap - wpx, ty = m.y - hpx / 2;
+      if (tx < S.l + P * 2 || tx + wpx > S.r - P * 2) { tx = m.x - wpx / 2; ty = m.y - k.R * 1.3 - hpx - P * 4; if (ty < S.t + P * 2) ty = m.y + k.R * 1.3 + P * 4; }
+      tx = clamp(tx, S.l + P * 2, Math.max(S.l + P * 2, S.r - wpx - P * 2)); ty = clamp(ty, S.t + P * 2, Math.max(S.t + P * 2, S.b - hpx - P * 2));
+      if (!list.placed) { list.x.x = tx; list.y.x = ty; list.placed = true; }
+      spring(list.x, tx, 70, 11, dt); spring(list.y, ty, 70, 11, dt);
+      list.geo = { ...g, px: list.x.x, py: list.y.x };
+      list.scroll = clamp(list.scroll, 0, Math.max(0, g.rows.length - g.vis));
+      const mx = env.mouse?.x, my = env.mouse?.y;
+      list.over = !!env.mouse?.active && mx >= list.x.x && mx <= list.x.x + wpx && my >= list.y.x && my <= list.y.x + hpx;
+      list.hover = -1;
+      if (list.over) {
+        const r = Math.floor((my - list.y.x - g.ip * P) / (g.rowC * P)) + Math.round(list.scroll);
+        if (g.rows[r]?.item) list.hover = r;
+        list.until = Math.max(list.until, now + 2.5);
+      }
+      if (list.closing) { list.closing += dt; if (list.closing > 0.35) { list.open = false; list.closing = 0; } return; }
+      list.age += dt;
+      if (now > list.until) listClose();
+    };
+    const drawListGrid = () => {
+      if (!list.open || !list.geo) return;
+      const g = list.geo, P = k.P;
+      const fade = list.closing ? clamp(1 - list.closing / 0.3, 0, 1) : clamp(list.age / 0.22, 0, 1);
+      if (fade <= 0) return;
+      const x0 = Math.round(g.px / P), y0 = Math.round(g.py / P), x1 = x0 + g.w - 1, y1 = y0 + g.h - 1;
+      const on = (gx, gy) => th(gx, gy) < fade;
+      // Same chrome as the speech bubble: rounded LED frame, dark glass, a glint on the top edge.
+      const cr = 2, inside = (x, y, grow) => {
+        const dx = Math.max(x0 + cr - x, 0, x - (x1 - cr)), dy = Math.max(y0 + cr - y, 0, y - (y1 - cr));
+        return dx * dx + dy * dy <= (cr + grow) * (cr + grow);
+      };
+      for (let gy = y0 - 2; gy <= y1 + 2; gy++) for (let gx = x0 - 2; gx <= x1 + 2; gx++) {
+        if (!on(gx, gy)) continue;
+        if (inside(gx, gy, 0)) setPx(gx, gy, gy - y0 < 1 && gx - x0 > 2 && gx - x0 < 6 ? RIM : DARK, 235, true);
+        else if (inside(gx, gy, 1)) setPx(gx, gy, EDGE, 255);
+      }
+      const first = Math.round(list.scroll);
+      for (let r = 0; r < g.vis; r++) {
+        const row = g.rows[first + r];
+        if (!row) break;
+        const ry = y0 + g.ip + r * g.rowC, mid = ry + Math.floor(g.rowC / 2);
+        if (row.head && row.gap) for (let gx = x0 + g.ip; gx <= x1 - g.ip; gx += 2) put(gx, ry, 1);
+        if (!row.item) continue;
+        const it = row.item, bx = x0 + g.ip, by = mid - Math.floor(g.box / 2), n = g.box;
+        if (first + r === list.hover) for (let gx = x0 + 1; gx < x1; gx++) for (let gy = ry; gy < ry + g.rowC; gy++) if (on(gx, gy)) setPx(gx, gy, PAL[1], 140, true);
+        // Tick box: a ring; ticked = lit with a check; late = the ring pulses.
+        const tk = list.ticked.get(it.id), flash = tk != null ? clamp(1 - (now - tk) / 0.5, 0, 1) : 0;
+        const ring = it.done ? L - 2 : it.overdue ? (Math.sin(now * 5) > 0 ? L : L - 1) : L - 1;
+        for (let i = 0; i < n; i++) { put(bx + i, by, ring); put(bx + i, by + n - 1, ring); put(bx, by + i, ring); put(bx + n - 1, by + i, ring); }
+        if (it.done || flash > 0) {
+          const lv = flash > 0.3 ? L : L - 1, bot = by + n - 2, pivot = bx + Math.floor((n - 1) / 2);
+          for (let x = bx + 1; x <= pivot; x++) put(x, bot - (pivot - x), lv);
+          for (let x = pivot + 1; x <= bx + n - 2; x++) put(x, bot - (x - pivot), lv);
+        }
+      }
+      // Scrollbar when the list is longer than the screen allows.
+      if (g.rows.length > g.vis) {
+        const top = y0 + g.ip, bot = y1 - g.ip, len = bot - top, tl = Math.max(2, Math.round((len * g.vis) / g.rows.length));
+        const t0 = top + Math.round((len - tl) * (list.scroll / Math.max(1, g.rows.length - g.vis)));
+        for (let gy = top; gy <= bot; gy++) put(x1 - 1, gy, gy >= t0 && gy < t0 + tl ? L - 1 : 1);
+      }
+      list.grid = { x0, y0, x1, y1 };
+    };
+    const dotText = (path, dim, s, x, y, t, upto = Infinity) => {
+      for (let j = 0; j < s.length && j < upto; j++) {
+        if (s[j] === ' ') continue;
+        const em = emojiAt(s, j);
+        if (em) { j += em.n - 1; continue; }
+        const gl = glyph(s[j]);
+        for (let q = 0; q < gl.length; q += 3) (gl[q + 2] === 2 ? path : dim).rect(x + (j * CW + gl[q]) * t, y + gl[q + 1] * t, t * 0.82, t * 0.82);
+      }
+    };
+    const drawListText = (ctx) => {
+      if (!list.open || !list.grid) return;
+      const g = list.geo, P = k.P, t = g.t, { x0, y0 } = list.grid;
+      const fade = list.closing ? clamp(1 - list.closing / 0.25, 0, 1) : clamp((list.age - 0.08) / 0.2, 0, 1);
+      if (fade <= 0) return;
+      const hot = [new Path2D(), new Path2D()], dim = [new Path2D(), new Path2D()], strike = new Path2D();
+      const first = Math.round(list.scroll);
+      for (let r = 0; r < g.vis; r++) {
+        const row = g.rows[first + r];
+        if (!row) break;
+        const ty = (y0 + g.ip + r * g.rowC) * P + (g.rowC * P - CH * t) / 2;
+        if (row.head) { dotText(dim[0], dim[1], `${row.head}${row.n ? `  ${row.n}` : ''}`, (x0 + g.ip) * P, ty, t); continue; }
+        if (row.note) { dotText(dim[0], dim[1], row.note, (x0 + g.textX) * P, ty, t); continue; }
+        const it = row.item, text = clip(it.text, g.textCols), when = clip(whenText(it), g.whenCols);
+        // New lines type themselves in; a tick strikes the words through from left to right.
+        const added = list.added.get(it.id), upto = added != null ? Math.floor((now - added) * 60) : Infinity;
+        const [p0, p1] = it.done ? dim : hot;
+        dotText(p0, p1, text, (x0 + g.textX) * P, ty, t, upto);
+        const wx = (x0 + g.whenX) * P + (g.whenCols - when.length) * CW * t;
+        dotText(it.overdue ? hot[0] : dim[0], it.overdue ? hot[1] : dim[1], when, wx, ty, t);
+        if (it.done) {
+          const tk = list.ticked.get(it.id), u = tk != null ? clamp((now - tk) / 0.35, 0, 1) : 1;
+          strike.rect((x0 + g.textX) * P, ty + CH * t * 0.42, text.length * CW * t * u, t * 0.9);
+        }
+      }
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.beginPath(); ctx.rect(x0 * P, (y0 + g.ip) * P - 1, g.w * P, g.vis * g.rowC * P + 2); ctx.clip();
+      ctx.shadowColor = css(RIM, 0.7); ctx.shadowBlur = t * 3;
+      ctx.fillStyle = css(HOT); ctx.fill(hot[0]);
+      ctx.fillStyle = css(RIM, 0.75); ctx.fill(hot[1]);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = css(PAL[L - 2], 0.95); ctx.fill(dim[0]);
+      ctx.fillStyle = css(PAL[L - 2], 0.6); ctx.fill(dim[1]); ctx.fill(strike);
+      ctx.restore();
+    };
+    const hitList = (x, y) => list.open && !list.closing && list.geo && x >= list.geo.px && x <= list.geo.px + list.geo.w * k.P && y >= list.geo.py && y <= list.geo.py + list.geo.h * k.P;
+    const listPress = (x, y) => {
+      const g = list.geo, r = Math.floor((y - g.py - g.ip * k.P) / (g.rowC * k.P)) + Math.round(list.scroll), row = g.rows[r];
+      if (row?.item) { list.until = Math.max(list.until, now + 4); list.onToggle?.(row.item.id); k.S(row.item.done ? 'tick' : 'pip'); }
+      else listClose();
+    };
+
     const hitBubble = (bb, x, y) => bb && !bb.closing && x >= bb.x.x && x <= bb.x.x + bb.w.x && y >= bb.y.x && y <= bb.y.x + bb.h.x;
 
     const api = {
@@ -617,6 +774,7 @@
       },
       hide: ({ instant = false, variant } = {}) => {
         if (b) close(b);
+        if (list.open) { list.open = false; list.closing = 0; }
         if (tool) tool.finish(true);
         presence.summoned = false;
         return k.vanish(instant ? null : variant ?? nextVariant(), instant);
@@ -689,6 +847,8 @@
           },
           level(v) { bb.input.target = clamp(v, 0, 1); return this; },
           processing() { bb.input.processing = true; return this; },
+          // New placeholder text, shown while nothing has been transcribed yet.
+          hint(text) { bb.input.placeholder = text; return this; },
           close() { if (b === bb) close(bb); },
           get open() { return b === bb && !bb.closing; },
           get closed() { return h.closed; },
@@ -714,6 +874,23 @@
           },
           focus(on) { bb.input.focused = on; bb.input.caretAt = now; return this; },
           close() { if (b === bb) close(bb); },
+          get closed() { return h.closed; },
+        };
+      },
+      // A status bubble (e.g. download progress): set() replaces the text in place; it stays up until close().
+      status: (text) => {
+        ensureShown();
+        const h = open('speech', text, { stream: true });
+        const bb = b;
+        return {
+          set(t) {
+            if (bb.closing || t === bb.text) return this;
+            bb.text = t; bb.lines = wrap(t, MAX_COLS); bb.shown = t.length;
+            for (let i = 0; i < t.length; i++) bb.at[i] ??= now;
+            return this;
+          },
+          close() { if (b === bb) close(bb); },
+          get open() { return b === bb && !bb.closing; },
           get closed() { return h.closed; },
         };
       },
@@ -752,21 +929,47 @@
       },
       get busy() { return !!(b || tool); },
       get bubble() { return b; },
+      // The list: { today, later, seconds, flash, toggle }. seconds > 0 opens it for that long; 0 only updates it.
+      list: (msg) => {
+        const all = [...(msg.today ?? []), ...(msg.later ?? [])], ids = new Set(all.map((i) => i.id));
+        const before = new Map([...list.data.today, ...list.data.later].map((i) => [i.id, i]));
+        list.data = { today: msg.today ?? [], later: msg.later ?? [] };
+        for (const i of all) {
+          if (list.known && !before.has(i.id)) list.added.set(i.id, now);
+          if (before.get(i.id) && before.get(i.id).done !== i.done) {
+            if (i.done) { list.ticked.set(i.id, now); k.S('done'); k.sq.kick(3); } else list.ticked.delete(i.id);
+          }
+        }
+        for (const id of [...list.added.keys()]) if (!ids.has(id)) list.added.delete(id);
+        if (list.known && all.some((i) => !before.has(i.id))) k.S('scribble');
+        list.known = true;
+        if (msg.toggle && list.open && !list.closing) return listClose();
+        if (msg.seconds > 0) {
+          ensureShown(); listOpen(msg.seconds);
+          // Scroll the item that changed into view.
+          const r = listRows().findIndex((row) => row.item?.id === msg.flash);
+          if (r >= 0) { const g = listGeom(); if (r < list.scroll || r >= list.scroll + g.vis) list.scroll = Math.max(0, r - Math.floor(g.vis / 2)); }
+        }
+      },
+      set onListToggle(fn) { list.onToggle = fn; },
+      get listOpen() { return list.open && !list.closing; },
     };
 
     const plugin = {
       api,
-      busy: () => !!(b || tool),
+      busy: () => !!(b || tool || (list.open && !list.closing)),
       // A bubble is up: emotes keep their gestures but drop icons and particles, so the text stays readable.
-      calm: () => !!(b && !b.closing),
-      hit: (x, y) => hitBubble(b, x, y),
-      press: () => {
+      calm: () => !!(b && !b.closing) || (list.open && !list.closing),
+      hit: (x, y) => hitBubble(b, x, y) || hitList(x, y),
+      press: (x, y) => {
+        if (hitList(x, y)) return listPress(x, y);
         if (!b) return;
         if (b.input) { b.input.onPress?.(); return; }
         if (b.overflow || b.expanded) { b.expanded = !b.expanded; b.follow = false; b.dwell = 0; k.S('expand'); if (!b.expanded) b.scrollTarget = 0; }
         else close(b);
       },
       wheel: (dy) => {
+        if (list.over) { list.scroll = clamp(list.scroll + dy / 40, 0, Math.max(0, listRows().length - listGeom().vis)); list.until = Math.max(list.until, now + 4); return; }
         if (!b) return;
         b.follow = false; b.dwell = 0;
         b.scrollTarget = (b.scrollTarget ?? 0) + dy / 40;
@@ -841,7 +1044,7 @@
         const onStage = stage();
         if (presence.auto) {
           const hover = env.mouse?.active && Math.hypot(env.mouse.x - m.x, env.mouse.y - m.y) < k.R * 1.5;
-          const busyNow = b || dying.length || tool || now < actUntil || m.dragging || m.flung || hover || k.presence === 'in';
+          const busyNow = b || dying.length || tool || (list.open && !list.closing) || now < actUntil || m.dragging || m.flung || hover || k.presence === 'in';
           if (busyNow) presence.lastActive = now;
           const idleFor = presence.summoned ? presence.summonIdle : presence.idle;
           if (k.presence === 'shown' && now - presence.lastActive > idleFor) { presence.summoned = false; k.vanish(nextVariant()); }
@@ -902,6 +1105,7 @@
           const dx = lookAt[0] - m.x, dy = lookAt[1] - m.y, dd = Math.hypot(dx, dy) || 1, s = Math.min(1, dd / 120);
           face.lookX = R.damp(face.lookX, (dx / dd) * s, 9, dt); face.lookY = R.damp(face.lookY, (dy / dd) * s, 9, dt);
         }
+        listUpdate(dt, env);
         for (let i = glyphParts.length - 1; i >= 0; i--) { const g = glyphParts[i]; g.y += g.vy * dt; g.vy *= 0.97; g.life -= dt * 1.2; if (g.life <= 0) glyphParts.splice(i, 1); }
         for (let i = dying.length - 1; i >= 0; i--) {
           step(dying[i], dt, env);
@@ -917,6 +1121,7 @@
           put(gx - 1, gy, lv); put(gx, gy, lv); put(gx + 1, gy, lv);
           if (g.g === '+') { put(gx, gy - 1, lv); put(gx, gy + 1, lv); }
         }
+        drawListGrid();
         for (const bb of dying) drawBubbleGrid(bb);
         if (b) drawBubbleGrid(b);
       },
@@ -973,6 +1178,7 @@
           tool.def.over?.(tool, C, ctx); drawChipText(ctx, env, tool);
           ctx.restore();
         }
+        drawListText(ctx);
         for (const bb of dying) drawText(ctx, env, bb);
         if (b) drawText(ctx, env, b);
       },

@@ -9,6 +9,7 @@
   const typing = (on) => invoke('set_typing', { on }).catch(() => {});
 
   window.__roamieSafe = (s) => Roamie.setSafe?.(s);
+  if (window.Roamie) Roamie.onContext = () => invoke('show_settings').catch(() => {});
   let hot = null;
   window.__roamiePtr = (x, y) => {
     if (!window.Roamie?.ptr) return;
@@ -63,6 +64,22 @@
   let speech = null, thought = null, nextMood = null, listen = null, heard = null;
   const jobs = [];
   let current = null;
+  // Telemetry (roamies/telemetry.js): agent start → first text on screen, per request id.
+  const tel = window.RoamiesTelemetry;
+  let firstBubble = null;
+  // ui.reply_paint: the reply reaching the page → its bubble painted (double rAF ≈ the next frame on screen).
+  let replyRid = null;
+  const paintMark = (requestId, outcome = 'ok', errorCode = null) => {
+    const p = globalThis.performance;
+    if (!tel?.measure || !p?.mark) return;
+    const key = `${requestId ?? 'none'}:${p.now()}`, recv = `reply-recv:${key}`, painted = `reply-painted:${key}`;
+    p.mark(recv);
+    return () => requestAnimationFrame(() => requestAnimationFrame(() => {
+      p.mark(painted);
+      tel.measure('ui.reply_paint', recv, painted, { requestId, outcome, errorCode });
+    }));
+  };
+  const endFirstBubble = (outcome) => { if (firstBubble) { tel?.end(firstBubble, { outcome }); firstBubble = null; } };
   const MOODS = { hype: 'happy', wave: 'happy', upset: 'annoyed', remind: 'concerned', motivate: 'determined' };
   const endTalk = () => { speech?.end(); thought?.end(); speech = thought = null; };
 
@@ -92,6 +109,9 @@
     if (!a) return;
     switch (e.type) {
       case 'start':
+        endFirstBubble('cancelled');
+        firstBubble = tel?.start('ui.first_bubble', { requestId: e.request_id }) ?? null;
+        replyRid = e.request_id ?? null;
         heard = null;
         if (!listen?.open) thought = a.think('', { stream: true });
         break;
@@ -109,8 +129,13 @@
           if (!text) break;
           // say() morphs an open thought cloud into the speech bubble, so drop the thought handle.
           thought = null;
+          const painted = paintMark(replyRid);
           speech = a.say('', { stream: true, mood: nextMood });
           nextMood = null;
+          endFirstBubble('ok');
+          speech.append(text);
+          painted?.();
+          break;
         }
         speech.append(text);
         break;
@@ -128,7 +153,8 @@
       case 'point': {
         // Teach mode: control bounds arrive in global screen points → this overlay's coordinates.
         endTalk();
-        const o = Roamie.origin ?? { x: 0, y: 0 }, [x, y, w, h] = e.rect;
+        // local: the host already converted it (Windows, physical pixels per monitor).
+        const o = (!e.local && Roamie.origin) || { x: 0, y: 0 }, [x, y, w, h] = e.rect;
         a.point({ rect: [x - o.x, y - o.y, w, h], say: e.say, step: e.step, of: e.of, label: e.label })
           .then(() => send({ type: 'point_shown', id: e.id }));
         break;
@@ -137,7 +163,7 @@
         // The real window being captured, in global screen points → this overlay's coordinates.
         const job = current?.id === e.id ? current : jobs.find((j) => j.id === e.id);
         if (!job || !e.window?.bounds) break;
-        const [x, y, w, h] = e.window.bounds, o = Roamie.origin ?? { x: 0, y: 0 };
+        const [x, y, w, h] = e.window.bounds, o = (!e.local && Roamie.origin) || { x: 0, y: 0 };
         const rect = [x - o.x, y - o.y, x - o.x + w, y - o.y + h];
         job.target = rect; job.targetName = e.window.app;
         job.h?.target(rect, e.window.app);
@@ -148,18 +174,25 @@
         a.act(e.action);
         break;
       case 'done':
+        endFirstBubble('cancelled'); // finished without showing any text
         endTalk();
+        // A stopped turn ends with 'done' but no tool_end for the tool it cut off: stop its spinner.
+        for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
         setTimeout(() => a.endGuide?.(), 6000);
         break;
       case 'error':
+        endFirstBubble('error');
         endTalk();
         for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
+        const painted = paintMark(e.request_id ?? replyRid, 'error', 'agent_error');
         a.say(e.message, { mood: 'concerned' });
+        painted?.();
         break;
     }
   }
 
   // ---------- voice (⌃⌥) ----------
+  let streaming = true;
   function onVoice(m) {
     const a = getAgent();
     if (!a) return;
@@ -167,22 +200,48 @@
       if (ask) finishAsk(null);
       endTalk();
       heard = null;
-      listen = a.listen({ placeholder: m.mode === 'handsfree' ? 'Listening… tap again to send' : 'Listening…' });
-    } else if (m.type === 'partial') listen?.set(m.text);
+      // Engines that don't stream (Parakeet) send no partials, so say the text comes at the end.
+      streaming = m.streaming !== false;
+      const placeholder = streaming
+        ? (m.mode === 'handsfree' ? 'Listening… tap again to send' : 'Listening…')
+        : (m.mode === 'handsfree' ? "Listening… I'll write it out when you tap again" : "Listening… I'll write it out when you stop");
+      listen = a.listen({ placeholder });
+      tel?.record('ui.listen_shown', { requestId: m.request_id, attrs: { mode: m.mode ?? 'hold' } });
+    } else if (m.type === 'partial') { if (streaming) listen?.set(m.text); }
     else if (m.type === 'level') listen?.level(m.v);
-    else if (m.type === 'state' && m.state === 'processing') listen?.processing();
+    else if (m.type === 'state' && m.state === 'processing') { if (!streaming) listen?.hint('Writing it out…'); listen?.processing(); }
     else if (m.type === 'final') {
       // Keep what was heard on screen until the agent starts thinking.
       if (listen) { listen.set(m.text).processing(); heard = listen; listen = null; Roamie.sfx?.play('heard'); }
+    } else if (m.type === 'dictated') {
+      // Dictation: no agent hand-off, so close the transcript once it's pasted.
+      if (heard) { const h = heard; setTimeout(() => { if (heard === h) { h.close(); heard = null; } }, 600); }
     } else if (m.type === 'state' && m.state === 'idle') {
       listen?.close(); listen = null;
       if (heard) { const h = heard; setTimeout(() => { if (heard === h) { h.close(); heard = null; } }, 4000); }
     }
   }
 
+  // One Sidekick shows at a time. Overlays on other monitors (guests) hold a hidden copy that takes
+  // over when the host moves it there to point at something.
+  let active = !window.ROAMIE_GUEST;
+  function setActive(on) {
+    active = !!on;
+    const a = getAgent();
+    if (active || !a) return;
+    if (ask) finishAsk(null);
+    endTalk();
+    listen?.close(); listen = null; heard?.close(); heard = null;
+    for (const j of [current, ...jobs]) if (j && j.result === undefined) settle(j.id, true);
+    a.endGuide?.();
+    a.hide();
+  }
+
   window.__roamieHost = (m) => {
     if (m.kind === 'sound') { if (Roamie.sfx) Roamie.sfx.enabled = m.on; return; }
-    if (!getAgent()) return;
+    if (m.kind === 'telemetry') { tel?.setEnabled(m.on); return; }
+    if (m.kind === 'active') { setActive(m.on); return; }
+    if (!active || !getAgent()) return;
     if (m.kind === 'greet') { getAgent().act('wave'); return; }
     if (m.kind === 'intro') { getAgent().intro(m.x, m.text); return; }
     if (m.kind === 'summon') {
@@ -197,7 +256,20 @@
     else if (m.kind === 'cancel_ask') { if (ask?.id === m.id) { ask.id = null; finishAsk(null); } }
     else if (m.kind === 'agent') onAgent(m.e);
     else if (m.kind === 'voice') onVoice(m);
+    else if (m.kind === 'progress') onProgress(m);
+    else if (m.kind === 'list') getAgent().list(m);
   };
+
+  // Long-running status (the Windows voice model download): one bubble per id, updated in place.
+  const progress = new Map();
+  function onProgress(m) {
+    const cur = progress.get(m.id);
+    if (m.done) { cur?.close(); progress.delete(m.id); return; }
+    if (ask) return;
+    if (cur?.open) cur.set(m.text);
+    // Don't talk over another bubble; the next update reopens it once the Sidekick is free.
+    else if (!getAgent().busy) progress.set(m.id, getAgent().status(m.text));
+  }
 
   // Start hidden in auto mode and tell the brain we're listening. It replies with the sound setting,
   // and a greeting wave unless the setup guide is about to open.
@@ -205,8 +277,12 @@
     const a = getAgent();
     if (!a) return setTimeout(ready, 150);
     a.setAuto(true);
+    a.onListToggle = (id) => send({ type: 'list_toggle', id });
     a.hide({ instant: true });
-    send({ type: 'ui_ready' });
+    if (!window.ROAMIE_GUEST) return send({ type: 'ui_ready' });
+    send({ type: 'ui_ready', guest: true });
+    // Built on demand for a point on this monitor: the first messages came with the page.
+    for (const m of window.ROAMIE_PENDING ?? []) window.__roamieHost(m);
   };
   ready();
 })();

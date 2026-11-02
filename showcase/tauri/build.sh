@@ -6,9 +6,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 rm -rf dist && mkdir -p dist
 cp ../desktop.html dist/
-cp -R ../roamies ../onboarding dist/
+cp -R ../roamies ../onboarding ../settings ../ui dist/
 ../tauri/sidecar/bundle.sh
+# Ship a Node.js runtime with the app, for the target being built (--target <triple>, else this machine).
+TARGET=""; prev=""; for a in "$@"; do [ "$prev" = "--target" ] && TARGET="$a"; prev="$a"; done
+../tauri/sidecar/fetch-node.sh ${TARGET:+"$TARGET"}
 cd src-tauri
+# Windows: the voice helper's Moonshine runtime and MSVC CRT are bundled; no-op once fetched.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) bash voice-rs/fetch-moonshine.sh --runtime ;; esac
 # macOS signing: APPLE_SIGNING_IDENTITY if set, else the first Developer ID Application certificate in
 # the keychain, else ad-hoc. A stable identity keeps macOS permissions across rebuilds.
 if [ "$(uname)" = "Darwin" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then

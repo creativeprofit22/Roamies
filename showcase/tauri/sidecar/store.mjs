@@ -35,6 +35,9 @@ export function writeJson(file, data, { backup = false } = {}) {
   return next.catch((e) => console.error(`[store] write ${path.basename(file)} failed`, e));
 }
 
+/** Resolves once every write queued so far has landed (or failed), so quitting never cuts one off. */
+export const flushWrites = () => Promise.all([...chains.values()]);
+
 /** Reads JSON; missing → null. Unparseable → moved aside, then the .bak is tried. */
 export function readJson(file, { backup = false } = {}) {
   const tryRead = (f) => JSON.parse(readFileSync(f, 'utf8'));
@@ -215,8 +218,36 @@ export function nextDue() {
 
 export const openCommitments = () => loadMemory().commitments.filter((c) => c.status === 'open');
 
-export async function addCommitment(text, dueMs) {
-  const c = { id: newId('c'), text: String(text).trim().slice(0, 200), due: dueMs ?? null, createdAt: Date.now(), status: 'open', remindedAt: null };
+/** Local midnight at the start of the day `ms` falls in. */
+export const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+
+/** What the on-screen list shows: open items, plus ones finished today (struck through). Today = due today or
+ *  overdue, and things finished today; Later = due after today, or no time. Soonest first, undated last. */
+export function listItems(now = Date.now()) {
+  const today = startOfDay(now), tomorrow = startOfDay(today + 36 * 36e5);
+  const shown = loadMemory().commitments.filter((c) => c.status === 'open' || (c.status === 'done' && (c.doneAt ?? 0) >= today));
+  const item = (c) => ({ id: c.id, text: c.text, due: c.due, done: c.status === 'done', overdue: c.status === 'open' && !!c.due && c.due < now, kind: c.kind ?? 'commitment' });
+  const order = (a, b) => ((a.status === 'done') - (b.status === 'done')) || ((a.due ?? Infinity) - (b.due ?? Infinity)) || a.createdAt - b.createdAt;
+  const isToday = (c) => (c.status === 'done' ? (c.due == null || c.due < tomorrow) : c.due != null && c.due < tomorrow);
+  return {
+    today: shown.filter(isToday).sort(order).map(item),
+    later: shown.filter((c) => !isToday(c)).sort(order).map(item),
+  };
+}
+
+/** Deletes finished (done or dropped) entries from before today. Open ones are never touched. Returns how many went. */
+export async function clearFinished(now = Date.now()) {
+  const today = startOfDay(now), m = loadMemory(), before = m.commitments.length;
+  m.commitments = m.commitments.filter((c) => c.status === 'open' || (c.doneAt ?? c.createdAt) >= today);
+  if (m.commitments.length === before) return 0;
+  await saveMemory();
+  return before - m.commitments.length;
+}
+
+/** kind 'reminder': a plain "remind me", done once it has fired. 'commitment' (and older entries without a kind):
+ *  something the user said they'd do, open until they finish or drop it. */
+export async function addCommitment(text, dueMs, kind = 'commitment') {
+  const c = { id: newId('c'), text: String(text).trim().slice(0, 200), due: dueMs ?? null, createdAt: Date.now(), status: 'open', remindedAt: null, kind: kind === 'reminder' ? 'reminder' : 'commitment' };
   loadMemory().commitments.push(c);
   // Cap the file: the oldest finished entries go first; open ones are never dropped.
   const done = memory.commitments.filter((x) => x.status !== 'open');
@@ -294,11 +325,15 @@ export async function forgetFact(id) {
   return f;
 }
 
-/** Open commitments whose time has come and that haven't been reminded yet. Marks them reminded. */
+/** Open commitments whose time has come and that haven't been reminded yet. Marks them reminded; plain
+ *  reminders are done once they've fired, so they never hang around as overdue. */
 export async function takeDueReminders(now = Date.now()) {
   const due = openCommitments().filter((c) => c.due && c.due <= now && !c.remindedAt);
   if (!due.length) return [];
-  for (const c of due) c.remindedAt = now;
+  for (const c of due) {
+    c.remindedAt = now;
+    if (c.kind === 'reminder') { c.status = 'done'; c.doneAt = now; }
+  }
   await saveMemory();
   return due;
 }

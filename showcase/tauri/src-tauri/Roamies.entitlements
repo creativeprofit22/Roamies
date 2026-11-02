@@ -5,5 +5,11 @@
   <!-- Hardened runtime blocks the microphone unless it's declared; the voice helper needs it. -->
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <!-- The bundled Node.js (Sidekick's brain) runs V8, which compiles JavaScript at runtime: without these
+       the hardened runtime kills it on launch. Same entitlements Node's own macOS builds are signed with. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
 </dict>
 </plist>

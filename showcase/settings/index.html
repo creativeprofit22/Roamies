@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roamies Settings</title>
+<link rel="stylesheet" href="../ui/kit.css">
+<link rel="stylesheet" href="settings.css">
+</head>
+<body>
+<div class="shell">
+  <nav class="side" aria-label="Settings sections">
+    <p class="brand" aria-hidden="true">Settings</p>
+    <ul class="tabs" id="tabs"></ul>
+  </nav>
+  <main class="main" id="main">
+    <section class="pane" id="pane-ai" aria-labelledby="h-ai" hidden></section>
+    <section class="pane" id="pane-voice" aria-labelledby="h-voice" hidden></section>
+    <section class="pane" id="pane-general" aria-labelledby="h-general" hidden></section>
+    <section class="pane" id="pane-memory" aria-labelledby="h-memory" hidden></section>
+    <section class="pane" id="pane-privacy" aria-labelledby="h-privacy" hidden></section>
+    <section class="pane" id="pane-about" aria-labelledby="h-about" hidden></section>
+    <p class="loading waiting" id="loading" role="status">Loading settings…</p>
+  </main>
+</div>
+<p class="sr-only" id="announce" aria-live="polite"></p>
+
+<dialog class="px dialog" id="forget-dialog" aria-labelledby="forget-title" aria-describedby="forget-desc">
+  <form method="dialog">
+    <h2 id="forget-title">Forget everything?</h2>
+    <p id="forget-desc">Sidekick forgets every fact it remembers about you. Your list stays. You can't undo this.</p>
+    <div class="dialog-actions">
+      <button class="px btn ghost" value="cancel" id="forget-cancel" autofocus>Cancel</button>
+      <button class="px btn danger" value="confirm" id="forget-confirm">Forget everything</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="../ui/kit.js"></script>
+<script src="settings.js"></script>
+<script src="sections/ai.js"></script>
+<script src="sections/voice.js"></script>
+<script src="sections/general.js"></script>
+<script src="sections/memory.js"></script>
+<script src="sections/privacy.js"></script>
+<script src="sections/about.js"></script>
+<script src="preview.js"></script>
+</body>
+</html>

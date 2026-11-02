@@ -1,15 +1,28 @@
 # AGENTS.md
 
 Roamies: a Tauri 2 desktop app (Rust shell in `showcase/tauri/src-tauri`), a Node sidecar that runs the
-agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, and macOS Swift helpers built by
-`src-tauri/build.rs`.
+agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, macOS Swift helpers built by
+`src-tauri/build.rs`, and two Windows voice helpers, also built by `src-tauri/build.rs` for Windows targets:
+`src-tauri/voice-rs` (`roamies-voice-moonshine`, Rust + Moonshine, the default) and `src-tauri/voice-win`
+(`roamies-voice-parakeet`, Rust + Parakeet), picked at runtime from the registry `src-tauri/voice-engines.json`
+(see `docs/voice-engines.md`). They share
+`src-tauri/voice-core` (protocol, session and chord state machine). Both compile elsewhere too, to test speech
+without a Windows PC: `--wav <wav>` runs one clip, `--bench <dir>` scores wav+txt pairs (models come from each
+crate's `fetch-*.sh`). The Windows screen helper `src-tauri/hands-win` (`roamies-hands`, Rust + UI Automation) is
+the twin of `hands/main.swift`: same verbs and JSON, rects in physical pixels (see `docs/hands.md`).
+
+Telemetry (one request id across host, voice helper, sidecar and webview; written only by the sidecar,
+local only): see `docs/telemetry.md`. Each layer has its own `telemetry` module with the same start/end/record API.
+
+UI, CSS, layout or visual work in `showcase/` (roamies/, onboarding/, desktop.html): first read `showcase/AGENTS.md` (its `## Polish` section).
 
 ## Commands
 
 ```sh
 cd showcase/tauri/sidecar && npm ci     # install sidecar deps
-npm test                                # sidecar tests (reply stream, storage, pointing)
+npm test                                # sidecar tests (reply stream, storage, pointing, safety, voice model download)
 npm run build                           # bundle the sidecar into dist/
+npm run bench:telemetry                 # telemetry overhead (p95, memory)
 cd .. && ./build.sh dev                 # web files + sidecar + debug `cargo build`
 ./build.sh                              # release bundle for this OS (signs on macOS if a Developer ID is in the keychain)
 ```

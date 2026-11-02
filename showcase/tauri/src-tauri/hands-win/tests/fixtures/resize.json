@@ -1,0 +1,161 @@
+{
+ "_comment": "Shared resize vectors: pointing.mjs resizedSize and hands-win fit.rs must agree. maxTokens 0 means no token limit. Generated from the JS function.",
+ "cases": [
+  {
+   "in": [
+    1920,
+    1080
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    1456,
+    819
+   ]
+  },
+  {
+   "in": [
+    2560,
+    1440
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    1456,
+    819
+   ]
+  },
+  {
+   "in": [
+    3840,
+    2160
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    1456,
+    819
+   ]
+  },
+  {
+   "in": [
+    2880,
+    1620
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    1456,
+    819
+   ]
+  },
+  {
+   "in": [
+    1080,
+    1920
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    819,
+    1456
+   ]
+  },
+  {
+   "in": [
+    1440,
+    2560
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    819,
+    1456
+   ]
+  },
+  {
+   "in": [
+    300,
+    200
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    300,
+    200
+   ]
+  },
+  {
+   "in": [
+    3840,
+    2160
+   ],
+   "maxEdge": 2576,
+   "maxTokens": 4784,
+   "out": [
+    2576,
+    1449
+   ]
+  },
+  {
+   "in": [
+    2560,
+    1440
+   ],
+   "maxEdge": 2576,
+   "maxTokens": 4784,
+   "out": [
+    2560,
+    1440
+   ]
+  },
+  {
+   "in": [
+    3840,
+    2160
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 0,
+   "out": [
+    1568,
+    882
+   ]
+  },
+  {
+   "in": [
+    1366,
+    768
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    1366,
+    768
+   ]
+  },
+  {
+   "in": [
+    5120,
+    1440
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    1568,
+    441
+   ]
+  },
+  {
+   "in": [
+    1,
+    1
+   ],
+   "maxEdge": 1568,
+   "maxTokens": 1568,
+   "out": [
+    1,
+    1
+   ]
+  }
+ ]
+}

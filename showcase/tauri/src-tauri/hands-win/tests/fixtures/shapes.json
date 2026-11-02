@@ -1,0 +1,17 @@
+{
+  "_comment": "Key sets of every reply roamies-hands prints on Windows (see docs/hands.md). Checked by protocol.rs tests. The macOS helper prints the same keys minus unit, monitors and scale.",
+  "windowInfo": ["app", "bounds", "id", "scale", "title"],
+  "monitor": ["bounds", "origin", "primary", "scale"],
+  "windows": ["monitors", "ok", "unit", "windows"],
+  "locate": ["monitors", "ok", "unit", "window"],
+  "locateScreen": ["monitors", "ok", "unit", "what"],
+  "captureWindow": ["file", "monitors", "ok", "sent", "unit", "window"],
+  "captureScreen": ["bounds", "file", "monitors", "ok", "sent", "unit", "what"],
+  "ui": ["controls", "elsewhere", "note", "ok", "texts", "unit", "window"],
+  "control": ["bounds", "id", "label", "role"],
+  "controlOptional": ["focused", "offscreen", "value"],
+  "findText": ["matches", "ok", "unit"],
+  "match": ["bounds", "match", "rank", "role", "text", "window"],
+  "error": ["code", "error", "ok"],
+  "partial": ["partial", "partialReason"]
+}

@@ -1,0 +1,23 @@
+{
+  "_comment": "Windows apps Roamies may point at but never read, capture or type into. Exe names are lowercase. Every exe here is also in DICTATION_BLOCK in sidecar/safety.mjs (checked by test/safety.test.mjs).",
+  "exes": {
+    "keepass.exe": "KeePass",
+    "keepassxc.exe": "KeePassXC",
+    "1password.exe": "1Password",
+    "bitwarden.exe": "Bitwarden",
+    "dashlane.exe": "Dashlane",
+    "enpass.exe": "Enpass",
+    "nordpass.exe": "NordPass",
+    "roboform.exe": "RoboForm",
+    "keeperpasswordmanager.exe": "Keeper",
+    "lastpass.exe": "LastPass",
+    "sechealthui.exe": "Windows Security",
+    "consent.exe": "the admin prompt",
+    "credentialuibroker.exe": "a Windows sign-in prompt",
+    "lockapp.exe": "the lock screen",
+    "logonui.exe": "the sign-in screen"
+  },
+  "classes": {
+    "Credential Dialog Xaml Host": "a Windows sign-in prompt"
+  }
+}

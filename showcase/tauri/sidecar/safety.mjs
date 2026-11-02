@@ -90,6 +90,8 @@ export function splitCommand(cmd) {
     if (q) { cur += c; if (c === q) q = null; else if (c === '\\' && q === '"') cur += cmd[++i] ?? ''; continue; }
     if (c === '\\') { cur += c + (cmd[++i] ?? ''); continue; }
     if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    // 2>&1, <&3 and &>file are redirects, not "run in the background".
+    if (c === '&' && (cmd[i - 1] === '>' || cmd[i - 1] === '<' || (cmd[i + 1] === '>' && cmd[i - 1] !== '&'))) { cur += c; continue; }
     if (c === ';' || c === '\n' || c === '|' || c === '&') {
       if (cur.trim()) parts.push({ text: cur.trim(), pipeIn: false });
       cur = '';
@@ -137,7 +139,7 @@ const BLOCKED_PROGRAMS = {
 const SHELLS = new Set(['powershell', 'pwsh', 'cmd', 'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'csh', 'tcsh', 'python', 'python3', 'node', 'perl', 'ruby', 'php', 'osascript', 'swift', 'deno', 'bun', 'lua']);
 // Read-only programs that are fine to run without asking (paths still checked).
 const READ_ONLY = new Set([
-  'ls', 'pwd', 'date', 'cal', 'whoami', 'id', 'uname', 'sw_vers', 'hostname', 'uptime', 'which', 'type', 'whereis', 'echo', 'printf',
+  'ls', 'cd', 'pwd', 'date', 'cal', 'whoami', 'id', 'uname', 'sw_vers', 'hostname', 'uptime', 'which', 'type', 'whereis', 'echo', 'printf',
   'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'du', 'df', 'tree', 'basename', 'dirname', 'realpath', 'readlink',
   'grep', 'egrep', 'fgrep', 'rg', 'ag', 'find', 'fd', 'mdfind', 'mdls', 'locate', 'sort', 'uniq', 'cut', 'tr', 'column', 'jq', 'diff', 'cmp',
   'ps', 'pgrep', 'top', 'vm_stat', 'sysctl', 'system_profiler', 'ioreg', 'pmset', 'defaults', 'networksetup', 'scutil', 'ifconfig',
@@ -155,9 +157,12 @@ const READ_ONLY_SUB = {
   java: /^(-version|--version)$/, rustc: /^(-V|--version)$/, env: /^$/, printenv: /^$/,
 };
 
-function checkSimple(text, pipeIn, home) {
+function checkSimple(text, pipeIn, home, cwd = home) {
   const ws = words(text);
   const prog = program(ws), args = prog.args;
+  // Path checks see relative arguments from the folder a cd moved to.
+  const at = (a) => (cwd !== home && !a.startsWith('-') && !/^[~/$]/.test(a) && !/^[a-z]:[\\/]/i.test(a) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(a) ? path.join(cwd, slash(a)) : a);
+  const pathArgs = args.map(at);
   const name = prog.name.replace(/^(mkfs|newfs|fsck)[._].*$/, '$1').toLowerCase();
   const joined = args.join(' ');
   if (!name) return verdict(SAFE);
@@ -201,7 +206,7 @@ function checkSimple(text, pipeIn, home) {
   // Walking the whole home folder (find ~, grep -r ~, du ~) trips macOS privacy prompts for Music, Photos, iCloud and other apps.
   if (['find', 'fd', 'grep', 'egrep', 'rg', 'ag', 'du', 'tree', 'ls'].includes(name)) {
     const recursive = name === 'find' || name === 'fd' || name === 'rg' || name === 'ag' || name === 'tree' || name === 'du' || /(^|\s)-[a-zA-Z]*[rR]/.test(joined);
-    for (const a of args.filter((x) => !x.startsWith('-'))) {
+    for (const a of pathArgs.filter((x) => !x.startsWith('-'))) {
       if (/^\$(HOME|\{HOME\})/.test(a)) { const v = checkRead(a.replace(/^\$\{?HOME\}?/, '~'), home, { recursive }); if (v.level !== SAFE) return verdict(v.level, v.reason); continue; }
       if (!/^[~/.]/.test(a)) continue;
       const v = checkRead(a, home, { recursive });
@@ -210,11 +215,19 @@ function checkSimple(text, pipeIn, home) {
     if (name === 'find' && /\s-(delete|exec|execdir|ok|okdir|fprint\w*)\b/.test(' ' + joined)) return verdict(ASK, '`find` here also changes or runs things.');
   }
   // Any path that looks like a secret, in any command, means no.
-  for (const a of args) {
+  for (const a of pathArgs) {
     if (!/[/~.]/.test(a) || a.startsWith('-') && !a.includes('=')) continue;
     const t = a.includes('=') ? a.split('=').slice(1).join('=') : a;
     if (/^[a-z]+:\/\//i.test(t)) continue;
     if (SECRET.some((re) => re.test(rel(norm(t, home), home)) || re.test(t))) return verdict(BLOCK, `${t} holds passwords or keys, so I never touch it.`);
+  }
+  // Making folders is like write_file making a new file: fine where writing is, a yes elsewhere, never where it's blocked.
+  if (name === 'mkdir') {
+    for (const a of pathArgs.filter((x) => !x.startsWith('-'))) {
+      const w = checkWrite(a, home);
+      if (w.level === BLOCK) return w.path.startsWith(slash(home) + '/') || /^\/(private\/)?tmp\//.test(w.path) ? verdict(BLOCK, w.reason) : verdict(ASK, w.reason);
+    }
+    return verdict(SAFE);
   }
   if (READ_ONLY.has(name)) {
     const sub = READ_ONLY_SUB[name];
@@ -224,8 +237,13 @@ function checkSimple(text, pipeIn, home) {
   return verdict(ASK);
 }
 
-/** run_command. SAFE runs, ASK needs the user's yes, BLOCK never runs. */
-export function classifyCommand(cmd, home) {
+// Files a command writes with > >> &>, quotes removed; /dev/null and 2>&1 style copies left out.
+const redirectTargets = (text) => [...text.matchAll(/(?:^|[^>])>{1,2}(?!&)\s*("[^"]*"|'[^']*'|[^\s;&|<>]+)/g)]
+  .map((m) => m[1].replace(/^(['"])([\s\S]*)\1$/, '$2')).filter((t) => t && t !== '/dev/null');
+
+/** run_command. SAFE runs, ASK needs the user's yes, BLOCK never runs. `exists(path)`, if given, lets a redirect
+ *  that makes a new file run like write_file making one; without it every redirect asks. */
+export function classifyCommand(cmd, home, { exists } = {}) {
   home = slash(home);
   const s = String(cmd ?? '').trim();
   if (!s) return verdict(BLOCK, 'That command is empty.');
@@ -234,20 +252,29 @@ export function classifyCommand(cmd, home) {
   const parts = splitCommand(s);
   if (!parts) return verdict(ASK, "I couldn't read that command clearly.");
   let level = SAFE, reason = '';
+  // The folder each part runs in, so relative paths after a cd are checked where they really point. null: unknown.
+  let cwd = home;
   for (const p of parts) {
-    const v = checkSimple(p.text, p.pipeIn, home);
+    let v = checkSimple(p.text, p.pipeIn, home, cwd ?? home);
+    if (cwd == null && v.level === SAFE) v = verdict(ASK, "I can't tell which folder that runs in.");
+    for (const r of redirectTargets(p.text)) {
+      const t = /^~/.test(r) || isAbs(slash(r)) ? r : path.join(cwd ?? home, slash(r));
+      const w = checkWrite(t, home, { exists: !exists || !!exists(norm(t, home)) });
+      if (w.level === BLOCK) return verdict(BLOCK, w.reason);
+      if ((w.level === ASK || cwd == null || /[$`*?{]/.test(r)) && v.level === SAFE) v = verdict(ASK, w.reason);
+    }
+    const ws = words(p.text);
+    if (ws[0] === 'cd') {
+      const t = ws[1];
+      if (!t || t === '~') cwd = home;
+      else if (cwd == null || /[$`*?]/.test(t) || t === '-') cwd = null;
+      else cwd = norm(/^~/.test(t) || isAbs(slash(t)) ? t : path.join(cwd, slash(t)), home);
+    }
     if (v.level === BLOCK) return v;
     if (v.level === ASK && level === SAFE) { level = ASK; reason = v.reason; }
   }
-  // Writing into files, command substitution and background jobs change things in ways the parts don't show.
-  if (level === SAFE && (/(^|[^>&0-9])>{1,2}(?!&)\s*(?!\/dev\/null\b)\S/.test(s) || /\$\(|`/.test(s) || /(^|\s)&\s*$/.test(s))) level = ASK;
-  const redirect = /(^|[^>])>{1,2}\s*([^\s;&|]+)/g;
-  for (let m; (m = redirect.exec(s));) {
-    const target = m[2];
-    if (target === '/dev/null' || target.startsWith('&')) continue;
-    const w = checkWrite(target, home);
-    if (w.level === BLOCK) return verdict(BLOCK, w.reason);
-  }
+  // Command substitution and background jobs change things in ways the parts don't show.
+  if (level === SAFE && (/\$\(|`/.test(s) || /(^|\s)&\s*$/.test(s))) level = ASK;
   return verdict(level, reason);
 }
 
@@ -257,13 +284,20 @@ const RUNNABLE = /\.(app|command|sh|bash|zsh|tool|terminal|scpt|scptd|applescrip
 const APP_DIRS = ['/Applications/', '/System/Applications/', '/System/Library/CoreServices/'];
 
 /** open: websites and mail, documents and folders, and apps by name. Not scripts, installers or odd links. */
-export function checkOpen(target, home, { executable = false } = {}) {
+export function checkOpen(target, home, { executable = false, startApps = null } = {}) {
   home = slash(home);
   const t = String(target ?? '').trim();
   if (!t) return verdict(BLOCK, 'Nothing to open.');
+  // Windows Start-menu launch targets are fine only when they came from the Start-menu list itself,
+  // never when the model types a shell: link (shell:startup, other folders) or a shortcut path.
+  if (/^shell:/i.test(t) || /\.lnk$/i.test(t)) {
+    if (/^shell:AppsFolder\\/i.test(t) || /\.lnk$/i.test(t)) { if (startApps?.has(t)) return verdict(SAFE); }
+    return verdict(BLOCK, "Can only open shortcuts and shell: links that came from the Start-menu app list.");
+  }
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(t)?.[1]?.toLowerCase();
   if (scheme && !/^[a-z]:\\/i.test(t)) {
     if (scheme === 'http' || scheme === 'https' || scheme === 'mailto') return verdict(SAFE);
+    if (scheme === 'ms-settings') return verdict(SAFE);
     return verdict(BLOCK, `I only open web and mail links, not ${scheme}: links.`);
   }
   if (/^[~/.]/.test(t) || /^[a-z]:\\/i.test(t)) {
@@ -293,3 +327,72 @@ export function checkUrl(url) {
 
 /** A yes from the user, typed or spoken. */
 export const isYes = (text) => /^\s*(y|yes|yeah|yep|yup|ok|okay|sure|go|go ahead|do it|run it|allow|confirm)\b/i.test(String(text ?? ''));
+
+// Dictation pastes what was said into the app in front. Blocked apps hold passwords or security and system
+// settings; the macOS ids follow HANDS_OFF in hands/main.swift (keep both in sync), plus Windows equivalents.
+const DICTATION_BLOCK = new Map(Object.entries({
+  'com.apple.keychainaccess': 'Keychain Access', 'com.apple.passwords': 'Passwords', 'com.apple.systempreferences': 'System Settings',
+  'com.apple.settings': 'System Settings', 'com.1password.1password': '1Password', 'com.agilebits.onepassword7': '1Password',
+  'com.bitwarden.desktop': 'Bitwarden', 'org.keepassxc.keepassxc': 'KeePassXC', 'com.apple.installer': 'Installer',
+  'com.apple.migrateassistant': 'Migration Assistant', 'com.apple.diskutility': 'Disk Utility',
+  'keepass.exe': 'KeePass', 'keepassxc.exe': 'KeePassXC', '1password.exe': '1Password', 'bitwarden.exe': 'Bitwarden',
+  'dashlane.exe': 'Dashlane', 'enpass.exe': 'Enpass', 'sechealthui.exe': 'Windows Security', 'systemsettings.exe': 'Settings',
+  'regedit.exe': 'Registry Editor', 'msiexec.exe': 'Windows Installer', 'consent.exe': 'the admin prompt',
+  // Also in src-tauri/hands-win/hands-off.json, which the screen helper refuses to read.
+  'nordpass.exe': 'NordPass', 'roboform.exe': 'RoboForm', 'keeperpasswordmanager.exe': 'Keeper', 'lastpass.exe': 'LastPass',
+  'credentialuibroker.exe': 'a Windows sign-in prompt', 'lockapp.exe': 'the lock screen', 'logonui.exe': 'the sign-in screen',
+}));
+// Terminals: pasting is fine, but a newline would run the command, so control characters become spaces.
+const DICTATION_TERMINALS = new Set([
+  'com.apple.terminal', 'com.googlecode.iterm2', 'dev.warp.warp-stable', 'dev.warp.warp', 'com.mitchellh.ghostty', 'net.kovidgoyal.kitty',
+  'org.alacritty', 'io.alacritty', 'com.github.wez.wezterm', 'co.zeit.hyper', 'org.tabby', 'com.raphaelamorim.rio',
+  'windowsterminal.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe', 'conhost.exe', 'openconsole.exe', 'mintty.exe', 'alacritty.exe',
+  'wezterm-gui.exe', 'hyper.exe', 'tabby.exe',
+]);
+
+/** Dictation paste target. app = { id, name } (bundle id on macOS, exe name on Windows). Returns { level, reason, text }. */
+export function checkDictationTarget(app, text) {
+  const id = String(app?.id ?? '').trim().toLowerCase(), t = String(text ?? '');
+  if (!id) return { ...verdict(BLOCK, "I couldn't tell which app is in front, so I won't paste."), text: t };
+  const blocked = DICTATION_BLOCK.get(id);
+  if (blocked) return { ...verdict(BLOCK, `I won't paste into ${blocked}.`), text: t };
+  // eslint-disable-next-line no-control-regex
+  if (DICTATION_TERMINALS.has(id)) return { ...verdict(SAFE), text: t.replace(/[\u0000-\u001f\u007f]/g, ' ') };
+  return { ...verdict(SAFE), text: t };
+}
+
+// Screen helper input from the model. The helper reads flags (--budget-ms, --fake-exe, --fit) anywhere in its
+// arguments, so nothing the model sends may start with "-".
+const SCREEN_TARGET = /^(front|screen|screen:[1-9]\d?|window:\d{1,12}|(app:)?[\p{L}\p{N}][\p{L}\p{N} ._&'()+-]*)$/iu;
+const blockedApp = (name) => {
+  const n = String(name ?? '').trim().toLowerCase();
+  if (!n) return null;
+  for (const [id, label] of DICTATION_BLOCK) {
+    const stem = id.endsWith('.exe') ? id.slice(0, -4) : null, l = label.toLowerCase();
+    if (n === id || n === stem || (!/^(the|a) /.test(l) && (n === l || n.includes(l)))) return label;
+  }
+  return null;
+};
+
+/** A take_screenshot / list_windows / read_window / point_at target. Returns { level, reason }. */
+export function checkScreenTarget(target) {
+  const t = String(target ?? '').trim();
+  if (!t) return verdict(BLOCK, 'No target given.');
+  if (t.startsWith('-')) return verdict(BLOCK, "A target can't start with \"-\".");
+  if (t.length > 80) return verdict(BLOCK, 'That target is too long.');
+  if (!SCREEN_TARGET.test(t)) return verdict(BLOCK, `"${t}" isn't a window, app or screen I know how to look at.`);
+  const app = /^(front|screen|screen:\d+|window:\d+)$/i.test(t) ? null : blockedApp(t.replace(/^app:/i, ''));
+  if (app) return verdict(BLOCK, `I don't look inside ${app}.`);
+  return verdict(SAFE);
+}
+
+/** Text to find on screen (point_at). Returns { level, reason }. */
+export function checkFindText(text) {
+  const t = String(text ?? '').trim();
+  if (!t) return verdict(BLOCK, 'No text to look for.');
+  if (t.startsWith('-')) return verdict(BLOCK, "The text to find can't start with \"-\".");
+  if (t.length > 200) return verdict(BLOCK, 'That text is too long to look for.');
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(t)) return verdict(BLOCK, 'The text to find has control characters in it.');
+  return verdict(SAFE);
+}

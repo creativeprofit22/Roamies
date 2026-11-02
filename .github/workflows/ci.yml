@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: showcase/tauri/sidecar/package-lock.json
 
@@ -36,6 +36,10 @@ jobs:
       - name: Test sidecar
         working-directory: showcase/tauri/sidecar
         run: npm test
+
+      - name: Test sidecar (telemetry off)
+        working-directory: showcase/tauri/sidecar
+        run: npm run test:telemetry-off
 
       # Tauri's Linux build dependencies (v2.tauri.app/start/prerequisites, Debian list).
       - name: Install Tauri system dependencies
@@ -53,6 +57,11 @@ jobs:
       - name: Build
         run: ./build.sh dev
 
+      # Host unit tests (voice engine registry).
+      - name: Test host
+        working-directory: showcase/tauri/src-tauri
+        run: cargo test --locked
+
   voice-windows:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -69,6 +78,13 @@ jobs:
         with:
           workspaces: showcase/tauri/src-tauri/voice-rs -> target
 
+      # rust-cache can restore sherpa-onnx's prebuilt folder without its .lib files; drop it so the build re-downloads.
+      - name: Drop a partial sherpa-onnx download
+        shell: bash
+        run: |
+          P="$GITHUB_WORKSPACE/showcase/tauri/src-tauri/voice-rs/target/sherpa-onnx-prebuilt"
+          ls "$P"/*/lib/sherpa-onnx-c-api.lib >/dev/null 2>&1 || rm -rf "$P"
+
       - uses: actions/cache@v6
         with:
           path: showcase/tauri/src-tauri/voice-rs/models/zipformer
@@ -77,6 +93,195 @@ jobs:
       - name: Fetch speech model
         run: bash fetch-model.sh
 
-      # Unit tests plus the CLI tests (WAV dry run on the real model, missing model, stdin close).
+      # Moonshine runtime (linked into moonshine.dll with MSVC, plus the app-local CRT), the smallest
+      # streaming model for the tests and the shipped default (small) for the smoke run.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-runtime
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-tiny
+            showcase/tauri/src-tauri/voice-rs/models/moonshine-small
+          key: moonshine-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
+
+      - name: Fetch Moonshine
+        run: bash fetch-moonshine.sh tiny small
+
+      # Unit tests plus the CLI tests (WAV dry runs on Zipformer and Moonshine tiny, bench, missing
+      # model/lib, unknown engine, stdin close).
       - name: Test voice helper
         run: cargo test --locked
+
+      - name: Lint voice helper
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # The shipped default engine (no --engine): Moonshine small on a test clip must end in a final.
+      - name: Smoke test the default engine
+        run: |
+          out=$(cargo run --release --locked -- --wav tests/fixtures/en-short.wav --model-dir models/moonshine-small --moonshine-lib models/moonshine-runtime/moonshine.dll)
+          echo "$out"
+          echo "$out" | grep '"type":"final"' | grep -q nightfall
+          echo "$out" | grep '"type":"final"' | grep -q '"metrics":{'
+
+  # The Parakeet helper (voice-win) and the voice-core crate both helpers share. The CLI tests
+  # (short-clip regression, --wav event order, missing/corrupt model) need the Parakeet model.
+  voice-parakeet-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri/src-tauri/voice-win
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            showcase/tauri/src-tauri/voice-win -> target
+            showcase/tauri/src-tauri/voice-core -> target
+
+      - name: Test voice-core
+        working-directory: showcase/tauri/src-tauri/voice-core
+        run: cargo test --locked
+
+      - name: Lint voice-core
+        working-directory: showcase/tauri/src-tauri/voice-core
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - uses: actions/cache@v6
+        with:
+          path: showcase/tauri/src-tauri/voice-win/models/parakeet
+          key: parakeet-${{ hashFiles('showcase/tauri/src-tauri/voice-win/fetch-model.sh') }}
+
+      - name: Fetch Parakeet
+        run: bash fetch-model.sh
+
+      - name: Test voice helper
+        run: cargo test --locked
+
+      - name: Lint voice helper
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Parakeet on a test clip must end in a final, as the Moonshine job checks for its engine.
+      - name: Smoke test Parakeet
+        run: |
+          out=$(cargo run --release --locked -- --wav tests/fixtures/en-short-1s.wav --model-dir models/parakeet)
+          echo "$out"
+          echo "$out" | grep '"type":"final"' | grep -q nightfall
+          echo "$out" | grep '"type":"final"' | grep -q '"metrics":{'
+
+  # The Windows screen helper (hands-win). The runner may have no open windows, so the smoke test
+  # only checks the reply shape; the Notepad/browser checks are local (#[ignore] and docs/hands.md).
+  hands-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri/src-tauri/hands-win
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: showcase/tauri/src-tauri/hands-win -> target
+
+      - name: Test screen helper
+        run: cargo test --locked
+
+      - name: Lint screen helper
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Smoke test the windows verb
+        run: |
+          out=$(cargo run --release --locked -- windows)
+          echo "$out"
+          echo "$out" | tail -n 1 | grep -q '"ok":true'
+          echo "$out" | tail -n 1 | grep -q '"unit":"px"'
+
+  # Sidecar tests on Windows on their own, so a Windows-only failure (slow fsyncs, paths) shows up fast.
+  sidecar-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri/sidecar
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: showcase/tauri/sidecar/package-lock.json
+
+      - name: Install sidecar dependencies
+        run: npm ci
+
+      - name: Test sidecar
+        run: npm test
+
+      - name: Test sidecar (telemetry off)
+        run: npm run test:telemetry-off
+
+  # The Windows app build: build.rs compiles both voice helpers and the bundle config ships their runtime.
+  app-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: showcase/tauri
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: showcase/tauri/sidecar/package-lock.json
+
+      - name: Install sidecar dependencies
+        working-directory: showcase/tauri/sidecar
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            showcase/tauri/src-tauri -> target
+            showcase/tauri/src-tauri/voice-rs -> target
+            showcase/tauri/src-tauri/voice-win -> target
+            showcase/tauri/src-tauri/hands-win -> target
+
+      # rust-cache can restore sherpa-onnx's prebuilt folder without its .lib files; drop it so the build re-downloads.
+      - name: Drop a partial sherpa-onnx download
+        shell: bash
+        run: |
+          P="$GITHUB_WORKSPACE/showcase/tauri/src-tauri/voice-rs/target/sherpa-onnx-prebuilt"
+          ls "$P"/*/lib/sherpa-onnx-c-api.lib >/dev/null 2>&1 || rm -rf "$P"
+
+      - uses: actions/cache@v6
+        with:
+          path: showcase/tauri/src-tauri/voice-rs/models/moonshine-runtime
+          key: moonshine-runtime-${{ hashFiles('showcase/tauri/src-tauri/voice-rs/fetch-moonshine.sh') }}
+
+      # Fetches Node and the Moonshine runtime, bundles the sidecar, then `cargo build` (debug) with both helpers.
+      - name: Build
+        run: ./build.sh dev
+
+      - name: Check the helper and runtime sit next to the app
+        run: |
+          D=src-tauri/target/debug
+          for f in roamies.exe roamies-voice-moonshine.exe roamies-voice-parakeet.exe roamies-hands.exe node.exe moonshine.dll onnxruntime.dll vcruntime140.dll msvcp140.dll; do
+            [ -s "$D/$f" ] || { echo "::error::$f missing from $D"; exit 1; }
+          done
+          "$D/roamies-voice-moonshine.exe" --perms | grep -q '"type":"perms"'
+          "$D/roamies-voice-parakeet.exe" --perms | grep -q '"type":"perms"'
+          "$D/roamies-hands.exe" windows | tail -n 1 | grep -q '"ok":true'

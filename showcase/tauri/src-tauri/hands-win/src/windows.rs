@@ -117,7 +117,7 @@ fn describe(path: &str) -> String {
         let mut langs: Vec<(u16, u16)> = Vec::new();
         if VerQueryValueW(data.as_ptr() as *const _, &HSTRING::from("\\VarFileInfo\\Translation"), &mut ptr, &mut len).as_bool() && !ptr.is_null() {
             let pairs = std::slice::from_raw_parts(ptr as *const u16, (len / 2) as usize);
-            langs.extend(pairs.chunks_exact(2).map(|c| (c[0], c[1])));
+            langs.extend(pairs.as_chunks::<2>().0.iter().map(|c| (c[0], c[1])));
         }
         langs.extend([(0x0409, 0x04b0), (0x0409, 0x04e4)]);
         for (lang, cp) in langs {

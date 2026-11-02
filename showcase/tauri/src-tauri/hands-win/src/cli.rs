@@ -1,5 +1,6 @@
 // Command-line parsing: the same verbs and arguments as hands/main.swift, plus two flags
-// (--budget-ms N for tests, --fake-exe NAME to test the hands-off refusal).
+// (--budget-ms N for tests, --fake-exe NAME to test the hands-off refusal), and --fit <edge>x<tokens> to
+// size capture's image for the model (tokens 0 = no token limit).
 use crate::protocol::fail;
 use crate::target::{parse as parse_target, Target};
 use serde_json::Value;
@@ -18,6 +19,7 @@ pub struct Cmd {
     pub verb: Verb,
     pub budget_ms: u64,
     pub fake_exe: Option<String>,
+    pub fit: Option<(u32, u32)>,
 }
 
 /// Default time budget per verb, in milliseconds.
@@ -42,12 +44,23 @@ pub fn parse(argv: &[String]) -> Result<Cmd, Value> {
     let mut args: Vec<&str> = Vec::new();
     let mut budget = None;
     let mut fake_exe = None;
+    let mut fit = None;
     let mut it = argv.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--budget-ms" => {
                 let n = it.next().and_then(|n| n.parse::<u64>().ok()).ok_or_else(|| fail("usage", "--budget-ms needs a number"))?;
                 budget = Some(n);
+            }
+            "--fit" => {
+                let bad = || fail("usage", "--fit needs <max edge>x<max tokens>, like 1568x1568");
+                let v = it.next().ok_or_else(bad)?;
+                let (e, t) = v.split_once('x').ok_or_else(bad)?;
+                let (e, t) = (e.parse::<u32>().map_err(|_| bad())?, t.parse::<u32>().map_err(|_| bad())?);
+                if e == 0 {
+                    return Err(bad());
+                }
+                fit = Some((e, t));
             }
             "--fake-exe" => fake_exe = Some(it.next().ok_or_else(|| fail("usage", "--fake-exe needs an exe name"))?.clone()),
             _ => args.push(a),
@@ -57,11 +70,11 @@ pub fn parse(argv: &[String]) -> Result<Cmd, Value> {
     let verb = match verb {
         "windows" => Verb::Windows,
         "locate" => {
-            let u = "usage: locate front|screen|app:<name>|window:<id>";
+            let u = "usage: locate front|screen|screen:<n>|app:<name>|window:<id>";
             Verb::Locate(target(args.get(1).ok_or_else(|| fail("usage", u))?, u)?)
         }
         "capture" => {
-            let u = "usage: capture <out.jpg> front|screen|app:<name>|window:<id>";
+            let u = "usage: capture <out.jpg> front|screen|screen:<n>|app:<name>|window:<id> [--fit <edge>x<tokens>]";
             if args.len() < 3 {
                 return Err(fail("usage", u));
             }
@@ -70,13 +83,13 @@ pub fn parse(argv: &[String]) -> Result<Cmd, Value> {
         "ui" => {
             let u = "usage: ui front|app:<name>|window:<id>";
             let t = target(args.get(1).ok_or_else(|| fail("usage", u))?, u)?;
-            if t == Target::Screen {
+            if matches!(t, Target::Screen | Target::Monitor(_)) {
                 return Err(fail("usage", u));
             }
             Verb::Ui(t)
         }
         "find-text" => {
-            let u = "usage: find-text front|screen|app:<name>|window:<id> <text> [scroll]";
+            let u = "usage: find-text front|screen|screen:<n>|app:<name>|window:<id> <text> [scroll]";
             if args.len() < 3 || args[2].trim().is_empty() {
                 return Err(fail("usage", u));
             }
@@ -88,7 +101,7 @@ pub fn parse(argv: &[String]) -> Result<Cmd, Value> {
         other => return Err(fail("usage", &format!("unknown command {other:?}"))),
     };
     let budget_ms = budget.unwrap_or_else(|| default_budget(&verb));
-    Ok(Cmd { verb, budget_ms, fake_exe })
+    Ok(Cmd { verb, budget_ms, fake_exe, fit })
 }
 
 #[cfg(test)]
@@ -110,11 +123,15 @@ mod tests {
         assert_eq!(c.budget_ms, 5);
         assert_eq!(p(&["ui", "front", "--fake-exe", "keepass.exe"]).unwrap().fake_exe.as_deref(), Some("keepass.exe"));
         assert_eq!(p(&["windows"]).unwrap().budget_ms, 2000);
+        let c = p(&["capture", "o.jpg", "screen:2", "--fit", "1568x0"]).unwrap();
+        assert_eq!(c.verb, Verb::Capture { out: "o.jpg".into(), target: Target::Monitor(2) });
+        assert_eq!(c.fit, Some((1568, 0)));
+        assert_eq!(p(&["capture", "o.jpg", "front"]).unwrap().fit, None);
     }
 
     #[test]
     fn usage_errors_carry_a_code() {
-        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["windows", "--budget-ms", "x"]] {
+        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"]] {
             let e = p(bad).unwrap_err();
             assert_eq!(e["ok"], false, "{bad:?}");
             assert_eq!(e["code"], "usage", "{bad:?}");

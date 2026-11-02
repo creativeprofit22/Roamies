@@ -2,7 +2,8 @@
 // wgc.rs (MIT, Copyright (c) 2025 Cua AI, Inc.; see licenses/cua-LICENSE.txt): a minimized-window guard, a
 // crop to the DWM extended frame, PrintWindow/BitBlt for classic windows and Windows.Graphics.Capture for
 // XAML ones (PrintWindow paints those black). Everything is physical pixels; nothing is scaled by DPI/96,
-// which would add a black margin (cua #1879). The image is 1:1 with the window's bounds.
+// which would add a black margin (cua #1879). The image covers exactly the window's bounds; --fit then
+// scales it to the size the model will see (fit.rs), so the reply's `sent` maps 1:1 onto those bounds.
 use crate::budget::Budget;
 use crate::geom::Rect;
 use crate::protocol::{fail, WinInfo};
@@ -23,7 +24,8 @@ use w32::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC, SRCCOPY,
 };
 use w32::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, IWICImagingFactory, WICBitmapEncoderNoCache,
+    CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
+    WICBitmapEncoderNoCache, WICBitmapInterpolationModeHighQualityCubic,
 };
 use w32::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use w32::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
@@ -210,6 +212,44 @@ fn fit(img: Image, frame: Rect) -> Image {
     crop(img, Rect::new(0, 0, w, h), Rect::new(0, 0, frame.w.min(w), frame.h.min(h)))
 }
 
+fn wic() -> Result<IWICImagingFactory, String> {
+    unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).map_err(|e| format!("WIC factory: {e}")) }
+}
+
+/// The size to send for an area of `bounds`: --fit's limits, or the bounds' own size.
+pub fn sent_size(bounds: Rect, fit: Option<(u32, u32)>) -> (u32, u32) {
+    let (w, h) = (bounds.w.max(1) as u32, bounds.h.max(1) as u32);
+    match fit {
+        Some((e, t)) => crate::fit::resized_size(w, h, e, t),
+        None => (w, h),
+    }
+}
+
+/// Resizes to exactly `to` with WIC's high-quality cubic filter (a no-op when it's already that size).
+fn scale_to(img: Image, to: (u32, u32)) -> Result<Image, String> {
+    if (img.w as u32, img.h as u32) == to {
+        return Ok(img);
+    }
+    fn e(what: &str) -> impl Fn(w32::core::Error) -> String + '_ {
+        move |err| format!("resize {what}: {err}")
+    }
+    let (w, h) = (to.0 as usize, to.1 as usize);
+    let mut out = vec![0u8; w * h * 4];
+    unsafe {
+        let f = wic()?;
+        let src = f.CreateBitmapFromMemory(img.w as u32, img.h as u32, &GUID_WICPixelFormat32bppBGRA, img.w as u32 * 4, &img.bgra).map_err(e("source"))?;
+        let scaler = f.CreateBitmapScaler().map_err(e("scaler"))?;
+        scaler.Initialize(&src, to.0, to.1, WICBitmapInterpolationModeHighQualityCubic).map_err(e("init"))?;
+        let (mut sw, mut sh) = (0u32, 0u32);
+        scaler.GetSize(&mut sw, &mut sh).map_err(e("size"))?;
+        if (sw, sh) != to {
+            return Err(format!("resize came out {sw}×{sh}, wanted {}×{}", to.0, to.1));
+        }
+        scaler.CopyPixels(std::ptr::null(), w as u32 * 4, &mut out).map_err(e("pixels"))?;
+    }
+    Ok(Image { bgra: out, w: w as i32, h: h as i32 })
+}
+
 pub fn write_jpeg(file: &str, img: &Image) -> Result<(), String> {
     fn e(what: &str) -> impl Fn(w32::core::Error) -> String + '_ {
         move |err| format!("JPEG {what}: {err}")
@@ -225,7 +265,7 @@ pub fn write_jpeg(file: &str, img: &Image) -> Result<(), String> {
         }
     }
     unsafe {
-        let f: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).map_err(e("factory"))?;
+        let f = wic()?;
         let stream = f.CreateStream().map_err(e("stream"))?;
         stream.InitializeFromFilename(&HSTRING::from(file), GENERIC_WRITE.0).map_err(e("open file"))?;
         let enc = f.CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null()).map_err(e("encoder"))?;
@@ -252,8 +292,8 @@ pub fn minimized(w: &WinInfo) -> Value {
     fail("minimized", &format!("{} is minimized, so there's nothing on screen to read. Ask the user to restore it first.", w.app))
 }
 
-/// Captures one window into `file` as JPEG, the same size as its bounds.
-pub fn window(w: &WinInfo, file: &str, budget: &Budget) -> Result<(), Value> {
+/// Captures one window into `file` as JPEG; returns the bounds it covers and the image's size.
+pub fn window(w: &WinInfo, file: &str, limits: Option<(u32, u32)>, budget: &Budget) -> Result<(Rect, (u32, u32)), Value> {
     let hwnd = crate::windows::hwnd(w.id);
     if unsafe { IsIconic(hwnd).as_bool() } {
         return Err(minimized(w));
@@ -276,15 +316,23 @@ pub fn window(w: &WinInfo, file: &str, budget: &Budget) -> Result<(), Value> {
     if budget.expired() {
         return Err(fail("timeout", "Capturing took too long. Try again."));
     }
-    write_jpeg(file, &img).map_err(|e| fail("capture_failed", &e))
+    let sent = sent_size(frame, limits);
+    let img = scale_to(img, sent).map_err(|e| fail("capture_failed", &e))?;
+    write_jpeg(file, &img).map_err(|e| fail("capture_failed", &e))?;
+    Ok((frame, sent))
 }
 
-/// Captures the primary monitor; returns its bounds.
-pub fn screen(file: &str, mons: &[crate::protocol::Monitor]) -> Result<Rect, Value> {
-    let r = mons.iter().find(|m| m.primary).or(mons.first()).map(|m| m.bounds).ok_or_else(|| fail("capture_failed", "No monitor found."))?;
+/// Captures one monitor (`which` is 1-based, None = the primary one); returns its bounds and the image's size.
+pub fn screen(file: &str, mons: &[crate::protocol::Monitor], which: Option<usize>, fit: Option<(u32, u32)>) -> Result<(Rect, (u32, u32)), Value> {
+    let r = match which {
+        Some(n) => mons.get(n.wrapping_sub(1)).map(|m| m.bounds).ok_or_else(|| fail("not_found", &format!("There's no monitor {n}; there are {}.", mons.len())))?,
+        None => mons.iter().find(|m| m.primary).or(mons.first()).map(|m| m.bounds).ok_or_else(|| fail("capture_failed", "No monitor found."))?,
+    };
     let img = screen_region(r).ok_or_else(|| fail("capture_failed", "Screen capture failed (the PC may be locked)."))?;
+    let sent = sent_size(r, fit);
+    let img = scale_to(img, sent).map_err(|e| fail("capture_failed", &e))?;
     write_jpeg(file, &img).map_err(|e| fail("capture_failed", &e))?;
-    Ok(r)
+    Ok((r, sent))
 }
 
 #[cfg(test)]
@@ -300,6 +348,12 @@ mod tests {
         }
         assert!(!mostly_black(&px));
         assert!(mostly_black(&[]));
+    }
+
+    #[test]
+    fn sent_size_follows_fit() {
+        assert_eq!(sent_size(Rect::new(0, 0, 2560, 1440), Some((1568, 1568))), (1456, 819));
+        assert_eq!(sent_size(Rect::new(-10, 5, 800, 600), None), (800, 600));
     }
 
     #[test]

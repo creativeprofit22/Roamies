@@ -2,12 +2,13 @@
 // text on screen. One command per run; prints one JSON object as its last stdout line (see docs/hands.md).
 //
 //   roamies-hands windows                                    visible windows, front to back
-//   roamies-hands locate front|screen|app:<name>|window:<id>  which window that is, without capturing
-//   roamies-hands capture <out.jpg> front|screen|app:<name>|window:<id>
+//   roamies-hands locate front|screen|screen:<n>|app:<name>|window:<id>  which window that is, without capturing
+//   roamies-hands capture <out.jpg> <target> [--fit <edge>x<tokens>]  JPEG sized for the model
 //   roamies-hands ui front|app:<name>|window:<id>            the window's controls and text
 //   roamies-hands find-text <target> <text> [scroll]         where that text is on screen
 mod budget;
 mod cli;
+mod fit;
 mod geom;
 mod hands_off;
 mod protocol;

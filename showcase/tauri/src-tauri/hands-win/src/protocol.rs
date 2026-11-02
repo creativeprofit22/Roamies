@@ -80,12 +80,13 @@ pub fn locate_screen_reply(mons: &[Monitor]) -> Value {
     ok(json!({"what": "screen", "monitors": monitors(mons)}))
 }
 
-pub fn capture_window_reply(file: &str, w: &WinInfo, mons: &[Monitor]) -> Value {
-    ok(json!({"file": file, "window": win_info(w), "monitors": monitors(mons)}))
+/// `sent` is the image's own size in pixels (the bounds scaled by --fit).
+pub fn capture_window_reply(file: &str, w: &WinInfo, sent: (u32, u32), mons: &[Monitor]) -> Value {
+    ok(json!({"file": file, "window": win_info(w), "sent": [sent.0, sent.1], "monitors": monitors(mons)}))
 }
 
-pub fn capture_screen_reply(file: &str, bounds: Rect, mons: &[Monitor]) -> Value {
-    ok(json!({"file": file, "what": "screen", "bounds": bounds.json(), "monitors": monitors(mons)}))
+pub fn capture_screen_reply(file: &str, bounds: Rect, sent: (u32, u32), mons: &[Monitor]) -> Value {
+    ok(json!({"file": file, "what": "screen", "bounds": bounds.json(), "sent": [sent.0, sent.1], "monitors": monitors(mons)}))
 }
 
 pub const NO_CONTROLS: &str = "This app shares no controls. Use a screenshot plus click at coordinates instead.";
@@ -171,8 +172,8 @@ mod tests {
         assert_eq!(keys(&wr["monitors"][0]), want(&s, "monitor"));
         assert_eq!(keys(&locate_reply(&w, &m)), want(&s, "locate"));
         assert_eq!(keys(&locate_screen_reply(&m)), want(&s, "locateScreen"));
-        assert_eq!(keys(&capture_window_reply("o.jpg", &w, &m)), want(&s, "captureWindow"));
-        assert_eq!(keys(&capture_screen_reply("o.jpg", Rect::new(0, 0, 1, 1), &m)), want(&s, "captureScreen"));
+        assert_eq!(keys(&capture_window_reply("o.jpg", &w, (400, 300), &m)), want(&s, "captureWindow"));
+        assert_eq!(keys(&capture_screen_reply("o.jpg", Rect::new(0, 0, 1, 1), (1, 1), &m)), want(&s, "captureScreen"));
         assert_eq!(keys(&ui_reply(&w, vec![], vec![], vec![])), want(&s, "ui"));
         let bare = Control { role: "button".into(), label: "OK".into(), bounds: Rect::new(1, 2, 3, 4), value: None, focused: false, offscreen: false };
         assert_eq!(keys(&control(1, &bare)), want(&s, "control"));

@@ -1,9 +1,10 @@
-// Which window a command is about: front | screen | app:<name> | window:<id>.
+// Which window a command is about: front | screen | screen:<n> (1-based monitor) | app:<name> | window:<id>.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Front,
     Screen,
+    Monitor(usize),
     App(String),
     Window(i64),
 }
@@ -16,6 +17,8 @@ pub fn parse(s: &str) -> Option<Target> {
             if let Some(name) = s.strip_prefix("app:") {
                 let name = name.trim();
                 (!name.is_empty()).then(|| Target::App(name.to_string()))
+            } else if let Some(n) = s.strip_prefix("screen:") {
+                n.trim().parse::<usize>().ok().filter(|n| *n >= 1).map(Target::Monitor)
             } else if let Some(id) = s.strip_prefix("window:") {
                 id.trim().parse().ok().map(Target::Window)
             } else {
@@ -73,6 +76,9 @@ mod tests {
         assert_eq!(parse("window:132456"), Some(Target::Window(132456)));
         assert_eq!(parse("window:abc"), None);
         assert_eq!(parse("app:"), None);
+        assert_eq!(parse("screen:2"), Some(Target::Monitor(2)));
+        assert_eq!(parse("screen:0"), None);
+        assert_eq!(parse("screen:x"), None);
         assert_eq!(parse("Notepad"), None);
     }
 

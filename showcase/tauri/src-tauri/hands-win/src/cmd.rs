@@ -38,15 +38,32 @@ pub fn dispatch(c: Cmd, snap: Snapshot) -> Value {
             Ok(p::windows_reply(&listed, windows::front_pid(), &mons))
         }
         Verb::Locate(Target::Screen) => Ok(p::locate_screen_reply(&mons)),
+        Verb::Locate(Target::Monitor(n)) => monitor(&mons, *n).map(|_| p::locate_screen_reply(&mons)),
         Verb::Locate(t) => resolve(t).and_then(|w| usable(&w).map(|_| p::locate_reply(&w, &mons))),
-        Verb::Capture { out, target: Target::Screen } => capture::screen(out, &mons).map(|b| p::capture_screen_reply(out, b, &mons)),
-        Verb::Capture { out, target } => resolve(target)
-            .and_then(|w| guard(&w, fake).map(|_| w))
-            .and_then(|w| capture::window(&w, out, &budget).map(|_| p::capture_window_reply(out, &w, &mons))),
+        Verb::Capture { out, target: Target::Screen } => capture::screen(out, &mons, None, c.fit).map(|(b, sent)| p::capture_screen_reply(out, b, sent, &mons)),
+        Verb::Capture { out, target: Target::Monitor(n) } => {
+            monitor(&mons, *n).and_then(|_| capture::screen(out, &mons, Some(*n), c.fit)).map(|(b, sent)| p::capture_screen_reply(out, b, sent, &mons))
+        }
+        Verb::Capture { out, target } => resolve(target).and_then(|w| guard(&w, fake).map(|_| w)).and_then(|mut w| {
+            capture::window(&w, out, c.fit, &budget).map(|(frame, sent)| {
+                w.bounds = frame;
+                p::capture_window_reply(out, &w, sent, &mons)
+            })
+        }),
         Verb::Ui(t) => resolve(t).and_then(|w| guard(&w, fake).map(|_| w)).and_then(|w| ui(&w, &mut budget, &snap)),
         Verb::FindText { target, text, scroll } => find_text(target, text, *scroll, fake, &budget, &snap),
     };
     res.unwrap_or_else(|e| e)
+}
+
+/// Monitor `n` (1-based, in `monitors` order).
+fn monitor(mons: &[p::Monitor], n: usize) -> Result<Rect, Value> {
+    mons.get(n.wrapping_sub(1)).map(|m| m.bounds).ok_or_else(|| fail("not_found", &format!("There's no monitor {n}; there are {}.", mons.len())))
+}
+
+fn centre_on(w: &WinInfo, r: &Rect) -> bool {
+    let (cx, cy) = (w.bounds.x as i64 + w.bounds.w as i64 / 2, w.bounds.y as i64 + w.bounds.h as i64 / 2);
+    cx >= r.x as i64 && cx < r.right() && cy >= r.y as i64 && cy < r.bottom()
 }
 
 fn not_found(t: &Target) -> Value {
@@ -65,7 +82,7 @@ fn resolve(t: &Target) -> Result<WinInfo, Value> {
         Target::Front => windows::front_pid().and_then(|pid| shown().find(|w| w.pid == pid)).or_else(|| shown().next()),
         Target::Window(id) => all.iter().find(|w| w.id == *id),
         Target::App(name) => shown().find(|w| app_matches(&w.app, &w.exe, name)).or_else(|| all.iter().find(|w| app_matches(&w.app, &w.exe, name))),
-        Target::Screen => None,
+        Target::Screen | Target::Monitor(_) => None,
     };
     found.cloned().ok_or_else(|| not_found(t))
 }
@@ -242,6 +259,10 @@ fn find_text(t: &Target, q: &str, scroll: bool, fake: &str, budget: &Budget, sna
     let shown: Vec<&WinInfo> = all.iter().filter(|w| !w.minimized).collect();
     let wins: Vec<WinInfo> = match t {
         Target::Screen => shown.iter().filter(|w| hands_off::check(&[&w.exe, fake], &w.class).is_none()).map(|w| (*w).clone()).collect(),
+        Target::Monitor(n) => {
+            let r = monitor(&dpi::monitors(), *n)?;
+            shown.iter().filter(|w| centre_on(w, &r) && hands_off::check(&[&w.exe, fake], &w.class).is_none()).map(|w| (*w).clone()).collect()
+        }
         Target::Front => {
             let pid = windows::front_pid().filter(|pid| shown.iter().any(|w| w.pid == *pid)).or(shown.first().map(|w| w.pid));
             shown.iter().filter(|w| Some(w.pid) == pid).map(|w| (*w).clone()).collect()
@@ -260,7 +281,7 @@ fn find_text(t: &Target, q: &str, scroll: bool, fake: &str, budget: &Budget, sna
     if wins.is_empty() {
         return Err(not_found(t));
     }
-    if *t != Target::Screen {
+    if !matches!(t, Target::Screen | Target::Monitor(_)) {
         for w in &wins {
             guard(w, fake)?;
         }

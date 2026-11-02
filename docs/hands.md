@@ -12,7 +12,8 @@ They always exit 0; failure is `{"ok": false, "error": "...", "code": "..."}`. K
 
 ## Targets
 
-`front` (the front window), `screen` (the primary monitor), `app:<name>` (front-most window whose app name
+`front` (the front window), `screen` (the primary monitor), `screen:<n>` (Windows only: monitor `n`, 1-based in
+`monitors` order; `find-text` searches the windows whose centre is on it, `ui` refuses it), `app:<name>` (front-most window whose app name
 or exe contains `<name>`, or the reverse, case-insensitive; `app:browser` means any of Chrome, Edge, Brave,
 Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
 
@@ -22,7 +23,7 @@ Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
 | --- | --- |
 | `windows` | `{ok, windows:[window]}` (the front app's windows have `frontApp: true`): up to 30 on-screen windows, front to back, at least 80×60, Roamies left out |
 | `locate <target>` | `{ok, window}`, or `{ok, what:"screen"}` for `screen` |
-| `capture <out.jpg> <target>` | `{ok, file, window}`, or `{ok, file, what:"screen", bounds}` for `screen` |
+| `capture <out.jpg> <target> [--fit <edge>x<tokens>]` | `{ok, file, window}`, or `{ok, file, what:"screen", bounds}` for `screen` / `screen:<n>`; Windows adds `sent: [w, h]` |
 | `ui <target>` | `{ok, window, controls:[control], texts, elsewhere, note}` |
 | `find-text <target> <text> [scroll]` | `{ok, matches:[match]}` |
 
@@ -46,7 +47,10 @@ Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
   aware). Every successful Windows reply adds `unit: "px"`; `windows`, `locate` and `capture` also add
   `monitors: [{bounds, origin, scale, primary}]`, and each window has its monitor's `scale` (1.0 = 96 DPI).
   To get logical points for a monitor, subtract its `origin` and divide by its `scale`. The captured image
-  is 1:1 with `window.bounds`.
+  covers exactly `window.bounds` (or `bounds` for a monitor) and is `sent` pixels big.
+- `--fit <edge>x<tokens>` (Windows): resize the capture to the model's size, the same rule as `resizedSize` in
+  `sidecar/pointing.mjs` (`tokens` 0 = no token limit). Both are checked against
+  `hands-win/tests/fixtures/resize.json`. Without it, `sent` is the bounds' own size.
 
 ## Budgets and partial results (Windows)
 

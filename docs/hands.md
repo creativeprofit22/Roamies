@@ -72,7 +72,8 @@ first, so links and headings inside pages are found.
 
 `usage`, `not_found`, `minimized` (capture/ui of a minimized window), `access_denied` (the app runs as
 administrator; Roamies can't read it), `hands_off`, `timeout`, `dpi` (the thread isn't Per-Monitor V2),
-`capture_failed`.
+`capture_failed`, `unavailable` (the Windows screen-reading service, COM/UI Automation, couldn't start or
+couldn't read this window; try again), `unsupported` (the helper was run on a system other than Windows).
 
 ## Hands-off
 

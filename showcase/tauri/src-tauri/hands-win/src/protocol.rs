@@ -126,6 +126,26 @@ pub fn image_reply(file: &str, sent: (u32, u32)) -> Value {
     ok(json!({"file": file, "sent": [sent.0, sent.1]}))
 }
 
+/// Windows has no Accessibility permission to grant, so the helper is always trusted.
+pub fn trusted_reply() -> Value {
+    ok(json!({"trusted": true}))
+}
+
+/// `locate-control`: one control from `ui` (same id), where it is now.
+pub fn locate_control_reply(w: &WinInfo, control: &Value, mons: &[Monitor]) -> Value {
+    ok(json!({"window": win_info(w), "control": control, "monitors": monitors(mons)}))
+}
+
+/// `select`: the PNG the user picked and its size.
+pub fn select_reply(file: &str, sent: (u32, u32)) -> Value {
+    ok(json!({"file": file, "sent": [sent.0, sent.1]}))
+}
+
+/// `select` when the user pressed Esc, right-clicked or ran out of time: exactly what macOS prints.
+pub fn select_cancelled() -> Value {
+    json!({"ok": false, "cancelled": true})
+}
+
 #[derive(Clone)]
 pub struct Control {
     pub role: String,
@@ -219,6 +239,11 @@ mod tests {
         assert_eq!(keys(&f), find_ocr);
         assert_eq!(keys(&ocr_file_reply("en-US", vec![], 5)), want(&s, "ocrFile"));
         assert_eq!(keys(&image_reply("o.jpg", (4, 3))), want(&s, "image"));
+        assert_eq!(keys(&trusted_reply()), want(&s, "trusted"));
+        assert_eq!(trusted_reply()["trusted"], true);
+        assert_eq!(keys(&locate_control_reply(&w, &json!({}), &m)), want(&s, "locateControl"));
+        assert_eq!(keys(&select_reply("o.png", (4, 3))), want(&s, "select"));
+        assert_eq!(keys(&select_cancelled()), want(&s, "selectCancelled"));
         let line = crate::ocr_map::line_json(&crate::ocr_map::Line { text: "Hi".into(), bounds: Rect::new(0, 0, 9, 9), words: vec![crate::ocr_map::Word { text: "Hi".into(), bounds: Rect::new(0, 0, 9, 9) }] });
         assert_eq!(keys(&line), want(&s, "ocrLine"));
         assert_eq!(keys(&line["words"][0]), want(&s, "ocrWord"));

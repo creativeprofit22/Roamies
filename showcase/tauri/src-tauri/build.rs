@@ -67,6 +67,10 @@ fn build_rust_helpers() {
 fn build_hands_helper() {
     let target = std::env::var("TARGET").expect("cargo sets TARGET");
     let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets this"));
+    // hands-win shares paste-core (clipboard save/paste/restore) with the host by path.
+    for p in ["src", "Cargo.toml", "Cargo.lock"] {
+        println!("cargo:rerun-if-changed=paste-core/{p}");
+    }
     println!("cargo:rerun-if-changed=hands-win/hands-off.json");
     println!("cargo:rerun-if-changed=hands-win/licenses");
     build_rust_helper(&root, &target, "hands-win", "roamies-hands");

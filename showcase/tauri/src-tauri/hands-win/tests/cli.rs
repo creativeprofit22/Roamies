@@ -13,7 +13,7 @@ fn hands(args: &[&str]) -> Value {
 
 #[test]
 fn usage_errors_are_json_with_a_code() {
-    for args in [&[][..], &["nope"], &["capture", "out.jpg"], &["ui", "screen"], &["find-text", "front"], &["act"], &["act", "{}"], &["act", "not json"], &["act", r#"{"steps":[{"do":"fly"}]}"#]] {
+    for args in [&[][..], &["nope"], &["capture", "out.jpg"], &["ui", "screen"], &["find-text", "front"], &["act"], &["act", "{}"], &["act", "not json"], &["act", r#"{"steps":[{"do":"fly"}]}"#], &["trusted", "x"], &["locate-control", "front"], &["locate-control", "front", "0"], &["locate-control", "screen", "1"], &["select"], &["select", "a.png", "b"]] {
         let v = hands(args);
         assert_eq!(v["ok"], false, "{args:?}");
         assert_eq!(v["code"], "usage", "{args:?}");
@@ -141,6 +141,51 @@ mod on_windows {
         }
         let r = hands(&["act", r#"{"app": "no-such-app-roamies-test", "steps": [{"do": "wait", "seconds": 0}]}"#]);
         assert_eq!((r["code"].as_str(), &r["done"]), (Some("not_found"), &serde_json::json!([])), "{r}");
+    }
+
+    #[test]
+    fn trusted_is_always_true() {
+        for args in [&["trusted"][..], &["trusted", "--prompt"]] {
+            let v = hands(args);
+            assert_eq!((&v["ok"], &v["trusted"]), (&Value::Bool(true), &Value::Bool(true)), "{v}");
+        }
+    }
+
+    #[test]
+    fn locate_control_finds_a_control_or_says_not_found() {
+        let v = hands(&["windows"]);
+        let Some(w) = v["windows"].as_array().and_then(|ws| ws.first().cloned()) else { return };
+        let id = format!("window:{}", w["id"]);
+        let r = hands(&["locate-control", id.as_str(), "1"]);
+        if r["ok"] == true {
+            assert_eq!(r["unit"], "px", "{r}");
+            assert!(r["control"].is_object() && r["window"].is_object(), "{r}");
+        } else {
+            assert!(matches!(r["code"].as_str(), Some("not_found" | "minimized" | "unreadable")), "{r}");
+        }
+        let r = hands(&["locate-control", id.as_str(), "99999"]);
+        assert_eq!(r["ok"], false, "{r}");
+        let r = hands(&["locate-control", id.as_str(), "1", "--fake-exe", "KeePassXC.exe"]);
+        assert_eq!(r["code"], "hands_off", "{r}");
+        let r = hands(&["locate-control", "app:no-such-app-roamies-test", "1"]);
+        assert_eq!(r["code"], "not_found", "{r}");
+    }
+
+    // Local check: opens the selection overlay and cancels it with a synthetic Esc. Run with --ignored.
+    #[test]
+    #[ignore]
+    fn select_cancels_on_escape() {
+        let out = std::env::temp_dir().join("roamies-select-test.png");
+        let _ = std::fs::remove_file(&out);
+        let child = Command::new(env!("CARGO_BIN_EXE_roamies-hands")).args(["select", out.to_str().unwrap()]).stdout(std::process::Stdio::piped()).spawn().expect("helper runs");
+        std::thread::sleep(Duration::from_millis(1500));
+        let esc = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{ESC}')";
+        Command::new("powershell").args(["-NoProfile", "-Command", esc]).status().expect("powershell runs");
+        let done = child.wait_with_output().expect("helper exits");
+        let stdout = String::from_utf8(done.stdout).unwrap();
+        let v: Value = serde_json::from_str(stdout.lines().last().expect("one line")).unwrap();
+        assert_eq!(v, serde_json::json!({"ok": false, "cancelled": true}));
+        assert!(!out.exists());
     }
 
     fn window_titled(title: &str) -> Option<Value> {

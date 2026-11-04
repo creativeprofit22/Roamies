@@ -9,7 +9,7 @@ use crate::geom::Rect;
 use crate::protocol::{fail, WinInfo};
 use serde_json::Value;
 use std::time::{Duration, Instant};
-use w32::core::{factory, Interface, HSTRING};
+use w32::core::{factory, Interface, GUID, HSTRING};
 use w32::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
 use w32::Graphics::DirectX::{Direct3D11::IDirect3DDevice, DirectXPixelFormat};
 use w32::Win32::Foundation::{GENERIC_WRITE, HMODULE, HWND, RECT};
@@ -24,7 +24,7 @@ use w32::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC, SRCCOPY,
 };
 use w32::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
+    CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_ContainerFormatPng, GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
     WICBitmapEncoderNoCache, WICBitmapInterpolationModeHighQualityCubic,
 };
 use w32::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
@@ -106,7 +106,7 @@ unsafe fn read_bitmap(src: HDC, from_x: i32, from_y: i32, w: i32, h: i32, print:
 }
 
 /// A screen area straight off the desktop (only right when nothing covers it).
-fn screen_region(r: Rect) -> Option<Image> {
+pub fn screen_region(r: Rect) -> Option<Image> {
     unsafe {
         let dc = GetDC(None);
         let img = read_bitmap(dc, r.x, r.y, r.w, r.h, None);
@@ -251,9 +251,16 @@ pub fn scale_to(img: Image, to: (u32, u32)) -> Result<Image, String> {
 }
 
 pub fn write_jpeg(file: &str, img: &Image) -> Result<(), String> {
-    fn e(what: &str) -> impl Fn(w32::core::Error) -> String + '_ {
-        move |err| format!("JPEG {what}: {err}")
-    }
+    encode(file, img, &GUID_ContainerFormatJpeg, "JPEG")
+}
+
+pub fn write_png(file: &str, img: &Image) -> Result<(), String> {
+    encode(file, img, &GUID_ContainerFormatPng, "PNG")
+}
+
+/// 24-bit BGR into a WIC container (screen pixels carry no alpha, so 32-bit PNGs would come out transparent).
+fn encode(file: &str, img: &Image, container: &GUID, kind: &'static str) -> Result<(), String> {
+    let e = |what: &'static str| move |err: w32::core::Error| format!("{kind} {what}: {err}");
     let (w, h) = (img.w as usize, img.h as usize);
     let stride = (w * 3 + 3) & !3;
     let mut bgr = vec![0u8; stride * h];
@@ -268,18 +275,18 @@ pub fn write_jpeg(file: &str, img: &Image) -> Result<(), String> {
         let f = wic()?;
         let stream = f.CreateStream().map_err(e("stream"))?;
         stream.InitializeFromFilename(&HSTRING::from(file), GENERIC_WRITE.0).map_err(e("open file"))?;
-        let enc = f.CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null()).map_err(e("encoder"))?;
+        let enc = f.CreateEncoder(container, std::ptr::null()).map_err(e("encoder"))?;
         enc.Initialize(&stream, WICBitmapEncoderNoCache).map_err(e("encoder init"))?;
         let mut frame = None;
         let mut props = None;
         enc.CreateNewFrame(&mut frame, &mut props).map_err(e("frame"))?;
-        let frame = frame.ok_or("JPEG frame missing")?;
+        let frame = frame.ok_or(format!("{kind} frame missing"))?;
         frame.Initialize(props.as_ref()).map_err(e("frame init"))?;
         frame.SetSize(w as u32, h as u32).map_err(e("size"))?;
         let mut fmt = GUID_WICPixelFormat24bppBGR;
         frame.SetPixelFormat(&mut fmt).map_err(e("pixel format"))?;
         if fmt != GUID_WICPixelFormat24bppBGR {
-            return Err("JPEG encoder refused 24-bit BGR".into());
+            return Err(format!("{kind} encoder refused 24-bit BGR"));
         }
         frame.WritePixels(h as u32, stride as u32, &bgr).map_err(e("pixels"))?;
         frame.Commit().map_err(e("frame commit"))?;

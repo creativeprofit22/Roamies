@@ -20,6 +20,12 @@ pub enum Verb {
     Image { input: String, out: String, crop: Option<Rect>, size: Option<(u32, u32)>, marks: Option<String> },
     /// Click, fill, choose, scroll and press keys in a window, step by step (checked before anything runs).
     Act(Plan),
+    /// Always trusted: Windows has no Accessibility permission to grant.
+    Trusted,
+    /// Where one control from `ui` (numbered from 1, the same ids) is on screen.
+    LocateControl { target: Target, id: usize },
+    /// The user drags an area (or clicks a window) on screen; it is saved as PNG to `out`.
+    Select { out: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -33,7 +39,10 @@ pub struct Cmd {
 /// Default time budget per verb, in milliseconds.
 pub fn default_budget(v: &Verb) -> u64 {
     match v {
-        Verb::Windows | Verb::Locate(_) => 2000,
+        Verb::Windows | Verb::Locate(_) | Verb::Trusted => 2000,
+        Verb::LocateControl { .. } => 4000,
+        // The sidecar kills the helper after 120 s; the user gets most of that to pick an area.
+        Verb::Select { .. } => 110_000,
         Verb::Capture { .. } => 5000,
         Verb::Ui(_) => 4000,
         Verb::FindText { .. } => 6000,
@@ -154,8 +163,24 @@ pub fn parse(argv: &[String]) -> Result<Cmd, Value> {
             let [_, json] = args[..] else { return Err(plan::act_error("usage", u, &[])) };
             Verb::Act(plan::parse(json)?)
         }
-        "select" | "trusted" | "locate-control" => {
-            return Err(fail("usage", &format!("{verb} is only available on macOS")));
+        "trusted" => match &args[1..] {
+            [] | ["--prompt"] => Verb::Trusted,
+            _ => return Err(fail("usage", "usage: trusted [--prompt]")),
+        },
+        "locate-control" => {
+            let u = "usage: locate-control <target> <id>";
+            let [_, t, id] = args[..] else { return Err(fail("usage", u)) };
+            let t = target(t, u)?;
+            let id = id.parse::<usize>().ok().filter(|&n| n >= 1).ok_or_else(|| fail("usage", u))?;
+            if matches!(t, Target::Screen | Target::Monitor(_)) {
+                return Err(fail("usage", u));
+            }
+            Verb::LocateControl { target: t, id }
+        }
+        "select" => {
+            let u = "usage: select <out.png> [--fit <edge>x<tokens>]";
+            let [_, out] = args[..] else { return Err(fail("usage", u)) };
+            Verb::Select { out: out.to_string() }
         }
         other => return Err(fail("usage", &format!("unknown command {other:?}"))),
     };
@@ -207,12 +232,25 @@ mod tests {
         assert!(!p(&["act", "{}"]).unwrap_err()["error"].as_str().unwrap().contains("macOS"));
         let k = p(&["act", r#"{"steps":[{"do":"key","key":"win+l"}]}"#]).unwrap_err();
         assert_eq!((k["code"].as_str(), &k["done"]), (Some("blocked_key"), &serde_json::json!([])));
-        assert!(p(&["select", "x"]).unwrap_err()["error"].as_str().unwrap().contains("macOS"));
+    }
+
+    #[test]
+    fn mac_only_verbs_parse_on_windows_too() {
+        assert_eq!(p(&["trusted"]).unwrap().verb, Verb::Trusted);
+        assert_eq!(p(&["trusted", "--prompt"]).unwrap().budget_ms, 2000);
+        let c = p(&["locate-control", "app:Notepad", "3"]).unwrap();
+        assert_eq!(c.verb, Verb::LocateControl { target: Target::App("Notepad".into()), id: 3 });
+        assert_eq!(c.budget_ms, 4000);
+        let c = p(&["select", "a.png", "--fit", "1568x1568"]).unwrap();
+        assert_eq!((c.verb, c.fit, c.budget_ms), (Verb::Select { out: "a.png".into() }, Some((1568, 1568)), 110_000));
+        for verb in ["select", "locate-control"] {
+            assert!(!p(&[verb]).unwrap_err()["error"].as_str().unwrap().contains("macOS"), "{verb}");
+        }
     }
 
     #[test]
     fn usage_errors_carry_a_code() {
-        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["act"], &["act", "{}", "extra"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"], &["ocr-file"], &["ocr-file", "a.png", "--origin"], &["ocr-file", "a.png", "--origin", "1x2"], &["ocr-file", "a.png", "x"], &["image", "a.png"], &["image", "a.png", "b.jpg", "--crop", "1,2,3"], &["image", "a.png", "b.jpg", "--crop", "-1,0,3,3"], &["image", "a.png", "b.jpg", "--crop", "0,0,0,3"], &["image", "a.png", "b.jpg", "--size", "0,3"], &["image", "a.png", "b.jpg", "--size"], &["image", "a.png", "b.jpg", "--what", "x"]] {
+        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["act"], &["act", "{}", "extra"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"], &["ocr-file"], &["ocr-file", "a.png", "--origin"], &["ocr-file", "a.png", "--origin", "1x2"], &["ocr-file", "a.png", "x"], &["image", "a.png"], &["image", "a.png", "b.jpg", "--crop", "1,2,3"], &["image", "a.png", "b.jpg", "--crop", "-1,0,3,3"], &["image", "a.png", "b.jpg", "--crop", "0,0,0,3"], &["image", "a.png", "b.jpg", "--size", "0,3"], &["image", "a.png", "b.jpg", "--size"], &["image", "a.png", "b.jpg", "--what", "x"], &["trusted", "x"], &["locate-control", "front"], &["locate-control", "front", "0"], &["locate-control", "front", "x"], &["locate-control", "screen", "1"], &["locate-control", "front", "1", "2"], &["select"], &["select", "a.png", "b"]] {
             let e = p(bad).unwrap_err();
             assert_eq!(e["ok"], false, "{bad:?}");
             assert_eq!(e["code"], "usage", "{bad:?}");

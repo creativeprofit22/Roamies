@@ -27,6 +27,9 @@ Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
 | `ui <target>` | `{ok, window, controls:[control], texts, elsewhere, note}`; Windows adds `source` (`"uia"` or `"ocr"`), and `ocr`, `ocrMs`, `ocrLang` when text recognition ran (see [Text recognition fallback (Windows)](#text-recognition-fallback-windows)) |
 | `find-text <target> <text> [scroll]` | `{ok, matches:[match]}` |
 | `image <in> <out.jpg> [--crop x,y,w,h] [--size w,h] [--marks <marks.json>]` | `{ok, file, sent:[w, h]}`: crop (source pixels), resize to exactly `size`, draw numbered boxes (`[{n, rect:[x,y,w,h]}]` in output pixels), write a JPEG. Used for numbered marks and closer looks (see `docs/pointing.md`) |
+| `select <out.png> [--fit <edge>x<tokens>]` | `{ok, file}` after the user drags an area (a click picks the window under the pointer); Windows adds `sent: [w, h]` and scales to `--fit`. Esc, a right-click or running out of time gives exactly `{ok: false, cancelled: true}`. An area over a hands-off window is refused (`hands_off`) |
+| `trusted [--prompt]` | `{ok, trusted}`. On Windows always `true`: there is no Accessibility permission to grant |
+| `locate-control <target> <id>` | `{ok, window, control}`: where control `id` (the same ids as `ui`) is now; `not_found` if it's gone. `screen` targets are refused like `ui` |
 
 - `window`: `{id, app, title, bounds}`.
 - `control`: `{id, role, label, bounds, value?, focused?, offscreen?}`. At most 260, visible ones first and
@@ -38,8 +41,6 @@ Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
   smallest box. Across windows: any exact match first, then by `rank` (front window first). At most 8 per
   window and 12 windows.
 - `scroll`: if nothing whole is visible, scroll the best hidden whole match into view and search again.
-
-`select`, `trusted` and `locate-control` are macOS-only for now.
 
 ## act: click and type in other apps
 
@@ -74,6 +75,13 @@ How each step works on Windows (the window is brought to the front first and che
   type it as Unicode keystrokes and read it back again. Still different = `mismatch`. Web page fields are typed
   first (pages ignore set values). Password fields are typed and reported as `••••`: Windows never gives
   their value back, so they can't be checked.
+- Paste fallback (chat apps, some web editors): when both read-backs fail, `set`/`fill` paste the text with
+  Ctrl+V and read it back once more (`done` says `(pasted)`). The clipboard is saved first and put back right
+  after the paste, also when it fails; the pasted text is kept out of clipboard history and cloud clipboard.
+  Only text and images are put back (files or formatting are lost, the same as dictation), and something the
+  user copies in those ~350 ms is overwritten. Only Ctrl+A and Ctrl+V are sent, never Enter. Never used for
+  password fields or for clearing a field. If the paste doesn't show either, the old text is put back where
+  possible and the step fails with `mismatch`, saying whether it was put back.
 - Mouse and keys go through `SendInput`; if Windows takes fewer events than sent, the step fails (`input`).
   Before sending, the helper waits up to 1.5 s for the user to let go of Ctrl, Alt, Shift or Win (`keys_held`).
 - Before every step the front window is checked again: hands-off, input-only or administrator apps stop the
@@ -124,11 +132,11 @@ window's own pixels (the same grab as `capture`, never written to disk) with `Wi
 
 - macOS: points, global display coordinates.
 - Windows: **physical screen pixels** in virtual-desktop coordinates (the helper is Per-Monitor V2 DPI
-  aware). Every successful Windows reply adds `unit: "px"`; `windows`, `locate` and `capture` also add
+  aware). Every successful Windows reply adds `unit: "px"`; `windows`, `locate`, `locate-control` and `capture` also add
   `monitors: [{bounds, origin, scale, primary}]`, and each window has its monitor's `scale` (1.0 = 96 DPI).
   To get logical points for a monitor, subtract its `origin` and divide by its `scale`. The captured image
   covers exactly `window.bounds` (or `bounds` for a monitor) and is `sent` pixels big.
-- `--fit <edge>x<tokens>` (Windows): resize the capture to the model's size, the same rule as `resizedSize` in
+- `--fit <edge>x<tokens>` (Windows): resize the capture (or the `select` area) to the model's size, the same rule as `resizedSize` in
   `sidecar/pointing.mjs` (`tokens` 0 = no token limit). Both are checked against
   `hands-win/tests/fixtures/resize.json`. Without it, `sent` is the bounds' own size.
 
@@ -142,6 +150,9 @@ Each verb runs on a worker thread with a deadline, and every UI Automation node 
 | `capture` | 5 s | – |
 | `ui` | 4 s | 3000 |
 | `find-text` | 6 s total | 4000 per window, 12 windows |
+| `trusted` | 2 s | – |
+| `locate-control` | 4 s | 3000 |
+| `select` | 110 s (the sidecar stops the helper at 120 s) | – |
 
 When the time or node cap runs out the reply is what was found so far, plus `partial: true` and
 `partialReason: "time" | "nodes"`. If an app stops answering mid-call, the helper still answers 0.5 s after

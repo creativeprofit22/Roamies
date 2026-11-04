@@ -1,4 +1,4 @@
-// The verbs: windows, locate, capture, ui and find-text (with an OCR fallback for apps that share no text),
+// The verbs: windows, locate, capture, ui, locate-control, find-text, select and trusted (with an OCR fallback for apps that share no text),
 // plus the test-only ocr-file. Runs on the budget's worker thread.
 use crate::budget::{publish, Budget, Snapshot, Stop};
 use crate::cli::{Cmd, Verb, FIND_NODES_PER_WINDOW, FIND_WINDOWS, UI_NODES};
@@ -56,6 +56,9 @@ pub fn dispatch(c: Cmd, snap: Snapshot) -> Value {
         Verb::OcrFile { file, origin } => ocr_file(file, *origin, &budget),
         Verb::Image { input, out, crop, size, marks } => image(input, out, *crop, *size, marks.as_deref()),
         Verb::Act(plan) => Ok(crate::act::run(plan, fake, &budget, &snap)),
+        Verb::Trusted => Ok(p::trusted_reply()),
+        Verb::LocateControl { target, id } => resolve(target).and_then(|w| guard(&w, fake).map(|_| w)).and_then(|w| locate_control(&w, *id, &mut budget, &mons)),
+        Verb::Select { out } => crate::select::run(out, c.fit, fake, &budget),
     };
     res.unwrap_or_else(|e| e)
 }
@@ -115,7 +118,8 @@ fn readable(w: &WinInfo) -> Result<(), Value> {
     }
 }
 
-fn ui(w: &WinInfo, budget: &mut Budget, snap: &Snapshot) -> Result<Value, Value> {
+/// Walks the window the way `ui` does (same order, same ids); `progress` sees the list as it grows.
+fn collect(w: &WinInfo, budget: &mut Budget, progress: &mut dyn FnMut(&UiCollect)) -> Result<(UiCollect, Option<Stop>), Value> {
     readable(w)?;
     let uia = Uia::new(budget)?;
     let hwnd = windows::hwnd(w.id);
@@ -123,14 +127,14 @@ fn ui(w: &WinInfo, budget: &mut Budget, snap: &Snapshot) -> Result<Value, Value>
     loop {
         let nudged = uia::nudge_browser(hwnd);
         let mut col = UiCollect::new(w.bounds);
-        publish(snap, col.reply(w));
+        progress(&col);
         let mut count = 0usize;
         let mut b = budget.with_nodes(UI_NODES);
         let end = uia.walk(hwnd, &mut b, &mut |n: &Node| {
             col.visit(n);
             count += 1;
             if count.is_multiple_of(200) {
-                publish(snap, col.reply(w));
+                progress(&col);
             }
         })?;
         if retry_empty_page(nudged, &end, attempt, budget) {
@@ -138,14 +142,25 @@ fn ui(w: &WinInfo, budget: &mut Budget, snap: &Snapshot) -> Result<Value, Value>
             std::thread::sleep(Duration::from_millis(300));
             continue;
         }
-        let mut v = col.reply(w);
-        let mut stop = end.stop;
-        if col.needs_ocr() {
-            stop = stop.or(ocr_ui(w, &col, &mut v, budget)?);
-        }
-        p::mark_partial(&mut v, stop);
-        return Ok(v);
+        return Ok((col, end.stop));
     }
+}
+
+fn ui(w: &WinInfo, budget: &mut Budget, snap: &Snapshot) -> Result<Value, Value> {
+    let (col, mut stop) = collect(w, budget, &mut |col| publish(snap, col.reply(w)))?;
+    let mut v = col.reply(w);
+    if col.needs_ocr() {
+        stop = stop.or(ocr_ui(w, &col, &mut v, budget)?);
+    }
+    p::mark_partial(&mut v, stop);
+    Ok(v)
+}
+
+/// Where control `id` (as numbered by `ui`) is now, so the caller can point at it.
+fn locate_control(w: &WinInfo, id: usize, budget: &mut Budget, mons: &[p::Monitor]) -> Result<Value, Value> {
+    let (col, _) = collect(w, budget, &mut |_| {})?;
+    let (c, _) = col.by_id(id).ok_or_else(|| fail("not_found", &format!("No control {id} in {}. Read the window again.", w.app)))?;
+    Ok(p::locate_control_reply(w, &p::control(id, c), mons))
 }
 
 fn add_note(v: &mut Value, note: &str) {

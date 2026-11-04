@@ -5,6 +5,7 @@
 use crate::budget::{publish, Budget, Snapshot};
 use crate::cli::UI_NODES;
 use crate::controls::{search_window, UiCollect};
+use crate::fill::{self, Filled, How, Kind, Ways};
 use crate::forms::{self, Cand};
 use crate::geom::Rect;
 use crate::input::{self, InputError};
@@ -14,6 +15,7 @@ use crate::protocol::{self as p, Control, WinInfo};
 use crate::rank;
 use crate::uia::{self, Did, Node, Uia};
 use crate::{cmd, dpi, elevation, focus, hands_off, risky, roles, windows};
+use roamies_paste_core::{Chord, ClipboardPaste, SystemClip};
 use serde_json::Value;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -493,42 +495,48 @@ impl Act {
         forms::by_label(&cands, lab).map(|i| fields[i].clone())
     }
 
-    /// Puts the cursor in a field, replaces its text and reads back what it shows. Native fields take the
-    /// value directly (then typing if that didn't show); web page fields need real keystrokes first, or the
-    /// page never hears about it. Never types unless the field really has focus.
-    fn type_into(&mut self, n: &Node, text: &str) -> Result<Option<String>, Value> {
+    /// Puts the cursor in a field, replaces its text and reads back what it shows, in the order `fill::fill`
+    /// sets out. `last_resort` allows the clipboard paste and putting the old text back when nothing else
+    /// worked; type-to-search in a dropdown goes without, so the typed text stays for the suggestions.
+    fn type_into(&mut self, n: &Node, text: &str, last_resort: bool) -> Result<Filled, Value> {
         uia::set_focus(&n.el);
         if !self.click_el(&n.el, true)? {
-            return Ok(None);
+            return Ok(Filled::NotHere);
         }
         sleep(ms(80));
-        let settable = uia::value_writable(&n.el);
-        if !n.in_web && !n.password && settable && uia::value_set(&n.el, text) == Did::Done {
-            let now = shows(&n.el);
-            if forms::reads_back(&now, text) {
-                return Ok(Some(now));
-            }
-        }
-        let here = uia::has_focus(&n.el)
-            || self.uia.focused_element().is_some_and(|f| uia::process_id(&f) == Some(self.w.pid) && uia::current_rect(&f).zip(uia::current_rect(&n.el)).is_some_and(|(a, b)| a.intersects(&b)));
-        if !here {
-            return Ok(None);
-        }
-        self.key("ctrl+a")?;
-        if text.is_empty() {
-            self.key("delete")?;
+        let kind = if n.password {
+            Kind::Password
+        } else if n.in_web {
+            Kind::Web
         } else {
-            self.type_text(text)?;
+            Kind::Native
+        };
+        fill::fill(&mut Field { act: self, n, last_resort }, text, kind)
+    }
+
+    /// The keyboard focus is on this field (or something inside it) in the target app.
+    fn focus_in(&self, n: &Node) -> bool {
+        uia::has_focus(&n.el)
+            || self.uia.focused_element().is_some_and(|f| uia::process_id(&f) == Some(self.w.pid) && uia::current_rect(&f).zip(uia::current_rect(&n.el)).is_some_and(|(a, b)| a.intersects(&b)))
+    }
+
+    /// Selects the field's text and pastes over it, then gives the clipboard back. Nothing is sent unless
+    /// the field has focus and the target is in front; only Ctrl+A and Ctrl+V, never Enter.
+    fn paste_into(&mut self, n: &Node, text: &str) -> Result<bool, Value> {
+        if !self.focus_in(n) {
+            return Ok(false);
+        }
+        self.ensure_front()?;
+        // Clipboard busy (another app holds it open): nothing was sent, so the read-back reports it.
+        let Ok(clip) = SystemClip::new_private() else { return Ok(false) };
+        self.key("ctrl+a")?;
+        let mut sink = ClipboardPaste { clip, chord: KeysChord(None), settle: ms(50), wait: ms(300) };
+        let r = sink.insert(text);
+        if let Some(e) = sink.chord.0.take() {
+            return Err(self.input_err(e));
         }
         sleep(ms(120));
-        if n.password {
-            return Ok(Some(String::new()));
-        }
-        let mut now = shows(&n.el);
-        if !forms::reads_back(&now, text) && n.in_web && settable && uia::value_set(&n.el, text) == Did::Done {
-            now = shows(&n.el);
-        }
-        Ok(Some(now))
+        Ok(r.is_ok())
     }
 
     fn fill(&mut self, s: &Step, budget: &Budget) -> Result<(), Value> {
@@ -557,40 +565,40 @@ impl Act {
             return Err(self.err("not_found", &format!("Step {}: no text field called \"{name}\" here. Check its label with read_window.", self.step)));
         };
         let label = if label.trim().is_empty() { if name.is_empty() { "the field".to_string() } else { name.clone() } } else { label.trim().to_string() };
-        let Some(now) = self.type_into(&n, &text)? else {
-            return Err(self.err("not_editable", &format!("Step {}: couldn't put the cursor in \"{label}\", so nothing was typed.", self.step)));
+        let (now, how) = match self.type_into(&n, &text, true)? {
+            Filled::Shown(now, how) => (now, how),
+            Filled::Failed { shows, put_back, pasted } => return Err(self.mismatch(&n, &label, &shows, put_back, pasted, &text)),
+            Filled::NotHere => return Err(self.err("not_editable", &format!("Step {}: couldn't put the cursor in \"{label}\", so nothing was typed.", self.step))),
         };
+        let pasted = if how == How::Pasted { " (pasted)" } else { "" };
         if s.action == Action::Set {
-            if !n.password && !forms::reads_back(&now, &text) {
-                return Err(self.mismatch(&n, &label, &now));
-            }
-            self.done.push(format!("set {label}"));
+            self.done.push(format!("set {label}{pasted}"));
         } else if n.password {
             // Windows never gives a password field's text back, so there's nothing to read back.
             self.done.push(format!("{label} = \"••••\""));
         } else {
-            if !forms::reads_back(&now, &text) {
-                return Err(self.mismatch(&n, &label, &now));
-            }
             let shown: String = now.trim().chars().take(60).collect();
-            self.done.push(format!("{label} = \"{shown}\""));
+            self.done.push(format!("{label} = \"{shown}\"{pasted}"));
         }
         self.walk(budget);
         Ok(())
     }
 
-    fn mismatch(&self, n: &Node, label: &str, now: &str) -> Value {
+    fn mismatch(&self, n: &Node, label: &str, now: &str, put_back: bool, pasted: bool, text: &str) -> Value {
         let now = now.trim();
+        let back = if put_back { " It shows its old text again." } else { " Its old text couldn't be put back." };
         if now.is_empty() && !uia::value_writable(&n.el) && n.ct != roles::EDIT {
             return self.err(
                 "mismatch",
-                &format!("Step {}: \"{label}\" can't be typed in; it opens a picker. Use click_text on it, then on the month arrows (e.g. 'Next Month') and the day.", self.step),
+                &format!("Step {}: \"{label}\" can't be typed in; it opens a picker. Use click_text on it, then on the month arrows (e.g. 'Next Month') and the day.{back}", self.step),
             );
         }
         let cut: String = now.chars().take(80).collect();
+        let ways = if pasted { "typed, set and pasted into" } else { "typed and set into" };
+        let skipped = if !pasted && !text.is_empty() { " (the clipboard was busy, so it wasn't pasted)" } else { "" };
         self.err(
             "mismatch",
-            &format!("Step {}: typed into \"{label}\" but it shows \"{cut}\". If a cookie banner or pop-up covers the page, close it first (click_text its button), then fill again; otherwise check the field with read_window.", self.step),
+            &format!("Step {}: {ways} \"{label}\"{skipped} but it showed \"{cut}\".{back} If a cookie banner or pop-up covers the page, close it first (click_text its button), then fill again; otherwise check the field with read_window.", self.step),
         )
     }
 
@@ -667,7 +675,7 @@ impl Act {
         let typeable = e.ct == roles::EDIT || (e.ct == roles::COMBOBOX && uia::value_writable(&e.el));
         if let Some(o) = self.find_option(&e, &option, budget) {
             self.activate(&o)?;
-        } else if typeable && self.type_into(&e, &option)?.is_some() && {
+        } else if typeable && !matches!(self.type_into(&e, &option, false)?, Filled::NotHere) && {
             sleep(ms(500));
             true
         } {
@@ -811,6 +819,74 @@ impl Act {
         self.done.push(format!("scrolled {dir}"));
         self.walk(budget);
         Ok(())
+    }
+}
+
+/// One field in the target app, as `fill::fill` sees it.
+struct Field<'a> {
+    act: &'a mut Act,
+    n: &'a Node,
+    last_resort: bool,
+}
+
+impl Ways for Field<'_> {
+    type Err = Value;
+
+    fn set_value(&mut self, text: &str) -> bool {
+        uia::value_writable(&self.n.el) && uia::value_set(&self.n.el, text) == Did::Done
+    }
+
+    fn type_keys(&mut self, text: &str) -> Result<bool, Value> {
+        if !self.act.focus_in(self.n) {
+            return Ok(false);
+        }
+        self.act.key("ctrl+a")?;
+        if text.is_empty() {
+            self.act.key("delete")?;
+        } else {
+            self.act.type_text(text)?;
+        }
+        sleep(ms(120));
+        Ok(true)
+    }
+
+    fn paste(&mut self, text: &str) -> Result<bool, Value> {
+        if !self.last_resort {
+            return Ok(false);
+        }
+        self.act.paste_into(self.n, text)
+    }
+
+    fn shows(&mut self) -> String {
+        shows(&self.n.el)
+    }
+
+    fn put_back(&mut self, old: &str) -> bool {
+        if !self.last_resort {
+            return false;
+        }
+        if self.set_value(old) {
+            return true;
+        }
+        if old.is_empty() {
+            return self.act.focus_in(self.n) && self.act.key("ctrl+a").and_then(|_| self.act.key("delete")).is_ok();
+        }
+        self.act.paste_into(self.n, old).unwrap_or(false)
+    }
+}
+
+/// Ctrl+V through SendInput (which waits for the user to let go of their keys). The input error is kept
+/// so the step reports it with its own code once the clipboard is back.
+struct KeysChord(Option<InputError>);
+
+impl Chord for KeysChord {
+    fn paste(&mut self) -> Result<(), String> {
+        let c = keys::parse("ctrl+v").map_err(|_| "ctrl+v".to_string())?;
+        input::key(&c).map_err(|e| {
+            let m = e.message();
+            self.0 = Some(e);
+            m
+        })
     }
 }
 

@@ -9,10 +9,14 @@
 //   roamies-hands ocr-file <image.png> [--origin x,y]        test only: OCR an image as if it were a window
 //   roamies-hands act '<plan json>'                          click, fill, choose, scroll, press keys (docs/hands.md)
 //   roamies-hands image <in> <out.jpg> [--crop x,y,w,h] [--size w,h] [--marks m.json]  crop, resize, draw numbered marks
+//   roamies-hands locate-control <target> <id>               where control <id> (from `ui`) is now
+//   roamies-hands select <out.png> [--fit <edge>x<tokens>]   the user drags an area (or clicks a window); Esc cancels
+//   roamies-hands trusted [--prompt]                         always true: Windows has no permission to grant
 mod budget;
 mod cli;
 mod draw;
 mod elevation;
+mod fill;
 mod fit;
 mod focus;
 mod forms;
@@ -42,6 +46,8 @@ mod com;
 mod dpi;
 #[cfg(windows)]
 mod ocr;
+#[cfg(windows)]
+mod select;
 #[cfg(windows)]
 mod uia;
 #[cfg(windows)]

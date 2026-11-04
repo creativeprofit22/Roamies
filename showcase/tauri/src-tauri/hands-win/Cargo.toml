@@ -18,6 +18,8 @@ serde_json = "=1.0.154"
 
 # Renamed so it doesn't clash with this crate's own `windows` module (window listing).
 [target.'cfg(windows)'.dependencies]
+# Clipboard save/paste/restore for fill's paste fallback, shared with the host's dictation.
+roamies-paste-core = { path = "../paste-core", features = ["system"] }
 w32 = { package = "windows", version = "=0.62.2", features = [
   "Win32_Foundation",
   "Win32_Security",
@@ -33,6 +35,7 @@ w32 = { package = "windows", version = "=0.62.2", features = [
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Imaging",
   "Win32_System_Threading",
+  "Win32_System_LibraryLoader",
   "Win32_Storage_FileSystem",
   "Win32_Storage_Xps",
   "Win32_Graphics_Direct3D",

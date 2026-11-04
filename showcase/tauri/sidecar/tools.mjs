@@ -53,7 +53,7 @@ const appFinder = createAppFinder({
 });
 // Windows error text comes in the system language, so it's only ever a short detail after an English message.
 const winSaid = (stderr) => { const d = String(stderr ?? '').trim().split(/\r?\n/)[0].slice(0, 120); return d ? ` (Windows said: ${d})` : ''; };
-const actionsOff = `File edits and commands are switched off. Tell the user to turn on "Allow File Edits & Commands" in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'} menu if they want this.`;
+const actionsOff = `File edits, commands and app control are switched off. Tell the user to turn on "Allow Edits, Commands & Clicks" in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'} menu if they want this.`;
 
 // "hands": the bundled screen helper (macOS: hands/main.swift; Windows x64: hands-win, see docs/hands.md).
 const HANDS = process.env.ROAMIES_HANDS || '';

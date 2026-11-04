@@ -9,6 +9,6 @@ RoamiesSettings.section('general', {
       k.toggle({ key: 'sound', title: 'Sound effects', desc: 'Little bleeps when Sidekick talks and moves.', on: g.sound }),
       // Only an installed copy can start at login, so the row is hidden otherwise (login is null).
       g.login != null ? k.toggle({ key: 'login', title: 'Open at login', desc: 'Start with your computer.', on: g.login }) : null,
-      k.toggle({ key: 'actions', title: 'Edit files and run commands', desc: (on) => (on ? 'On: Sidekick can change things, carefully.' : 'Off: Sidekick can look, never change.'), on: g.actions })));
+      k.toggle({ key: 'actions', title: 'Edit files, run commands and use apps', desc: (on) => (on ? 'On: Sidekick can change files, run commands, and click and type in other apps, carefully.' : 'Off: Sidekick can look, never change or click.'), on: g.actions })));
   },
 });

@@ -98,7 +98,7 @@ function fullMenu(v) {
         ...(v.usage.requests ? [{ id: 'usage', label: `Today: ${v.usage.requests} requests · ${tokens(v.usage.tokens)} new tokens`, enabled: false }, { sep: true }] : []),
         { id: 'sound', label: 'Sound Effects', checked: v.sound },
         ...(v.login.supported ? [{ id: 'login', label: 'Open at Login', checked: v.login.on }] : []),
-        { id: 'actions', label: 'Allow File Edits & Commands', checked: v.allowActions },
+        { id: 'actions', label: 'Allow Edits, Commands & Clicks', checked: v.allowActions },
         { label: 'Telemetry', items: [
           { id: 'telemetry', label: 'Record Telemetry (stays on this computer)', checked: v.telemetry.on, enabled: !v.telemetry.locked },
           { id: 'telemetrytext', label: 'Include What Was Said', checked: v.telemetry.text, enabled: v.telemetry.on },

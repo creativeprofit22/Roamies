@@ -43,7 +43,7 @@ your Dock.
 - **Your AI, your way:** it signs in through the same `~/.gg/auth.json` as GG Coder (Anthropic, OpenAI,
   Gemini, Kimi and xAI subscriptions, or API keys), so if GG Coder is signed in, so is Sidekick.
 - **Safe by default:** writing files, running commands and controlling other apps are off until you turn
-  them on in setup or the menu bar ("Allow File Edits & Commands"). Even then, anything that changes things
+  them on in setup or the menu bar ("Allow Edits, Commands & Clicks"). Even then, anything that changes things
   asks you first, and the dangerous stuff never runs: admin commands, wiping disks or your home folder,
   reading passwords and keys, startup scripts, downloaded scripts, and typing into terminals or password apps.
 - **Starts with your computer:** "Open at Login" is on by default (switch it in the menu bar or the setup

@@ -111,6 +111,11 @@ pub fn ocr_file_reply(lang: &str, lines: Vec<Value>, ms: u64) -> Value {
     ok(json!({"source": "ocr", "lang": lang, "lines": lines, "ocrMs": ms}))
 }
 
+/// The `image` verb: the JPEG written and its size.
+pub fn image_reply(file: &str, sent: (u32, u32)) -> Value {
+    ok(json!({"file": file, "sent": [sent.0, sent.1]}))
+}
+
 pub struct Control {
     pub role: String,
     pub label: String,
@@ -202,6 +207,7 @@ mod tests {
         find_ocr.extend(want(&s, "ocrTiming"));
         assert_eq!(keys(&f), find_ocr);
         assert_eq!(keys(&ocr_file_reply("en-US", vec![], 5)), want(&s, "ocrFile"));
+        assert_eq!(keys(&image_reply("o.jpg", (4, 3))), want(&s, "image"));
         let line = crate::ocr_map::line_json(&crate::ocr_map::Line { text: "Hi".into(), bounds: Rect::new(0, 0, 9, 9), words: vec![crate::ocr_map::Word { text: "Hi".into(), bounds: Rect::new(0, 0, 9, 9) }] });
         assert_eq!(keys(&line), want(&s, "ocrLine"));
         assert_eq!(keys(&line["words"][0]), want(&s, "ocrWord"));

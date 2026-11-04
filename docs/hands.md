@@ -26,6 +26,7 @@ Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
 | `capture <out.jpg> <target> [--fit <edge>x<tokens>]` | `{ok, file, window}`, or `{ok, file, what:"screen", bounds}` for `screen` / `screen:<n>`; Windows adds `sent: [w, h]` |
 | `ui <target>` | `{ok, window, controls:[control], texts, elsewhere, note}`; Windows adds `source` (`"uia"` or `"ocr"`), and `ocr`, `ocrMs`, `ocrLang` when text recognition ran (see [Text recognition fallback (Windows)](#text-recognition-fallback-windows)) |
 | `find-text <target> <text> [scroll]` | `{ok, matches:[match]}` |
+| `image <in> <out.jpg> [--crop x,y,w,h] [--size w,h] [--marks <marks.json>]` | `{ok, file, sent:[w, h]}`: crop (source pixels), resize to exactly `size`, draw numbered boxes (`[{n, rect:[x,y,w,h]}]` in output pixels), write a JPEG. Used for numbered marks and closer looks (see `docs/pointing.md`) |
 
 - `window`: `{id, app, title, bounds}`.
 - `control`: `{id, role, label, bounds, value?, focused?, offscreen?}`. At most 260, visible ones first and

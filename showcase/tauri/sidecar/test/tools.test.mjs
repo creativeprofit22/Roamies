@@ -118,3 +118,106 @@ console.log('windows open-in-app plan tests: passed');
   } finally { process.chdir(cwd); }
   console.log('windows OCR read_window tests: passed');
 }
+
+// Numbered marks: a window shot gets the window's controls drawn as numbers, and point_at mark uses the control's rect.
+{
+  const dir = fs.mkdtempSync(path.join(TMP, 'fake-marks-'));
+  const win = { id: 9, app: 'Notepad', title: 'a.txt', bounds: [100, 50, 800, 600] };
+  const script = (name, body) => fs.writeFileSync(path.join(dir, name), body);
+  const reply = (v) => `console.log(${JSON.stringify(JSON.stringify(v))})`;
+  // capture writes a stand-in image and reports it was sent at half size (400×300).
+  script('capture', `require('fs').writeFileSync(process.argv[2], 'img'); ${reply({ ok: true, window: win, sent: [400, 300], monitors: [{ bounds: [0, 0, 1920, 1080], scale: 1 }] })}`);
+  script('locate', reply({ ok: true, window: win }));
+  const controls = [
+    { id: 1, role: 'button', label: 'Save', bounds: [700, 60, 80, 24] },
+    { id: 2, role: 'edit', label: '', bounds: [110, 100, 780, 500] },
+    { id: 3, role: 'button', label: 'Hidden', bounds: [120, 900, 80, 24], offscreen: true },
+  ];
+  const setUi = (v) => script('ui', reply(v));
+  setUi({ ok: true, window: win, controls, texts: [], source: 'uia' });
+  // image copies the shot and keeps the marks it was given, so the test can check them.
+  script('image', `const fs = require('fs'); const a = process.argv; fs.copyFileSync(a[2], a[3]); fs.writeFileSync('drawn.json', fs.readFileSync(a[a.indexOf('--marks') + 1])); ${reply({ ok: true, unit: 'px', sent: [400, 300] })}`);
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    let pointed; const timings = [];
+    const made = createTools({ allowActions: () => false, ui: (m) => { if (m.e?.type === 'point') { pointed = m.e; made.pointWaits.get(m.e.id)?.(); } }, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: () => '', platform: 'win32', hands: process.execPath, onPointing: (x) => timings.push(x) });
+    const shot = made.tools.find((x) => x.name === 'take_screenshot'), pointAt = made.tools.find((x) => x.name === 'point_at');
+    const out = await shot.execute({ target: 'window:9' }, {});
+    const text = out.content[0].text;
+    assert.match(text, /Numbered marks on the image.*1 button "Save", 2 edit/);
+    assert.doesNotMatch(text, /Hidden/, 'offscreen controls get no mark');
+    // Marks reach the helper in sent-image pixels (half the screen size, offset by the window).
+    assert.deepEqual(JSON.parse(fs.readFileSync('drawn.json', 'utf8')), [{ n: 1, rect: [300, 5, 40, 12] }, { n: 2, rect: [5, 25, 390, 250] }]);
+    await pointAt.execute({ target: 'front', mark: 1, say: 'here' }, { toolCallId: 'm1' });
+    assert.deepEqual(timings.map(({ kind, marks, source, path: p }) => [kind, marks ?? p, source]), [['marks', 2, 'uia'], ['locate', 'mark', undefined]]);
+    assert.deepEqual(pointed.rect, [700, 60, 80, 24]);
+    assert.equal(pointed.label, 'Save');
+    await assert.rejects(pointAt.execute({ target: 'front', mark: 7, say: 'here' }, { toolCallId: 'm2' }), /marks 1–2/);
+    // OCR window: its lines become the marks.
+    setUi({ ok: true, window: win, controls: [], texts: ['Start'], source: 'ocr', ocr: [{ text: 'Start', bounds: [200, 200, 60, 20] }] });
+    assert.match((await shot.execute({ target: 'window:9' }, {})).content[0].text, /1 text "Start"/);
+    // A ui reply for another window (or none) means no marks, and mark is refused.
+    setUi({ ok: true, window: { ...win, id: 10 }, controls, texts: [] });
+    assert.doesNotMatch((await shot.execute({ target: 'front' }, {})).content[0].text, /Numbered marks/);
+    await assert.rejects(pointAt.execute({ target: 'front', mark: 1, say: 'here' }, { toolCallId: 'm3' }), /no numbered marks/);
+    // A whole-screen shot never asks for controls.
+    fs.rmSync('ui');
+    fs.rmSync('drawn.json');
+    assert.doesNotMatch((await shot.execute({ target: 'screen' }, {})).content[0].text, /Numbered marks/);
+    assert.ok(!fs.existsSync('drawn.json'));
+  } finally { process.chdir(cwd); }
+  console.log('numbered marks tests: passed');
+}
+
+// Crop-and-refine: a small box gets one closer look (native recapture, cropped and upscaled), the answer maps back.
+{
+  const { POINTING } = await import('../pointing.mjs');
+  assert.equal(POINTING.refine, false, 'refine is off by default (docs/pointing.md)');
+  POINTING.refine = true;
+  const dir = fs.mkdtempSync(path.join(TMP, 'fake-refine-'));
+  const win = { id: 9, app: 'Notepad', title: 'a.txt', bounds: [100, 50, 800, 600] };
+  const script = (name, body) => fs.writeFileSync(path.join(dir, name), body);
+  const reply = (v) => `console.log(${JSON.stringify(JSON.stringify(v))})`;
+  // With --fit the shot is sent at half size (400×300); without it, at native size (800×600).
+  script('capture', `require('fs').writeFileSync(process.argv[2], 'img'); const fit = process.argv.includes('--fit'); console.log(JSON.stringify({ ok: true, window: ${JSON.stringify(win)}, sent: fit ? [400, 300] : [800, 600], monitors: [{ bounds: [0, 0, 1920, 1080], scale: 1 }] }))`);
+  script('locate', reply({ ok: true, window: win }));
+  script('ui', reply({ ok: true, window: win, controls: [], texts: [] }));
+  script('image', `const fs = require('fs'); const a = process.argv; fs.copyFileSync(a[2], a[3]); fs.appendFileSync('image-args.txt', a.slice(4).join(' ') + String.fromCharCode(10)); ${reply({ ok: true, unit: 'px', sent: [640, 640] })}`);
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const points = [], timings = [];
+    const made = createTools({ allowActions: () => false, ui: (m) => { if (m.e?.type === 'point') { points.push(m.e); made.pointWaits.get(m.e.id)?.(); } }, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: () => '', platform: 'win32', hands: process.execPath, onPointing: (x) => timings.push(x) });
+    const shot = made.tools.find((x) => x.name === 'take_screenshot'), pointAt = made.tools.find((x) => x.name === 'point_at');
+    await shot.execute({ target: 'window:9' }, {});
+    // A big box points straight away.
+    await pointAt.execute({ target: 'front', box: [0, 0, 200, 150], say: 'here' }, { toolCallId: 'r0' });
+    assert.deepEqual(points.pop().rect, [100, 50, 400, 300]);
+    // A 40×12 box: no point yet, a 640×640 crop of native pixels [480, 0, 320, 320] comes back instead.
+    const look = await pointAt.execute({ target: 'front', box: [300, 5, 340, 17], say: 'here' }, { toolCallId: 'r1' });
+    assert.equal(points.length, 0);
+    assert.match(look.content[0].text, /closer look, a 640×640 px crop .*2× zoom/);
+    assert.equal(look.content[1].type, 'image');
+    assert.equal(fs.readFileSync('image-args.txt', 'utf8').trim(), '--crop 480,0,320,320 --size 640,640');
+    // The second answer is in crop pixels (0.5 screen px each, from the crop's origin) and points, even when small.
+    await pointAt.execute({ target: 'front', box: [240, 20, 400, 68], say: 'here' }, { toolCallId: 'r2' });
+    assert.deepEqual(points.pop().rect, [700, 60, 80, 24]);
+    await pointAt.execute({ target: 'front', box: [240, 20, 250, 30], say: 'here' }, { toolCallId: 'r3' });
+    assert.deepEqual(points.pop().rect, [700, 60, 5, 5]);
+    assert.equal(fs.readFileSync('image-args.txt', 'utf8').trim().split('\n').length, 1, 'never a second refine');
+    // Telemetry: the marks read per window shot, one crop, then how each point was found (refine_ms only for refine).
+    assert.deepEqual(timings.map((t) => t.kind === 'locate' ? t.path : t.kind), ['marks', 'box', 'crop', 'refine', 'refine']);
+    assert.equal(timings[0].marks, 0);
+    assert.equal(timings[2].upscale, 2);
+    assert.ok(timings[3].refineMs >= 0 && timings[2].ms >= 0);
+    assert.equal(timings[1].refineMs, undefined);
+    // If the helper can't crop, the small box is pointed at as given.
+    await shot.execute({ target: 'window:9' }, {});
+    script('image', `console.log(JSON.stringify({ ok: false, code: 'image_failed', error: 'nope' })); process.exit(1)`);
+    await pointAt.execute({ target: 'front', box: [300, 5, 340, 17], say: 'here' }, { toolCallId: 'r4' });
+    assert.deepEqual(points.pop().rect, [700, 60, 80, 24]);
+  } finally { process.chdir(cwd); }
+  POINTING.refine = false;
+  console.log('crop-and-refine tests: passed');
+}

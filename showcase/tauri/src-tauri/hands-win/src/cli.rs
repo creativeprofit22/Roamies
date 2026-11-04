@@ -1,6 +1,7 @@
 // Command-line parsing: the same verbs and arguments as hands/main.swift, plus two flags
 // (--budget-ms N for tests, --fake-exe NAME to test the hands-off refusal), and --fit <edge>x<tokens> to
 // size capture's image for the model (tokens 0 = no token limit).
+use crate::geom::Rect;
 use crate::protocol::fail;
 use crate::target::{parse as parse_target, Target};
 use serde_json::Value;
@@ -14,6 +15,8 @@ pub enum Verb {
     FindText { target: Target, text: String, scroll: bool },
     /// Test-only: OCR a PNG as if it were a window whose top-left corner is at `origin`.
     OcrFile { file: String, origin: (i32, i32) },
+    /// Crop (source pixels), resize to exactly `size`, draw numbered marks (output pixels), write JPEG.
+    Image { input: String, out: String, crop: Option<Rect>, size: Option<(u32, u32)>, marks: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,12 +35,42 @@ pub fn default_budget(v: &Verb) -> u64 {
         Verb::Ui(_) => 4000,
         Verb::FindText { .. } => 6000,
         Verb::OcrFile { .. } => 15000,
+        Verb::Image { .. } => 5000,
     }
 }
 
 pub const UI_NODES: usize = 3000;
 pub const FIND_NODES_PER_WINDOW: usize = 4000;
 pub const FIND_WINDOWS: usize = 12;
+
+fn numbers(s: &str, n: usize) -> Option<Vec<i64>> {
+    let v: Vec<i64> = s.split(',').map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+    (v.len() == n).then_some(v)
+}
+
+fn image(args: &[&str]) -> Result<Verb, Value> {
+    let u = "usage: image <in> <out.jpg> [--crop x,y,w,h] [--size w,h] [--marks <marks.json>]";
+    let bad = || fail("usage", u);
+    let [input, out, rest @ ..] = args else { return Err(bad()) };
+    let (mut crop, mut size, mut marks) = (None, None, None);
+    let mut it = rest.iter();
+    while let Some(flag) = it.next() {
+        let v = it.next().ok_or_else(bad)?;
+        match *flag {
+            "--crop" => match numbers(v, 4).as_deref() {
+                Some(&[x, y, w, h]) if w > 0 && h > 0 && x >= 0 && y >= 0 => crop = Some(Rect::new(x as i32, y as i32, w as i32, h as i32)),
+                _ => return Err(bad()),
+            },
+            "--size" => match numbers(v, 2).as_deref() {
+                Some(&[w, h]) if (1..=10000).contains(&w) && (1..=10000).contains(&h) => size = Some((w as u32, h as u32)),
+                _ => return Err(bad()),
+            },
+            "--marks" => marks = Some(v.to_string()),
+            _ => return Err(bad()),
+        }
+    }
+    Ok(Verb::Image { input: input.to_string(), out: out.to_string(), crop, size, marks })
+}
 
 fn target(s: &str, usage: &str) -> Result<Target, Value> {
     parse_target(s).ok_or_else(|| fail("usage", &format!("bad target {s:?}; {usage}")))
@@ -111,6 +144,7 @@ pub fn parse(argv: &[String]) -> Result<Cmd, Value> {
             };
             Verb::OcrFile { file, origin }
         }
+        "image" => image(&args[1..])?,
         "select" | "act" | "trusted" | "locate-control" => {
             return Err(fail("usage", &format!("{verb} is only available on macOS")));
         }
@@ -145,11 +179,15 @@ mod tests {
         assert_eq!(p(&["capture", "o.jpg", "front"]).unwrap().fit, None);
         assert_eq!(p(&["ocr-file", "a.png"]).unwrap().verb, Verb::OcrFile { file: "a.png".into(), origin: (0, 0) });
         assert_eq!(p(&["ocr-file", "a.png", "--origin", "-1920,40"]).unwrap().verb, Verb::OcrFile { file: "a.png".into(), origin: (-1920, 40) });
+        assert_eq!(p(&["image", "a.png", "b.jpg"]).unwrap().verb, Verb::Image { input: "a.png".into(), out: "b.jpg".into(), crop: None, size: None, marks: None });
+        let c = p(&["image", "a.png", "b.jpg", "--crop", "10,20,300,200", "--size", "600,400", "--marks", "m.json"]).unwrap();
+        assert_eq!(c.verb, Verb::Image { input: "a.png".into(), out: "b.jpg".into(), crop: Some(Rect::new(10, 20, 300, 200)), size: Some((600, 400)), marks: Some("m.json".into()) });
+        assert_eq!(c.budget_ms, 5000);
     }
 
     #[test]
     fn usage_errors_carry_a_code() {
-        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"], &["ocr-file"], &["ocr-file", "a.png", "--origin"], &["ocr-file", "a.png", "--origin", "1x2"], &["ocr-file", "a.png", "x"]] {
+        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"], &["ocr-file"], &["ocr-file", "a.png", "--origin"], &["ocr-file", "a.png", "--origin", "1x2"], &["ocr-file", "a.png", "x"], &["image", "a.png"], &["image", "a.png", "b.jpg", "--crop", "1,2,3"], &["image", "a.png", "b.jpg", "--crop", "-1,0,3,3"], &["image", "a.png", "b.jpg", "--crop", "0,0,0,3"], &["image", "a.png", "b.jpg", "--size", "0,3"], &["image", "a.png", "b.jpg", "--size"], &["image", "a.png", "b.jpg", "--what", "x"]] {
             let e = p(bad).unwrap_err();
             assert_eq!(e["ok"], false, "{bad:?}");
             assert_eq!(e["code"], "usage", "{bad:?}");

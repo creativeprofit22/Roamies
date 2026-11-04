@@ -1,0 +1,6 @@
+[
+ { "ask": "Where is the Learn more link?", "truth": [1239, 973, 82, 22] },
+ { "ask": "How do I add this page to my favorites?", "truth": [2365, 48, 24, 24] },
+ { "ask": "Where is the reading mode button?", "truth": [2337, 48, 24, 24] },
+ { "ask": "How do I open a new tab?", "truth": [284, 0, 32, 41] }
+]

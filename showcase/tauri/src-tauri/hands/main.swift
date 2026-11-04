@@ -10,10 +10,13 @@
 //   roamies-hands act <json>                   {"app":"Brave","steps":[{"do":"focus","id":3},{"do":"type","text":"hi"}]}
 //   roamies-hands trusted [--prompt]           Accessibility permission status
 //   roamies-hands locate-control <target> <id>  where one control (from `ui`) is on screen, for pointing
+//   roamies-hands image <in> <out.jpg> [--crop x,y,w,h] [--size w,h] [--marks marks.json]
+//                                              crop (source pixels), resize, draw numbered marks, write JPEG
 import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import ImageIO
 
 setvbuf(stdout, nil, _IOLBF, 0)
 func out(_ o: [String: Any]) -> Never {
@@ -682,6 +685,126 @@ func handsOff(_ pid: pid_t) -> String? {
     return HANDS_OFF[id]
 }
 
+// ---------- image: crop, resize, numbered marks ----------
+// Same 5×7 digits, colours and layout as hands-win/src/draw.rs, so marks look alike on both systems.
+
+let DIGITS: [[UInt8]] = [
+    [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+    [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+    [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+    [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+    [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+    [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+    [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+    [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+    [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+    [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+]
+let MARK_RGB: [[CGFloat]] = [[220, 40, 40], [30, 90, 220], [40, 140, 30], [150, 40, 170], [200, 100, 0], [0, 120, 140]]
+
+struct Mark { let n: Int; let x: Int; let y: Int; let w: Int; let h: Int }
+
+func imageFail(_ code: String, _ msg: String) -> Never { out(["ok": false, "code": code, "error": msg]) }
+
+// "x,y,w,h" or "w,h": whole numbers; the last two (the size) must be positive.
+func numbers(_ s: String, _ count: Int, _ name: String) -> [Int] {
+    let parts = s.split(separator: ",", omittingEmptySubsequences: false).map { Int($0.trimmingCharacters(in: .whitespaces)) }
+    guard parts.count == count, parts.allSatisfy({ $0 != nil }) else { imageFail("usage", "\(name) needs \(count) whole numbers separated by commas.") }
+    let v = parts.map { $0! }
+    guard v[count - 2] > 0, v[count - 1] > 0, v[count - 2] <= 20000, v[count - 1] <= 20000 else { imageFail("usage", "\(name) needs a positive size.") }
+    return v
+}
+
+func parseMarks(_ file: String) -> [Mark] {
+    guard let data = FileManager.default.contents(atPath: file) else { imageFail("not_found", "Can't read marks \(file).") }
+    guard let list = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { imageFail("usage", "Marks \(file) must be a JSON array.") }
+    var marks: [Mark] = []
+    for (i, item) in list.enumerated() {
+        let m = item as? [String: Any] ?? [:]
+        guard let n = (m["n"] as? NSNumber)?.intValue, n >= 1, n <= 9999 else { imageFail("usage", "mark \(i): n must be 1–9999") }
+        let r = ((m["rect"] as? [Any]) ?? []).compactMap { ($0 as? NSNumber)?.doubleValue }.map { Int($0.rounded()) }
+        guard r.count == 4, r[2] > 0, r[3] > 0 else { imageFail("usage", "mark \(i): rect must be [x, y, w, h] with a positive size") }
+        marks.append(Mark(n: n, x: r[0], y: r[1], w: r[2], h: r[3]))
+    }
+    return marks
+}
+
+// The context is flipped so (x, y) is the top-left, like the image's own pixels.
+func drawMarks(_ ctx: CGContext, _ marks: [Mark], _ w: Int, _ h: Int) {
+    let s = min(w, h) >= 400 ? 2 : 1
+    func fill(_ x: Int, _ y: Int, _ fw: Int, _ fh: Int, _ rgb: [CGFloat]) {
+        ctx.setFillColor(red: rgb[0] / 255, green: rgb[1] / 255, blue: rgb[2] / 255, alpha: 1)
+        ctx.fill(CGRect(x: x, y: y, width: fw, height: fh))
+    }
+    func colour(_ n: Int) -> [CGFloat] { MARK_RGB[n % MARK_RGB.count] }
+    // All outlines first, then the tags, so a neighbour's outline never covers a number.
+    for m in marks {
+        let c = colour(m.n)
+        fill(m.x, m.y, m.w, s, c); fill(m.x, m.y + m.h - s, m.w, s, c)
+        fill(m.x, m.y, s, m.h, c); fill(m.x + m.w - s, m.y, s, m.h, c)
+    }
+    for m in marks {
+        let text = String(m.n)
+        let (tw, th) = (text.count * 6 * s + s + 2 * s, 7 * s + 2 * s)
+        let tx = min(max(m.x, 0), max(w - tw, 0))
+        let ty = min(max(m.y >= th ? m.y - th : m.y, 0), max(h - th, 0))
+        fill(tx, ty, tw, th, colour(m.n))
+        for (i, ch) in text.enumerated() {
+            let glyph = DIGITS[Int(String(ch))!]
+            let gx = tx + 2 * s - s / 2 + i * 6 * s
+            for (row, bits) in glyph.enumerated() {
+                for col in 0..<5 where bits & (0b10000 >> UInt8(col)) != 0 {
+                    fill(gx + col * s, ty + s + row * s, s, s, [255, 255, 255])
+                }
+            }
+        }
+    }
+}
+
+func imageVerb(_ a: [String]) -> Never {
+    guard a.count >= 3 else { imageFail("usage", "usage: image <in> <out.jpg> [--crop x,y,w,h] [--size w,h] [--marks marks.json]") }
+    let input = a[1], output = a[2]
+    var crop: [Int]? = nil, size: [Int]? = nil, marksFile: String? = nil
+    var i = 3
+    while i < a.count {
+        guard i + 1 < a.count else { imageFail("usage", "\(a[i]) needs a value.") }
+        switch a[i] {
+        case "--crop": crop = numbers(a[i + 1], 4, "--crop")
+        case "--size": size = numbers(a[i + 1], 2, "--size")
+        case "--marks": marksFile = a[i + 1]
+        default: imageFail("usage", "Unknown option \(a[i]).")
+        }
+        i += 2
+    }
+    guard FileManager.default.fileExists(atPath: input) else { imageFail("not_found", "No image at \(input).") }
+    // Read the marks before any pixel work so a bad file fails fast.
+    let marks = marksFile.map(parseMarks) ?? []
+    guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: input) as CFURL, nil),
+          var img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { imageFail("image_failed", "Can't decode \(input).") }
+    if let c = crop {
+        let whole = CGRect(x: 0, y: 0, width: img.width, height: img.height)
+        let inner = CGRect(x: c[0], y: c[1], width: c[2], height: c[3]).intersection(whole)
+        guard !inner.isNull, !inner.isEmpty else { imageFail("usage", "--crop \(c[0]),\(c[1]),\(c[2]),\(c[3]) is outside the \(img.width)×\(img.height) image.") }
+        guard let cut = img.cropping(to: inner) else { imageFail("image_failed", "Crop failed.") }
+        img = cut
+    }
+    let (w, h) = (size?[0] ?? img.width, size?[1] ?? img.height)
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+    else { imageFail("image_failed", "Can't make a \(w)×\(h) image.") }
+    ctx.interpolationQuality = .high
+    ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+    ctx.translateBy(x: 0, y: CGFloat(h))
+    ctx.scaleBy(x: 1, y: -1)
+    drawMarks(ctx, marks, w, h)
+    guard let done = ctx.makeImage(),
+          let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: output) as CFURL, "public.jpeg" as CFString, 1, nil)
+    else { imageFail("image_failed", "Can't write \(output).") }
+    CGImageDestinationAddImage(dest, done, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+    guard CGImageDestinationFinalize(dest) else { imageFail("image_failed", "Can't write \(output).") }
+    out(["ok": true, "unit": "px", "file": output, "sent": [w, h]])
+}
+
 // ---------- commands ----------
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -1026,6 +1149,9 @@ case "act":
         out(["ok": true, "done": done, "window": winInfo(w2), "controls": now, "texts": pageText(app2, w2, cap: 2000)])
     }
     out(["ok": true, "done": done, "window": winInfo(w)])
+
+case "image":
+    imageVerb(args)
 
 default:
     fail("unknown command \(cmd)")

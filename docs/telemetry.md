@@ -77,6 +77,9 @@ by pairing events or subtracting `ts` (for example "chord down → first reply t
 | `agent.tool` | sidecar | tool call start → end | `name`, `anim`, `variant` |
 | `agent.safety` | sidecar | one `safety.mjs` check (child of its `agent.tool`) | `check` (`read`, `write`, `url`, `open`, `command`, `click`), `level` |
 | `hands.ocr` | sidecar | Windows screen helper text recognition inside one tool call (child of its `agent.tool`, back-dated by `ocrMs`) | `verb` (`ui`, `find-text`), `lines`, `lang`; never the text |
+| `hands.marks` | sidecar | numbered marks for a window screenshot: the helper's `ui` read (parallel with the capture), picking and drawing (child of its `agent.tool`) | `marks` (count, 0 when none were drawn), `source` (`uia`, `ocr`) |
+| `hands.crop` | sidecar | closer look for a small `point_at` box: native recapture plus crop and upscale | `upscale` |
+| `pointing.locate` | sidecar | event: how one `point_at` found its place (see `docs/pointing.md`) | `path` (`text`, `mark`, `id`, `box`, `point`, `refine`), `refine_ms` (crop sent → refined answer, the extra model turn; `refine` only) |
 | `dictation.check` | sidecar | safety check of the dictation target | `level` |
 | `voice_model.download` | sidecar | download start → ready/error | `engine` |
 | `ui.error_shown` | sidecar | event: an error bubble was shown | |

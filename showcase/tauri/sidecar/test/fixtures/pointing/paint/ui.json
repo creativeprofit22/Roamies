@@ -1,0 +1,435 @@
+{
+ "controls": [
+  {
+   "bounds": [
+    30,
+    -1,
+    22,
+    24
+   ],
+   "id": 1,
+   "label": "Guardar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    97,
+    1,
+    13,
+    22
+   ],
+   "id": 2,
+   "label": "Personalizar Barra de herramientas de acceso rápido",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    0,
+    23,
+    56,
+    23
+   ],
+   "id": 3,
+   "label": "Pestaña Archivo",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    56,
+    23,
+    56,
+    23
+   ],
+   "id": 4,
+   "label": "Inicio",
+   "role": "tab"
+  },
+  {
+   "bounds": [
+    113,
+    23,
+    45,
+    23
+   ],
+   "id": 5,
+   "label": "Ver",
+   "role": "tab"
+  },
+  {
+   "bounds": [
+    2516,
+    23,
+    22,
+    22
+   ],
+   "id": 6,
+   "label": "Minimizar la Cinta de opciones",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2538,
+    23,
+    22,
+    22
+   ],
+   "id": 7,
+   "label": "Ayuda",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    6,
+    89,
+    42,
+    28
+   ],
+   "id": 8,
+   "label": "Pegar",
+   "role": "menu button"
+  },
+  {
+   "bounds": [
+    119,
+    51,
+    63,
+    38
+   ],
+   "id": 9,
+   "label": "Seleccionar",
+   "role": "menu button",
+   "value": "Selección"
+  },
+  {
+   "bounds": [
+    119,
+    89,
+    63,
+    28
+   ],
+   "id": 10,
+   "label": "Seleccionar",
+   "role": "menu button"
+  },
+  {
+   "bounds": [
+    182,
+    73,
+    110,
+    22
+   ],
+   "id": 11,
+   "label": "Cambiar tamaño",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    182,
+    95,
+    60,
+    22
+   ],
+   "id": 12,
+   "label": "Girar",
+   "role": "menu button"
+  },
+  {
+   "bounds": [
+    303,
+    59,
+    23,
+    22
+   ],
+   "id": 13,
+   "label": "Lápiz",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    326,
+    59,
+    24,
+    22
+   ],
+   "id": 14,
+   "label": "Relleno con color",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    350,
+    59,
+    22,
+    22
+   ],
+   "id": 15,
+   "label": "Texto",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    303,
+    88,
+    23,
+    22
+   ],
+   "id": 16,
+   "label": "Borrador",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    326,
+    88,
+    24,
+    22
+   ],
+   "id": 17,
+   "label": "Selector de color",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    350,
+    88,
+    22,
+    22
+   ],
+   "id": 18,
+   "label": "Lupa",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    383,
+    51,
+    46,
+    38
+   ],
+   "id": 19,
+   "label": "Pinceles",
+   "role": "menu button"
+  },
+  {
+   "bounds": [
+    383,
+    89,
+    46,
+    26
+   ],
+   "id": 20,
+   "label": "Pinceles",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    583,
+    75,
+    15,
+    19
+   ],
+   "id": 21,
+   "label": "Bajar fila",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    583,
+    94,
+    15,
+    20
+   ],
+   "id": 22,
+   "label": "Formas",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    697,
+    51,
+    45,
+    66
+   ],
+   "id": 23,
+   "label": "Tamaño",
+   "role": "menu button"
+  },
+  {
+   "bounds": [
+    753,
+    51,
+    42,
+    66
+   ],
+   "id": 24,
+   "label": "Color 1",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    795,
+    51,
+    42,
+    66
+   ],
+   "id": 25,
+   "label": "Color 2",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1057,
+    51,
+    42,
+    66
+   ],
+   "id": 26,
+   "label": "Editar colores",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1110,
+    51,
+    57,
+    66
+   ],
+   "id": 27,
+   "label": "Editar con Paint 3D",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2415,
+    1377,
+    22,
+    22
+   ],
+   "id": 28,
+   "label": "Alejar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2437,
+    1377,
+    100,
+    22
+   ],
+   "id": 29,
+   "label": "Control deslizante del zoom",
+   "role": "slider",
+   "value": "100%"
+  },
+  {
+   "bounds": [
+    2444,
+    1385,
+    38,
+    4
+   ],
+   "id": 30,
+   "label": "Página a la izquierda",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2492,
+    1385,
+    37,
+    4
+   ],
+   "id": 31,
+   "label": "Página a la derecha",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2537,
+    1377,
+    22,
+    22
+   ],
+   "id": 32,
+   "label": "Acercar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    0,
+    0,
+    22,
+    22
+   ],
+   "id": 33,
+   "label": "Sistema",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    2419,
+    8,
+    47,
+    14
+   ],
+   "id": 34,
+   "label": "Minimizar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2466,
+    8,
+    46,
+    14
+   ],
+   "id": 35,
+   "label": "Restaurar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2512,
+    8,
+    56,
+    14
+   ],
+   "id": 36,
+   "label": "Cerrar",
+   "role": "button"
+  }
+ ],
+ "elsewhere": [],
+ "note": "",
+ "ok": true,
+ "source": "uia",
+ "texts": [
+  "1536 × 864‏ píxeles",
+  "100%"
+ ],
+ "unit": "px",
+ "window": {
+  "app": "Paint",
+  "bounds": [
+   0,
+   0,
+   2560,
+   1400
+  ],
+  "id": 37290784,
+  "scale": 1,
+  "title": "Sin título - Paint"
+ },
+ "shot": {
+  "bounds": [
+   0,
+   0,
+   2560,
+   1400
+  ],
+  "native": [
+   2560,
+   1400
+  ]
+ }
+}

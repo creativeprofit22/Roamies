@@ -55,6 +55,26 @@ mod on_windows {
     }
 
     #[test]
+    fn image_crops_resizes_and_draws_marks() {
+        let png = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ocr.png");
+        let dir = std::env::temp_dir().join(format!("roamies-hands-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (out, marks) = (dir.join("out.jpg"), dir.join("marks.json"));
+        std::fs::write(&marks, r#"[{"n": 1, "rect": [20, 30, 120, 40]}, {"n": 12, "rect": [200, 100, 80, 60]}]"#).unwrap();
+        let v = hands(&["image", png, out.to_str().unwrap(), "--crop", "100,50,640,200", "--size", "960,300", "--marks", marks.to_str().unwrap()]);
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["sent"], serde_json::json!([960, 300]));
+        let jpg = std::fs::read(&out).expect("JPEG written");
+        assert_eq!(&jpg[..2], &[0xFF, 0xD8], "JPEG magic");
+        // A bad marks file and an off-image crop are clear errors.
+        std::fs::write(&marks, "[{\"n\": 0}]").unwrap();
+        assert_eq!(hands(&["image", png, out.to_str().unwrap(), "--marks", marks.to_str().unwrap()])["code"], "usage");
+        assert_eq!(hands(&["image", png, out.to_str().unwrap(), "--crop", "5000,0,10,10"])["code"], "usage");
+        assert_eq!(hands(&["image", "nope.png", out.to_str().unwrap()])["code"], "not_found");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn locate_screen() {
         let v = hands(&["locate", "screen"]);
         assert_eq!(v["ok"], true, "{v}");

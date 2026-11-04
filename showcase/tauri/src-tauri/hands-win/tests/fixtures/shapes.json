@@ -13,6 +13,7 @@
   "ocrLine": ["bounds", "text", "words"],
   "ocrWord": ["bounds", "text"],
   "ocrFile": ["lang", "lines", "ocrMs", "ok", "source", "unit"],
+  "image": ["file", "ok", "sent", "unit"],
   "control": ["bounds", "id", "label", "role"],
   "controlOptional": ["focused", "offscreen", "value"],
   "findText": ["matches", "ok", "unit"],

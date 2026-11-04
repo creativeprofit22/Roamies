@@ -61,7 +61,7 @@ pub fn mostly_black(bgra: &[u8]) -> bool {
 }
 
 /// Copies the `inner` part out of an image that covers `outer` (both screen rects).
-fn crop(img: Image, outer: Rect, inner: Rect) -> Image {
+pub fn crop(img: Image, outer: Rect, inner: Rect) -> Image {
     let Some(r) = inner.intersection(&outer) else { return img };
     if r == outer {
         return img;

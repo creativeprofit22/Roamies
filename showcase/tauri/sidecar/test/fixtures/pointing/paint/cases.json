@@ -1,0 +1,7 @@
+[
+ { "ask": "Where is the text tool?", "truth": [350, 59, 22, 22] },
+ { "ask": "Where is the eraser?", "truth": [303, 88, 23, 22] },
+ { "ask": "Where is the red colour?", "truth": [905, 54, 20, 18] },
+ { "ask": "Where is the rectangle shape?", "truth": [504, 58, 16, 13] },
+ { "ask": "Where is the zoom slider?", "truth": [2437, 1377, 100, 22] }
+]

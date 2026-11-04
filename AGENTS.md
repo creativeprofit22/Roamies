@@ -23,6 +23,7 @@ cd showcase/tauri/sidecar && npm ci     # install sidecar deps
 npm test                                # sidecar tests (reply stream, storage, pointing, safety, voice model download)
 npm run build                           # bundle the sidecar into dist/
 npm run bench:telemetry                 # telemetry overhead (p95, memory)
+npm run bench:pointing                  # pointing hit rates per path; needs sign-in, spends tokens (docs/pointing.md)
 cd .. && ./build.sh dev                 # web files + sidecar + debug `cargo build`
 ./build.sh                              # release bundle for this OS (signs on macOS if a Developer ID is in the keychain)
 ```

@@ -194,8 +194,17 @@ function onHandsTiming({ verb, ms, lines, lang }) {
   const h = tel.start('hands.ocr', { requestId: parent?.requestId ?? current?.rid ?? null, parent: parent ?? current?.req ?? null, at: Date.now() - ms, attrs: { verb } });
   tel.end(h, { outcome: 'ok', attrs: { verb, lines, lang } });
 }
+// Pointing paths (marks drawn, crop for a closer look, how point_at found its place): counts and ms only.
+function onPointing({ kind, ms, marks, source, upscale, path: how, refineMs }) {
+  const id = toolCtx.getStore()?.toolCallId, parent = toolSteps.get(id);
+  const ctx = { requestId: parent?.requestId ?? current?.rid ?? null, parent: parent ?? current?.req ?? null };
+  if (kind === 'locate') return tel.record('pointing.locate', { ...ctx, attrs: { path: how, ...(Number.isFinite(refineMs) ? { refine_ms: Math.round(refineMs) } : {}) } });
+  const step = kind === 'marks' ? 'hands.marks' : 'hands.crop';
+  const h = tel.start(step, { ...ctx, at: Date.now() - ms });
+  tel.end(h, { outcome: 'ok', attrs: kind === 'marks' ? { marks, source } : { upscale } });
+}
 const { tools: rawTools, hands, pointWaits, nextTurn } = createTools({
-  allowActions: () => config.allowActions, ui, ask, openUrl, userName, onCheck, onHandsTiming,
+  allowActions: () => config.allowActions, ui, ask, openUrl, userName, onCheck, onHandsTiming, onPointing,
   imageLimits: () => imageLimits(config.model),
   commitmentsText: () => [commitmentsText(), doneTodayText() && `Done today:\n${doneTodayText()}`].filter(Boolean).join('\n'),
   onCommitments: (c) => { menu(); scheduleReminders(); showList({ flash: c?.id, seconds: 6 }); },

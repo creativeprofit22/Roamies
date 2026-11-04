@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { monitorFor, parseSipsSize, parseWinShot, readProblem, rematch, resizedSize, sameBounds, shotBox, shotMap, shotPixel, shotProblem } from './pointing.mjs';
+import { POINTING, markRect, monitorFor, needsRefine, parseSipsSize, parseWinShot, pickMarks, readProblem, refineCrop, rematch, resizedSize, sameBounds, shotBox, shotMap, shotPixel, shotProblem, toImage } from './pointing.mjs';
 import { performance } from 'node:perf_hooks';
 import * as safety from './safety.mjs';
 import { ASK, BLOCK, SAFE, isYes } from './safety.mjs';
@@ -108,7 +108,7 @@ export const imageBlock = async (file, mediaType) => {
 };
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, onHandsTiming = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, onHandsTiming = null, onPointing = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS }) {
   const MAC = platform === 'darwin', WIN = platform === 'win32';
   // Seeing and pointing need the helper; working other apps (act_in_app, clicks) is macOS only for now.
   const CAN_SEE = MAC || (WIN && !!handsBin), CAN_ACT = MAC;
@@ -143,7 +143,6 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     }
   }
   async function shotPoint(x, y) { await checkShot(); return shotPixel(lastShot, x, y); }
-  async function shotRect(box) { await checkShot(); return shotBox(lastShot, box); }
   // The control that read_window listed at this id, wherever it is now.
   async function liveControls(spec) {
     const fresh = await hands('ui', spec);
@@ -155,11 +154,14 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       return c;
     };
   }
-  async function hands(...args) {
+  // The helper's reply as is (ok false included); hands() turns failures into errors the model can act on.
+  async function handsRaw(args) {
     if (!handsBin) throw new Error(MAC ? 'This needs the Roamies app on macOS.' : WIN ? "Reading and pointing at other apps isn't available on this PC (the Roamies screen helper only ships for 64-bit Intel/AMD Windows)." : "Reading and pointing at other apps isn't available on this system.");
     const r = await run(handsBin, args, { timeout: 120_000 });
-    let res;
-    try { res = JSON.parse(r.stdout.trim().split('\n').pop() || '{}'); } catch { throw new Error(`hands helper failed: ${r.stderr.trim().slice(0, 200) || 'no output'}`); }
+    try { return JSON.parse(r.stdout.trim().split('\n').pop() || '{}'); } catch { throw new Error(`hands helper failed: ${r.stderr.trim().slice(0, 200) || 'no output'}`); }
+  }
+  async function hands(...args) {
+    const res = await handsRaw(args);
     // Text recognition time (telemetry hands.ocr): counts only, never the text.
     if (Number.isFinite(res.ocrMs)) {
       const lines = Array.isArray(res.ocr) ? res.ocr.length : Array.isArray(res.lines) ? res.lines.length : (res.matches ?? []).filter((m) => m.source === 'ocr').length;
@@ -181,6 +183,53 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     return isYes(answer);
   }
 
+  // Numbered marks on a window shot from the helper's ui reply (controls, or OCR lines when it read pixels).
+  // Returns { file, marks, source } for the marked copy, or null to send the plain shot.
+  async function drawMarks(file, shot, winId, read) {
+    if (!read || read.ok === false || winId == null || read.window?.id !== winId) return null;
+    let source = 'uia', marks = pickMarks(read.controls, shot.bounds);
+    if (!marks.length && Array.isArray(read.ocr)) {
+      source = 'ocr';
+      marks = pickMarks(read.ocr.map((l) => ({ role: 'text', label: l.text, bounds: l.bounds })), shot.bounds);
+    }
+    if (!marks.length) return null;
+    const json = path.join(os.tmpdir(), `sidekick-marks-${Date.now()}.json`), out = file.replace(/\.jpg$/, '-marks.jpg');
+    try {
+      await fs.writeFile(json, JSON.stringify(marks.map((m) => ({ n: m.n, rect: toImage(shot, m.rect).map(Math.round) }))));
+      const r = await handsRaw(['image', file, out, '--marks', json]).catch(() => null);
+      if (!r || r.ok === false) { fs.unlink(out).catch(() => {}); return null; }
+      fs.unlink(file).catch(() => {});
+      return { file: out, marks, source };
+    } finally { fs.unlink(json).catch(() => {}); }
+  }
+
+  // A small box gets one closer look before pointing: a native recapture of the same target, cropped around the box
+  // and upscaled. lastShot becomes the crop's map (marked refined, so the next box points), or stays as it was on failure.
+  async function closerLook(box) {
+    const prev = lastShot, t0 = performance.now();
+    const native = path.join(os.tmpdir(), `sidekick-native-${Date.now()}.jpg`), out = native.replace(/\.jpg$/, '-crop.jpg');
+    try {
+      const res = await hands('capture', native, prev.win != null ? `window:${prev.win}` : prev.target);
+      if (!sameBounds(res.window?.bounds ?? res.bounds, prev.bounds)) return null;
+      const nativeSize = WIN ? (Array.isArray(res.sent) ? res.sent : null) : parseSipsSize((await run('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', native])).stdout);
+      if (!nativeSize) return null;
+      const c = refineCrop(prev, box, nativeSize, imageLimits());
+      await hands('image', native, out, '--crop', c.srcRect.join(','), '--size', c.size.join(','));
+      lastShot = { ...shotMap(c.screenRect, ...c.size), bounds: prev.bounds, win: prev.win, target: prev.target, turn, unit: prev.unit, monitor: prev.monitor, scale: prev.scale, refined: true, cropAt: performance.now(), cropMs: performance.now() - t0, upscale: c.upscale };
+      onPointing?.({ kind: 'crop', ms: lastShot.cropMs, upscale: c.upscale });
+      const [w, h] = c.size;
+      return {
+        content: [
+          { type: 'text', text: `Not pointed yet: that box is small, so here is a closer look, a ${w}×${h} px crop around it (${c.upscale}× zoom). Call point_at again with the same say and a box [x1, y1, x2, y2] in this ${w}×${h} image's pixels around exactly the thing.` },
+          await imageBlock(out, 'image/jpeg'),
+        ],
+      };
+    } catch {
+      fs.unlink(out).catch(() => {});
+      return null;
+    } finally { fs.unlink(native).catch(() => {}); }
+  }
+
   // target: "screen", "front" (the window you're working in), an app name ("browser", "Safari", "Figma"),
   // or "window:<id>" from list_windows. Apps that are open but hidden or minimised are brought forward.
   async function screenshot({ target = 'screen' } = {}, ctx) {
@@ -199,6 +248,9 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       // Sent at exactly the size the model processes; any other size gets resized again and coordinates drift.
       // Windows: the helper resizes (same rule, shared test vectors) and says the size it sent.
       const limits = imageLimits();
+      // Window shots: the window's controls, read alongside the capture, become numbered marks (a partial list is fine).
+      const marksT0 = performance.now();
+      const uiRead = POINTING.marks && !/^screen(:\d+)?$/i.test(s) ? handsRaw(['ui', s, ...(WIN ? ['--budget-ms', '1500'] : [])]).catch(() => null) : null;
       const res = WIN
         ? await hands('capture', file, s, '--fit', `${limits.maxEdge}x${Number.isFinite(limits.maxTokens) ? limits.maxTokens : 0}`)
         : await hands('capture', file, s);
@@ -209,10 +261,15 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         const i = monitorFor(res.monitors, bounds);
         where = { unit: 'px', monitor: i + 1, scale: res.monitors?.[i]?.scale ?? 1 };
       }
-      lastShot = size && bounds ? { ...shotMap(bounds, ...size), bounds, win: res.window?.id ?? null, turn, ...where } : null;
+      lastShot = size && bounds ? { ...shotMap(bounds, ...size), bounds, win: res.window?.id ?? null, target: s, turn, ...where } : null;
+      const marked = lastShot && uiRead ? await drawMarks(file, lastShot, res.window?.id, await uiRead) : null;
+      if (marked) lastShot.marks = marked.marks;
+      // Telemetry hands.marks: the ui read (parallel with the capture), picking and drawing; counts only.
+      if (uiRead) onPointing?.({ kind: 'marks', ms: performance.now() - marksT0, marks: marked?.marks.length ?? 0, source: marked?.source ?? null });
       const what = res.window ? `the ${res.window.app} window${res.window.title ? ` "${res.window.title}"` : ''}` : /^screen:\d+$/i.test(s) ? `monitor ${s.slice(7)}` : 'the whole screen';
       const dims = size ? ` (${size[0]}×${size[1]} px; give absolute pixel coordinates in this ${size[0]}×${size[1]} image, not a 0–1000 scale: x, y for point_at${CAN_ACT ? ' or click_at' : ''}, or a box [x1, y1, x2, y2] for point_at)` : '';
-      return { content: [{ type: 'text', text: `Screenshot of ${what}${dims}.` }, await imageBlock(file, 'image/jpeg')] };
+      const legend = marked ? `\nNumbered marks on the image (point_at with mark uses that thing's exact outline): ${marked.marks.map((m) => `${m.n} ${m.role || 'item'}${m.label ? ` "${m.label.replace(/\s+/g, ' ').slice(0, 40)}"` : ''}`).join(', ')}` : '';
+      return { content: [{ type: 'text', text: `Screenshot of ${what}${dims}.${legend}` }, await imageBlock(marked?.file ?? file, 'image/jpeg')] };
     } else if (WIN) {
       // No helper (e.g. Windows on ARM): primary screen only, and no pointing, so lastShot stays empty.
       lastShot = null;
@@ -298,23 +355,23 @@ ${res.note}` : ''}${ocr}`;
       },
       {
         name: 'point_at',
-        description: `Teach by showing: fly to something on screen and point at it while you explain one step. Use it to walk the user through how to do something (e.g. 'how do I add a layer mask'), one point_at per step, in order, with a short instruction each (under 12 words). Three ways to say where, best first: text, the exact words shown on screen (button and link labels, headings, version numbers, menu names; searches every window of the target app, or the whole screen with target 'screen', so no read_window is needed first); id from read_window, for controls without visible words; or x, y or box [x1, y1, x2, y2] in absolute pixels of your latest screenshot (never 0–1000), only when neither finds it; prefer a box for anything bigger than an icon. ${CAN_ACT ? 'Set click true only if the user asked you to do it for them; otherwise just point and let them click.' : "Clicking for them isn't available here: just point and tell them what to click."} wait_for_user true pauses until they do the step (or 20 s), for multi-step lessons.`,
+        description: `Teach by showing: fly to something on screen and point at it while you explain one step. Use it to walk the user through how to do something (e.g. 'how do I add a layer mask'), one point_at per step, in order, with a short instruction each (under 12 words). Ways to say where, best first: text, the exact words shown on screen (button and link labels, headings, version numbers, menu names; searches every window of the target app, or the whole screen with target 'screen', so no read_window is needed first); mark, a number drawn on your latest screenshot, for things without visible words; id from read_window; or x, y or box [x1, y1, x2, y2] in absolute pixels of your latest screenshot (never 0–1000), only when none of those fits; prefer a box for anything bigger than an icon. ${CAN_ACT ? 'Set click true only if the user asked you to do it for them; otherwise just point and let them click.' : "Clicking for them isn't available here: just point and tell them what to click."} wait_for_user true pauses until they do the step (or 20 s), for multi-step lessons.`,
         parameters: z.object({
           target: z.string().optional(),
-          id: z.number().int().optional(), text: z.string().min(1).max(80).optional(), x: z.number().optional(), y: z.number().optional(),
+          id: z.number().int().optional(), mark: z.number().int().optional(), text: z.string().min(1).max(80).optional(), x: z.number().optional(), y: z.number().optional(),
           box: z.array(z.number()).optional(),
           say: z.string().min(1).max(120),
           step: z.number().int().optional(), of: z.number().int().optional(),
           click: z.boolean().optional(), wait_for_user: z.boolean().optional(),
         }),
         executionMode: 'sequential',
-        execute: async ({ target = 'front', id, text: find, x, y, box, say: text, step, of: total, click, wait_for_user }, ctx) => {
+        execute: async ({ target = 'front', id, mark, text: find, x, y, box, say: text, step, of: total, click, wait_for_user }, ctx) => {
           const t = screenTarget(String(target || 'front')), where = spec(t);
-          let rect, label = '', at, liveId;
+          let rect, label = '', at, liveId, how;
           if (id != null) {
             const c = (await liveControls(where))(id);
             if (c.offscreen) throw new Error(`"${c.label || c.role}" is further down the page. Use point_at with its text instead; that scrolls to it.`);
-            rect = c.bounds; label = c.label || c.role; liveId = c.id;
+            rect = c.bounds; label = c.label || c.role; liveId = c.id; how = 'id';
           } else if (find) {
             // "front" searches every window of the front app; text is often in a window behind the frontmost one.
             const res = await hands('find-text', where, findText(find), 'scroll');
@@ -323,15 +380,27 @@ ${res.note}` : ''}${ocr}`;
               const near = (res.matches ?? []).slice(0, 3).map((x) => `"${x.text.replace(/\s+/g, ' ').slice(0, 50)}"`).join(', ');
               throw new Error(`No button, label or heading reads "${find}"${near ? ` (it only appears inside longer text: ${near})` : ''}. Point at the exact words shown on screen; if you don't know them, take a screenshot first.`);
             }
-            rect = m.bounds; label = m.text;
+            rect = m.bounds; label = m.text; how = 'text';
+            if (click) at = [rect[0] + rect[2] / 2, rect[1] + rect[3] / 2];
+          } else if (mark != null) {
+            await checkShot();
+            rect = markRect(lastShot.marks, mark);
+            const m = lastShot.marks.find((k) => k.n === mark);
+            label = m.label || m.role; how = 'mark';
             if (click) at = [rect[0] + rect[2] / 2, rect[1] + rect[3] / 2];
           } else if (box != null) {
-            rect = await shotRect(box);
+            await checkShot();
+            const look = POINTING.refine && needsRefine(lastShot, box) ? await closerLook(box) : null;
+            if (look) return look;
+            how = lastShot.refined ? 'refine' : 'box';
+            rect = shotBox(lastShot, box);
             if (click) at = [rect[0] + rect[2] / 2, rect[1] + rect[3] / 2];
           } else if (x != null && y != null) {
             at = await shotPoint(x, y);
-            rect = [at[0] - 14, at[1] - 14, 28, 28];
-          } else throw new Error('Give an id from read_window, text shown on screen, or x, y or a box from a screenshot.');
+            rect = [at[0] - 14, at[1] - 14, 28, 28]; how = 'point';
+          } else throw new Error('Give text shown on screen, a mark number or x, y or a box from a screenshot, or an id from read_window.');
+          // Telemetry pointing.locate: which way the place was found; refine_ms spans crop sent → refined answer.
+          onPointing?.({ kind: 'locate', path: how, ...(how === 'refine' && Number.isFinite(lastShot?.cropAt) ? { refineMs: performance.now() - lastShot.cropAt } : {}) });
           // The overlay flies there, points, shows the step and holds; this tool resolves once it's on screen.
           const done = new Promise((resolve) => pointWaits.set(ctx.toolCallId, resolve));
           ui({ kind: 'agent', e: { type: 'point', id: ctx.toolCallId, rect, say: text, step, of: total, label, ...pxUnit } });

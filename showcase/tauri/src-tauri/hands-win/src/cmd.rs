@@ -56,6 +56,7 @@ pub fn dispatch(c: Cmd, snap: Snapshot) -> Value {
         Verb::Ui(t) => resolve(t).and_then(|w| guard(&w, fake).map(|_| w)).and_then(|w| ui(&w, &mut budget, &snap)),
         Verb::FindText { target, text, scroll } => find_text(target, text, *scroll, fake, &budget, &snap),
         Verb::OcrFile { file, origin } => ocr_file(file, *origin, &budget),
+        Verb::Image { input, out, crop, size, marks } => image(input, out, *crop, *size, marks.as_deref()),
     };
     res.unwrap_or_else(|e| e)
 }
@@ -311,6 +312,37 @@ fn ocr_file(file: &str, origin: (i32, i32), budget: &Budget) -> Result<Value, Va
     let engine = Engine::new()?;
     let read = engine.read(img, frame, budget)?.ok_or_else(|| fail("timeout", "Not enough time left to read the image."))?;
     Ok(p::ocr_file_reply(&engine.lang, read.lines.iter().map(ocr_map::line_json).collect(), read.ms))
+}
+
+/// The `image` verb: crop (source pixels), resize to exactly `size`, draw numbered marks, write JPEG.
+fn image(input: &str, out: &str, crop: Option<Rect>, size: Option<(u32, u32)>, marks: Option<&str>) -> Result<Value, Value> {
+    let failed = |e: String| fail("image_failed", &e);
+    if !std::path::Path::new(input).is_file() {
+        return Err(fail("not_found", &format!("No image at {input}.")));
+    }
+    // Read the marks before any pixel work so a bad file fails fast.
+    let marks = match marks {
+        Some(f) => {
+            let text = std::fs::read_to_string(f).map_err(|e| fail("not_found", &format!("Can't read marks {f}: {e}")))?;
+            let v: Value = serde_json::from_str(&text).map_err(|e| fail("usage", &format!("Marks {f} isn't JSON: {e}")))?;
+            crate::draw::parse_marks(&v).map_err(|e| fail("usage", &e))?
+        }
+        None => vec![],
+    };
+    let img = ocr::load_image(input).map_err(failed)?;
+    let whole = Rect::new(0, 0, img.w, img.h);
+    let img = match crop {
+        Some(c) => {
+            let inner = c.intersection(&whole).ok_or_else(|| fail("usage", &format!("--crop {},{},{},{} is outside the {}×{} image.", c.x, c.y, c.w, c.h, img.w, img.h)))?;
+            capture::crop(img, whole, inner)
+        }
+        None => img,
+    };
+    let to = size.unwrap_or((img.w as u32, img.h as u32));
+    let mut img = capture::scale_to(img, to).map_err(failed)?;
+    crate::draw::draw_marks(&mut crate::draw::Canvas { bgra: &mut img.bgra, w: img.w, h: img.h }, &marks);
+    capture::write_jpeg(out, &img).map_err(failed)?;
+    Ok(p::image_reply(out, to))
 }
 
 struct WinSearch {

@@ -7,8 +7,10 @@
 //   roamies-hands ui front|app:<name>|window:<id>            the window's controls and text
 //   roamies-hands find-text <target> <text> [scroll]         where that text is on screen
 //   roamies-hands ocr-file <image.png> [--origin x,y]        test only: OCR an image as if it were a window
+//   roamies-hands image <in> <out.jpg> [--crop x,y,w,h] [--size w,h] [--marks m.json]  crop, resize, draw numbered marks
 mod budget;
 mod cli;
+mod draw;
 mod fit;
 mod geom;
 mod hands_off;

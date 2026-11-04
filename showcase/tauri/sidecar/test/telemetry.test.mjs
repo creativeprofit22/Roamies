@@ -282,5 +282,22 @@ for (const enabled of [false, true]) {
   t.setEnabled(false);
 }
 
+// pointing steps (hands.marks, hands.crop, pointing.locate) are written with their counts and timings
+{
+  const dir = freshDir();
+  const t = createTelemetry({ dir, now: () => T0, mono: () => 5000, timer: false });
+  const rid = newRequestId();
+  t.end(t.start('hands.marks', { requestId: rid, at: T0 - 300 }), { attrs: { marks: 12, source: 'uia' } });
+  t.end(t.start('hands.crop', { requestId: rid, at: T0 - 90 }), { attrs: { upscale: 2 } });
+  t.record('pointing.locate', { requestId: rid, attrs: { path: 'refine', refine_ms: 2400 } });
+  await t.close();
+  const ev = read(dir, '2026-10-30');
+  assert.deepEqual(ev.map((e) => `${e.step}:${e.kind}`), ['hands.marks:start', 'hands.marks:end', 'hands.crop:start', 'hands.crop:end', 'pointing.locate:event']);
+  assert.deepEqual(ev[1].attrs, { marks: 12, source: 'uia' });
+  assert.equal(ev[1].duration_ms, 300);
+  assert.deepEqual(ev[3].attrs, { upscale: 2 });
+  assert.deepEqual(ev[4].attrs, { path: 'refine', refine_ms: 2400 });
+}
+
 assert.equal(DEFAULTS.keepDays, 14);
 console.log('telemetry tests passed');

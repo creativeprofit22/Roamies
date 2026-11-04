@@ -1,0 +1,6 @@
+[
+ { "ask": "Where is the Format menu?", "truth": [1326, 344, 59, 19] },
+ { "ask": "Where can I see the file encoding?", "truth": [2088, 989, 112, 22] },
+ { "ask": "Where does it show the zoom level?", "truth": [1918, 989, 50, 22] },
+ { "ask": "Where can I see which line the cursor is on?", "truth": [1778, 989, 140, 22] }
+]

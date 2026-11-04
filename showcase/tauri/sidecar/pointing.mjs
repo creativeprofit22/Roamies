@@ -137,3 +137,101 @@ export function monitorFor(monitors, [x, y, w, h]) {
   }
   return best;
 }
+
+// Pointing defaults (see docs/pointing.md for the benchmark that set them). Sizes are in sent-image pixels.
+// marks on, refine off: set from `npm run bench:pointing` (docs/pointing.md).
+export const POINTING = { marks: true, refine: false, refineMaxSide: 80, cropMinSide: 160, cropScale: 3, maxUpscale: 2, maxMarks: 60 };
+export const REFINE_MAX_SIDE = POINTING.refineMaxSide;
+
+/** Screen rect [x, y, w, h] → rect in the sent image's pixels (inverse of toScreen). */
+export function toImage(map, [x, y, w, h]) {
+  return [(x - map.origin[0]) / map.sx, (y - map.origin[1]) / map.sy, w / map.sx, h / map.sy];
+}
+
+export function iou(a, b) {
+  const ix = Math.max(0, Math.min(a[0] + a[2], b[0] + b[2]) - Math.max(a[0], b[0]));
+  const iy = Math.max(0, Math.min(a[1] + a[3], b[1] + b[3]) - Math.max(a[1], b[1]));
+  const inter = ix * iy, union = a[2] * a[3] + b[2] * b[3] - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+// Numbered marks for a screenshot: visible controls whose centre is on the shot, at least 6 px a side, near-duplicates
+// dropped, in reading order (rows top→bottom, then left→right), numbered 1..N. rect stays in screen units.
+export function pickMarks(controls, shotBounds, { max = POINTING.maxMarks, minSide = 6 } = {}) {
+  const [sx, sy, sw, sh] = shotBounds;
+  const ok = (Array.isArray(controls) ? controls : []).filter((c) => {
+    const b = c?.bounds;
+    if (c?.offscreen || !Array.isArray(b) || b.length !== 4 || !b.every(Number.isFinite)) return false;
+    if (b[2] < minSide || b[3] < minSide) return false;
+    const cx = b[0] + b[2] / 2, cy = b[1] + b[3] / 2;
+    return cx >= sx && cx < sx + sw && cy >= sy && cy < sy + sh;
+  });
+  const kept = [];
+  for (const c of ok) {
+    const dup = kept.findIndex((k) => iou(k.bounds, c.bounds) > 0.8);
+    if (dup < 0) kept.push(c);
+    else if (!(kept[dup].label ?? '').trim() && (c.label ?? '').trim()) kept[dup] = c; // keep the named one
+  }
+  let list = kept;
+  if (list.length > max) {
+    let room = max - list.filter((c) => (c.label ?? '').trim()).length; // unnamed ones that still fit
+    list = list.filter((c) => (c.label ?? '').trim() || room-- > 0);
+  }
+  // Rows: centres within half the row's first height (at least 8 px) share a band.
+  const byY = [...list].sort((a, b) => (a.bounds[1] + a.bounds[3] / 2) - (b.bounds[1] + b.bounds[3] / 2));
+  const rows = [];
+  for (const c of byY) {
+    const cy = c.bounds[1] + c.bounds[3] / 2, row = rows.at(-1);
+    if (row && cy - row.cy <= Math.max(8, row.h / 2)) row.items.push(c);
+    else rows.push({ cy, h: c.bounds[3], items: [c] });
+  }
+  return rows.flatMap((r) => r.items.sort((a, b) => a.bounds[0] - b.bounds[0])).slice(0, max)
+    .map((c, i) => ({ n: i + 1, role: c.role ?? '', label: (c.label ?? '').trim(), rect: c.bounds, ...(c.id != null ? { id: c.id } : {}) }));
+}
+
+/** A mark's screen rect, or an error naming the valid range. */
+export function markRect(marks, n) {
+  if (!marks?.length) throw new Error('That screenshot has no numbered marks. Use text, or a box in its pixels.');
+  const m = Number.isInteger(n) ? marks.find((k) => k.n === n) : null;
+  if (!m) throw new Error(`No mark ${n}: the latest screenshot has marks 1–${marks.length}.`);
+  return m.rect;
+}
+
+/** A box [x1, y1, x2, y2] in sent pixels small enough that a closer look should tighten it (never on a refined shot). */
+export function needsRefine(map, box, maxSide = POINTING.refineMaxSide) {
+  if (!map || map.refined || !Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) return false;
+  return Math.abs(box[2] - box[0]) < maxSide && Math.abs(box[3] - box[1]) < maxSide;
+}
+
+// The crop for a second look: max(3 × box side, 160) sent pixels per axis around the box, kept on the shot,
+// cut from a native capture of the same rect (nativeSize) and upscaled up to 2× within the model's limits.
+// Returns screenRect (for shotMap), srcRect (native pixels to cut), size (the image to send), upscale.
+export function refineCrop(map, box, nativeSize, limits = { maxEdge: 1568, maxTokens: 1568 }, opts = POINTING) {
+  const [iw, ih] = map.size, [nw, nh] = nativeSize;
+  const x1 = Math.min(box[0], box[2]), x2 = Math.max(box[0], box[2]), y1 = Math.min(box[1], box[3]), y2 = Math.max(box[1], box[3]);
+  // Sent pixel → native pixel.
+  const kx = nw / iw, ky = nh / ih;
+  const axis = (a, b, side, k) => {
+    const want = Math.min(side, Math.max(opts.cropScale * (b - a), opts.cropMinSide));
+    const start = Math.min(side - want, Math.max(0, (a + b) / 2 - want / 2));
+    const s = Math.max(0, Math.floor(start * k)), e = Math.min(Math.round(side * k), Math.ceil((start + want) * k));
+    return [s, Math.max(1, e - s)];
+  };
+  const [cx, cw] = axis(x1, x2, iw, kx), [cy, ch] = axis(y1, y2, ih, ky);
+  const up = Math.max(1, opts.maxUpscale);
+  const size = resizedSize(Math.round(cw * up), Math.round(ch * up), limits.maxEdge, limits.maxTokens);
+  // Native pixel → screen unit, from the original shot's map.
+  const px = map.sx / kx, py = map.sy / ky;
+  return {
+    screenRect: [map.origin[0] + cx * px, map.origin[1] + cy * py, cw * px, ch * py],
+    srcRect: [cx, cy, cw, ch], size, upscale: +(size[0] / cw).toFixed(3),
+  };
+}
+
+/** Benchmark score of a predicted screen rect against the true one. */
+export function scoreBox(pred, truth) {
+  if (!Array.isArray(pred) || pred.length !== 4) return { centerIn: false, iou: 0 };
+  const cx = pred[0] + pred[2] / 2, cy = pred[1] + pred[3] / 2;
+  const centerIn = cx >= truth[0] && cx <= truth[0] + truth[2] && cy >= truth[1] && cy <= truth[1] + truth[3];
+  return { centerIn, iou: iou(pred, truth) };
+}

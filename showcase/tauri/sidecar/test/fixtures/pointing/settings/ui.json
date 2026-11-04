@@ -1,0 +1,229 @@
+{
+ "controls": [
+  {
+   "bounds": [
+    2414,
+    1,
+    46,
+    32
+   ],
+   "id": 1,
+   "label": "Minimizar Configuración",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2460,
+    1,
+    46,
+    32
+   ],
+   "id": 2,
+   "label": "Maximizar Configuración",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2506,
+    1,
+    46,
+    32
+   ],
+   "id": 3,
+   "label": "Cerrar Configuración",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1288,
+    49,
+    320,
+    48
+   ],
+   "id": 4,
+   "label": "Inicio",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1304,
+    105,
+    290,
+    32
+   ],
+   "id": 5,
+   "label": "Cuadro de búsqueda, Buscar una opción",
+   "role": "text field"
+  },
+  {
+   "bounds": [
+    1632,
+    157,
+    148,
+    60
+   ],
+   "id": 6,
+   "label": "Luz nocturna",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1632,
+    227,
+    201,
+    20
+   ],
+   "id": 7,
+   "label": "Configuración de luz nocturna",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1632,
+    383,
+    245,
+    20
+   ],
+   "id": 8,
+   "label": "Configuración de Windows HD Color",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1632,
+    517,
+    280,
+    32
+   ],
+   "id": 9,
+   "label": "Cambiar el tamaño del texto, las aplicaciones y otros elementos",
+   "role": "combo box"
+  },
+  {
+   "bounds": [
+    1632,
+    561,
+    289,
+    20
+   ],
+   "id": 10,
+   "label": "Configuración avanzada de ajuste de escala",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1632,
+    629,
+    280,
+    32
+   ],
+   "id": 11,
+   "label": "Resolución de pantalla",
+   "role": "combo box"
+  },
+  {
+   "bounds": [
+    2288,
+    138,
+    230,
+    40
+   ],
+   "id": 12,
+   "label": "Ajustar fácilmente la configuración de brillo de la pantalla",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    2288,
+    186,
+    240,
+    60
+   ],
+   "id": 13,
+   "label": "Sincronizar las tasas de actualización para una reproducción fluida",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    2288,
+    254,
+    238,
+    40
+   ],
+   "id": 14,
+   "label": "Configuración sencilla de monitores duales",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    2288,
+    302,
+    195,
+    20
+   ],
+   "id": 15,
+   "label": "Conectar a un proyector o PC",
+   "role": "link"
+  }
+ ],
+ "elsewhere": [],
+ "note": "",
+ "ok": true,
+ "source": "uia",
+ "texts": [
+  "Configuración",
+  "Inicio",
+  "Ayuda de la web",
+  "Buscar una opción de configuración",
+  "Color",
+  "Ajustar fácilmente la configuración de brillo de la pantalla",
+  "Sistema",
+  "Luz nocturna",
+  "Sincronizar las tasas de actualización para una reproducción fluida",
+  "Pantalla",
+  "Configuración de luz nocturna",
+  "Configuración sencilla de monitores duales",
+  "Sonido",
+  "Windows HD Color",
+  "Conectar a un proyector o PC",
+  "Notificaciones y acciones",
+  "Obtén una imagen más brillante y vibrante para videos, juegos y aplicaciones que admiten HDR.",
+  "Asistente de concentración",
+  "Configuración de Windows HD Color",
+  "Energía y suspensión",
+  "Escala y diseño",
+  "Almacenamiento",
+  "Tableta",
+  "100% (recomendado)",
+  "Multitareas",
+  "Configuración avanzada de ajuste de escala",
+  "Proyectar en este equipo",
+  "2560 × 1440 (recomendada)",
+  "Experiencias compartidas"
+ ],
+ "unit": "px",
+ "window": {
+  "app": "Configuración",
+  "bounds": [
+   1287,
+   0,
+   1266,
+   693
+  ],
+  "id": 854462,
+  "scale": 1,
+  "title": "Configuración"
+ },
+ "shot": {
+  "bounds": [
+   1287,
+   0,
+   1266,
+   693
+  ],
+  "native": [
+   1266,
+   693
+  ]
+ }
+}

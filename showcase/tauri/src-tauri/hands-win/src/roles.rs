@@ -12,6 +12,7 @@ pub const SLIDER: i32 = 50015;
 pub const SPINNER: i32 = 50016;
 pub const TAB_ITEM: i32 = 50019;
 pub const TEXT: i32 = 50020;
+pub const GROUP: i32 = 50026;
 pub const DOCUMENT: i32 = 50030;
 pub const SPLIT_BUTTON: i32 = 50031;
 
@@ -21,6 +22,11 @@ pub const HEADING_NONE: i32 = 80050;
 /// Controls listed by `ui`.
 pub fn interactive(ct: i32) -> bool {
     matches!(ct, BUTTON | CHECKBOX | COMBOBOX | EDIT | HYPERLINK | MENU_ITEM | RADIO | SLIDER | SPINNER | TAB_ITEM | SPLIT_BUTTON)
+}
+
+/// Worth asking TextPattern whether it's editable: a focusable group or document with text (one call each).
+pub fn may_be_rich_text(ct: i32, focusable: bool, has_text: bool) -> bool {
+    matches!(ct, GROUP | DOCUMENT) && focusable && has_text
 }
 
 pub fn name(ct: i32, password: bool, heading: bool) -> &'static str {
@@ -71,6 +77,16 @@ pub fn name(ct: i32, password: bool, heading: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_focusable_groups_with_text_may_be_rich_text() {
+        assert!(may_be_rich_text(GROUP, true, true));
+        assert!(may_be_rich_text(DOCUMENT, true, true));
+        assert!(!may_be_rich_text(GROUP, false, true));
+        assert!(!may_be_rich_text(GROUP, true, false));
+        assert!(!may_be_rich_text(TEXT, true, true));
+        assert!(!may_be_rich_text(BUTTON, true, true));
+    }
 
     #[test]
     fn names_match_the_macos_roles() {

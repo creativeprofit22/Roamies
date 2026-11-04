@@ -12,7 +12,7 @@ use w32::core::{Interface, BSTR};
 use w32::Win32::Foundation::{E_ACCESSDENIED, HWND, LPARAM, WPARAM};
 use w32::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER, SAFEARRAY};
 use w32::Win32::System::Ole::{SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetUBound, SafeArrayUnaccessData};
-use w32::Win32::System::Variant::{VARIANT, VT_BSTR, VT_I4};
+use w32::Win32::System::Variant::{VARIANT, VT_BOOL, VT_BSTR, VT_I4};
 use w32::Win32::UI::Accessibility::*;
 use w32::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_GETOBJECT};
 
@@ -33,10 +33,15 @@ pub struct Node {
     pub password: bool,
     pub heading: bool,
     pub in_web: bool,
+    /// Rich-text box with no ValuePattern (YouTube's comment box): its text isn't read-only.
+    pub editable: bool,
 }
 
 impl Node {
     pub fn role(&self) -> &'static str {
+        if self.editable {
+            return roles::name(roles::EDIT, self.password, false);
+        }
         roles::name(self.ct, self.password, self.heading)
     }
 
@@ -78,6 +83,13 @@ fn bstr_variant(v: &VARIANT) -> Option<String> {
     BSTR::try_from(v).ok().map(|b| b.to_string()).filter(|s| !s.trim().is_empty())
 }
 
+fn bool_variant(v: &VARIANT) -> Option<bool> {
+    if v.vt() != VT_BOOL {
+        return None;
+    }
+    bool::try_from(v).ok()
+}
+
 fn i32_variant(v: &VARIANT) -> Option<i32> {
     if v.vt() != VT_I4 {
         return None;
@@ -109,6 +121,8 @@ impl Uia {
                 UIA_HasKeyboardFocusPropertyId,
                 UIA_HeadingLevelPropertyId,
                 UIA_ClassNamePropertyId,
+                UIA_IsKeyboardFocusablePropertyId,
+                UIA_IsTextPatternAvailablePropertyId,
             ] {
                 let _ = req.AddProperty(p);
             }
@@ -128,6 +142,9 @@ impl Uia {
             let value = if password { None } else { el.GetCachedPropertyValue(UIA_ValueValuePropertyId).ok().and_then(|v| bstr_variant(&v)) };
             let heading = el.GetCachedPropertyValue(UIA_HeadingLevelPropertyId).ok().and_then(|v| i32_variant(&v)).is_some_and(|l| l > roles::HEADING_NONE);
             let bounds = el.CachedBoundingRectangle().ok().and_then(|r| Rect::from_ltrb(r.left, r.top, r.right, r.bottom));
+            let focusable = el.CachedIsKeyboardFocusable().map(|b| b.as_bool()).unwrap_or(false);
+            let has_text = el.GetCachedPropertyValue(UIA_IsTextPatternAvailablePropertyId).ok().and_then(|v| bool_variant(&v)).unwrap_or(false);
+            let editable = roles::may_be_rich_text(ct, focusable, has_text) && text_writable(&el);
             Node {
                 ct,
                 name,
@@ -140,6 +157,7 @@ impl Uia {
                 password,
                 heading,
                 in_web,
+                editable,
                 el,
             }
         }
@@ -369,6 +387,13 @@ pub fn value_set(el: &IUIAutomationElement, text: &str) -> Did {
         return Did::Missing;
     }
     did(unsafe { p.SetValue(&BSTR::from(text)) })
+}
+
+/// True when TextPattern says the text isn't read-only (Chrome's contenteditable); mixed or missing is false.
+pub fn text_writable(el: &IUIAutomationElement) -> bool {
+    let Some(tp) = pattern::<IUIAutomationTextPattern>(el, UIA_TextPatternId) else { return false };
+    let ro = unsafe { tp.DocumentRange().and_then(|r| r.GetAttributeValue(UIA_IsReadOnlyAttributeId)) };
+    ro.ok().and_then(|v| bool_variant(&v)) == Some(false)
 }
 
 /// The whole text of an editor or page through TextPattern, at most `max` UTF-16 units.

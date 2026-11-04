@@ -44,7 +44,7 @@ impl UiCollect {
         if self.keep_all && self.all.len() < KEPT_NODES {
             self.all.push(n.clone());
         }
-        if roles::interactive(n.ct) && n.enabled {
+        if (roles::interactive(n.ct) || n.editable) && n.enabled {
             let label = if n.name.trim().is_empty() { n.help.clone() } else { n.name.clone() };
             let mut c = Control { role: n.role().to_string(), label: label.trim().to_string(), bounds: b, value: n.value.clone(), focused: n.focused, offscreen: false };
             if b.mostly_inside(&self.view) && !n.offscreen {

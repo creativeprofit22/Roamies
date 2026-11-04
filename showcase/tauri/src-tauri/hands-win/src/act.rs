@@ -137,7 +137,7 @@ fn app_of(h: HWND) -> String {
 }
 
 fn is_field(n: &Node) -> bool {
-    n.enabled && (n.ct == roles::EDIT || (matches!(n.ct, roles::COMBOBOX | roles::DOCUMENT) && uia::value_writable(&n.el)))
+    n.enabled && (n.ct == roles::EDIT || n.editable || (matches!(n.ct, roles::COMBOBOX | roles::DOCUMENT) && uia::value_writable(&n.el)))
 }
 
 /// What a field shows now: its value, else its document text (Notepad's editor).
@@ -587,7 +587,7 @@ impl Act {
     fn mismatch(&self, n: &Node, label: &str, now: &str, put_back: bool, pasted: bool, text: &str) -> Value {
         let now = now.trim();
         let back = if put_back { " It shows its old text again." } else { " Its old text couldn't be put back." };
-        if now.is_empty() && !uia::value_writable(&n.el) && n.ct != roles::EDIT {
+        if now.is_empty() && !uia::value_writable(&n.el) && n.ct != roles::EDIT && !n.editable {
             return self.err(
                 "mismatch",
                 &format!("Step {}: \"{label}\" can't be typed in; it opens a picker. Use click_text on it, then on the month arrows (e.g. 'Next Month') and the day.{back}", self.step),
@@ -847,6 +847,13 @@ impl Ways for Field<'_> {
             self.act.type_text(text)?;
         }
         sleep(ms(120));
+        // Chrome updates a rich-text box's accessible text a beat after the keys land; an early read looked like a failed type.
+        if self.n.editable {
+            let until = Instant::now() + ms(600);
+            while !forms::reads_back(&shows(&self.n.el), text) && Instant::now() < until {
+                sleep(ms(60));
+            }
+        }
         Ok(true)
     }
 

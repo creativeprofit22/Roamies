@@ -75,3 +75,46 @@ console.log('windows open-in-app plan tests: passed');
   assert.equal(screenPrompt({ platform: 'darwin', hands: '/x' }).live, '');
   console.log('platform tool and prompt tests: passed');
 }
+
+// Windows OCR fallback: a window with no controls still shows its recognised text, and the timing hook gets counts only.
+{
+  // The fake helper is node itself, run with a cwd where the verb names are scripts printing a canned reply.
+  const dir = fs.mkdtempSync(path.join(TMP, 'fake-hands-'));
+  const win = { id: 7, app: 'Game', title: 'Level 1', bounds: [0, 0, 800, 600] };
+  const ocrUi = { ok: true, window: win, controls: [], texts: ['Start game', 'Options'], elsewhere: [], note: 'This window shares no controls.', source: 'ocr', ocr: [{ text: 'Start game' }, { text: 'Options' }], ocrMs: 42, ocrLang: 'en-US' };
+  fs.writeFileSync(path.join(dir, 'ui'), `console.log(${JSON.stringify(JSON.stringify(ocrUi))})`);
+  fs.writeFileSync(path.join(dir, 'windows'), `console.log(${JSON.stringify(JSON.stringify({ ok: true, windows: [win] }))})`);
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const timings = [];
+    const t = createTools({ allowActions: () => false, ui: noop, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: () => '', platform: 'win32', hands: process.execPath, onHandsTiming: (x) => timings.push(x) }).tools;
+    const out = await t.find((x) => x.name === 'read_window').execute({ target: 'front' });
+    assert.match(out, /Text on screen: Start game \| Options/);
+    assert.match(out, /text recognition/);
+    assert.match(out, /shares no controls/);
+    assert.deepEqual(timings, [{ verb: 'ui', ms: 42, lines: 2, lang: 'en-US' }]);
+    // A plain UIA reply reports no OCR time and gets no recognition caveat.
+    fs.writeFileSync(path.join(dir, 'ui'), `console.log(${JSON.stringify(JSON.stringify({ ...ocrUi, source: 'uia', ocr: undefined, ocrMs: undefined, ocrLang: undefined, texts: [] }))})`);
+    const plain = await t.find((x) => x.name === 'read_window').execute({ target: 'front' });
+    assert.doesNotMatch(plain, /text recognition|Text on screen/);
+    assert.equal(timings.length, 1);
+    // Controls but none named and no OCR language: the helper's note still reaches the model.
+    const noOcr = 'Windows has no text recognition language installed, so only the text this app shares is listed.';
+    fs.writeFileSync(path.join(dir, 'ui'), `console.log(${JSON.stringify(JSON.stringify({ ...ocrUi, source: 'uia', ocr: undefined, ocrMs: undefined, ocrLang: undefined, texts: [], controls: [{ id: 1, role: 'button', label: '' }], note: noOcr }))})`);
+    const unlabeled = await t.find((x) => x.name === 'read_window').execute({ target: 'front' });
+    assert.ok(unlabeled.includes(noOcr), unlabeled);
+    // point_at: an OCR word match inside a long line is used (its bounds are the words); a UIA one is not.
+    const line = 'Press Escape at any time to open Options and change the difficulty level';
+    const findReply = (source) => fs.writeFileSync(path.join(dir, 'find-text'), `console.log(${JSON.stringify(JSON.stringify({ ok: true, matches: [{ source, match: 'word', text: line, bounds: [300, 40, 60, 18] }] }))})`);
+    let pointed;
+    const made = createTools({ allowActions: () => false, ui: (m) => { if (m.e?.type === 'point') { pointed = m.e; made.pointWaits.get(m.e.id)?.(); } }, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: () => '', platform: 'win32', hands: process.execPath });
+    const pointAt = made.tools.find((x) => x.name === 'point_at');
+    findReply('ocr');
+    await pointAt.execute({ target: 'front', text: 'Options', say: 'here' }, { toolCallId: 'ocr1' });
+    assert.deepEqual(pointed.rect, [300, 40, 60, 18]);
+    findReply('uia');
+    await assert.rejects(pointAt.execute({ target: 'front', text: 'Options', say: 'here' }, { toolCallId: 'uia1' }), /No button, label or heading reads/);
+  } finally { process.chdir(cwd); }
+  console.log('windows OCR read_window tests: passed');
+}

@@ -76,6 +76,7 @@ by pairing events or subtracting `ts` (for example "chord down → first reply t
 | `agent.turn` | sidecar | one model call (generation span) | `model`, `provider`, `ttft_ms` (call start → first streamed token), `stream_ms` (first → last token), `in`, `cacheRead`, `cacheWrite`, `out` |
 | `agent.tool` | sidecar | tool call start → end | `name`, `anim`, `variant` |
 | `agent.safety` | sidecar | one `safety.mjs` check (child of its `agent.tool`) | `check` (`read`, `write`, `url`, `open`, `command`, `click`), `level` |
+| `hands.ocr` | sidecar | Windows screen helper text recognition inside one tool call (child of its `agent.tool`, back-dated by `ocrMs`) | `verb` (`ui`, `find-text`), `lines`, `lang`; never the text |
 | `dictation.check` | sidecar | safety check of the dictation target | `level` |
 | `voice_model.download` | sidecar | download start → ready/error | `engine` |
 | `ui.error_shown` | sidecar | event: an error bubble was shown | |

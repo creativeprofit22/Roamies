@@ -188,8 +188,14 @@ function onCheck({ check, level, ms }) {
   const h = tel.start('agent.safety', { requestId: parent?.requestId ?? current?.rid ?? null, parent: parent ?? current?.req ?? null, at: Date.now() - ms, attrs: { check, ...(parent || !id ? {} : { tool_call_id: String(id) }) } });
   tel.end(h, { outcome: level === BLOCK ? 'error' : 'ok', errorCode: level === BLOCK ? 'safety_blocked' : null, attrs: { check, level } });
 }
+// The screen helper's text recognition, back-dated like onCheck: verb, line count and language only.
+function onHandsTiming({ verb, ms, lines, lang }) {
+  const id = toolCtx.getStore()?.toolCallId, parent = toolSteps.get(id);
+  const h = tel.start('hands.ocr', { requestId: parent?.requestId ?? current?.rid ?? null, parent: parent ?? current?.req ?? null, at: Date.now() - ms, attrs: { verb } });
+  tel.end(h, { outcome: 'ok', attrs: { verb, lines, lang } });
+}
 const { tools: rawTools, hands, pointWaits, nextTurn } = createTools({
-  allowActions: () => config.allowActions, ui, ask, openUrl, userName, onCheck,
+  allowActions: () => config.allowActions, ui, ask, openUrl, userName, onCheck, onHandsTiming,
   imageLimits: () => imageLimits(config.model),
   commitmentsText: () => [commitmentsText(), doneTodayText() && `Done today:\n${doneTodayText()}`].filter(Boolean).join('\n'),
   onCommitments: (c) => { menu(); scheduleReminders(); showList({ flash: c?.id, seconds: 6 }); },

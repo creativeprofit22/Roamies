@@ -75,7 +75,8 @@ const STALE_ID = 'The page changed since read_window, so that id is out of date.
 // paragraph, which is what a guessed word like "version" or "settings" tends to hit.
 function pickTextMatch(matches, find) {
   const q = String(find).trim();
-  return (matches ?? []).find((m) => m.match !== 'partial' && m.text.trim().length <= Math.max(40, q.length * 3)) ?? null;
+  // OCR bounds are already narrowed to the matched words, so a long recognised line is fine there.
+  return (matches ?? []).find((m) => m.match !== 'partial' && (m.source === 'ocr' || m.text.trim().length <= Math.max(40, q.length * 3))) ?? null;
 }
 // read_window and act_in_app output: visible controls first, then up to 15 scrolled out of view.
 function controlList(controls, texts = [], canAct = true) {
@@ -107,7 +108,7 @@ export const imageBlock = async (file, mediaType) => {
 };
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, onHandsTiming = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS }) {
   const MAC = platform === 'darwin', WIN = platform === 'win32';
   // Seeing and pointing need the helper; working other apps (act_in_app, clicks) is macOS only for now.
   const CAN_SEE = MAC || (WIN && !!handsBin), CAN_ACT = MAC;
@@ -159,6 +160,11 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     const r = await run(handsBin, args, { timeout: 120_000 });
     let res;
     try { res = JSON.parse(r.stdout.trim().split('\n').pop() || '{}'); } catch { throw new Error(`hands helper failed: ${r.stderr.trim().slice(0, 200) || 'no output'}`); }
+    // Text recognition time (telemetry hands.ocr): counts only, never the text.
+    if (Number.isFinite(res.ocrMs)) {
+      const lines = Array.isArray(res.ocr) ? res.ocr.length : Array.isArray(res.lines) ? res.lines.length : (res.matches ?? []).filter((m) => m.source === 'ocr').length;
+      onHandsTiming?.({ verb: String(args[0]), ms: res.ocrMs, lines, lang: res.ocrLang ?? null });
+    }
     if (res.ok === false && !res.cancelled) {
       if (MAC && /Accessibility/i.test(res.error ?? '')) {
         // Open the exact Settings pane (once a minute at most) so the fix is one click away.
@@ -283,8 +289,11 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
           lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
           const others = (all?.windows ?? []).filter((w) => w.app === res.window.app && w.id !== res.window.id).length;
           const head = `${res.window.app}${res.window.title ? ` — ${res.window.title}` : ''}${others ? ` (front window; ${res.window.app} has ${others} more, which point_at with text also searches)` : ''}`;
-          if (!res.controls.length) return `${head}\n${res.note}`;
-          return `${head}\n${controlList(res.controls, res.texts, CAN_ACT)}${res.elsewhere?.length ? `\nElsewhere on the page (scrolled out of view): ${res.elsewhere.join(' | ')}` : ''}`;
+          // OCR'd text (apps that share no controls: games, video, images) is read from pixels, so it can be imperfect.
+          const ocr = res.source === 'ocr' ? "\n(Text read from the window's image with text recognition, so words may be slightly off; point_at with text finds them.)" : '';
+          if (!res.controls.length) return `${head}\n${res.note}${res.texts?.length ? `\nText on screen: ${res.texts.join(' | ')}` : ''}${ocr}`;
+          return `${head}\n${controlList(res.controls, res.texts, CAN_ACT)}${res.elsewhere?.length ? `\nElsewhere on the page (scrolled out of view): ${res.elsewhere.join(' | ')}` : ''}${res.note ? `
+${res.note}` : ''}${ocr}`;
         },
       },
       {

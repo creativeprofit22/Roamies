@@ -244,6 +244,17 @@ console.log('redirect into new file tests: all passed');
   console.log('hands-off cross-check tests: passed');
 }
 
+// The Windows helper checks risky clicks itself; both sides read the same label list.
+{
+  const { readFileSync } = await import('node:fs');
+  const { isRiskyClick } = await import('../safety.mjs');
+  const labels = JSON.parse(readFileSync(new URL('../../src-tauri/hands-win/tests/fixtures/risky.json', import.meta.url), 'utf8'));
+  assert.ok(labels.risky.length >= 40 && labels.safe.length >= 20, 'risky label list loaded');
+  for (const l of labels.risky) assert.ok(isRiskyClick(l), `"${l}" needs a yes (risky.json)`);
+  for (const l of labels.safe) assert.ok(!isRiskyClick(l), `"${l}" is a normal click (risky.json)`);
+  console.log('risky label fixture tests: passed');
+}
+
 // Screen helper targets and find text: nothing the model sends can become a helper flag or open a hands-off app.
 {
   const { checkScreenTarget: tgt, checkFindText: find } = await import('../safety.mjs');

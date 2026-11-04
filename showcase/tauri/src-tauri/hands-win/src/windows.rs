@@ -52,7 +52,7 @@ pub fn pid_of(h: HWND) -> u32 {
     pid
 }
 
-struct Handle(HANDLE);
+pub(crate) struct Handle(pub(crate) HANDLE);
 impl Drop for Handle {
     fn drop(&mut self) {
         let _ = unsafe { CloseHandle(self.0) };

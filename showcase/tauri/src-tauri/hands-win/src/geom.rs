@@ -45,6 +45,11 @@ impl Rect {
         self.intersection(o).is_some()
     }
 
+    /// The pixel at x,y is inside (left/top edges in, right/bottom edges out).
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && y >= self.y && (x as i64) < self.right() && (y as i64) < self.bottom()
+    }
+
     /// At least half of `self` lies inside `view` (a sliver at the edge doesn't count as visible).
     pub fn mostly_inside(&self, view: &Rect) -> bool {
         match self.intersection(view) {

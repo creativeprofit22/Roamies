@@ -99,6 +99,16 @@ pub fn ui_reply(w: &WinInfo, controls: Vec<Value>, texts: Vec<String>, elsewhere
     ok(json!({"window": win_info(w), "controls": controls, "texts": texts, "elsewhere": elsewhere, "note": note, "source": "uia"}))
 }
 
+/// `act` with no step that could change the window: which steps ran.
+pub fn act_reply(w: &WinInfo, done: &[String]) -> Value {
+    ok(json!({"done": done, "window": win_info(w)}))
+}
+
+/// `act` after a click, key, fill, choose or scroll: what the window shows now (ids as in `ui`).
+pub fn act_changed(w: &WinInfo, done: &[String], controls: Vec<Value>, texts: Vec<String>) -> Value {
+    ok(json!({"done": done, "window": win_info(w), "controls": controls, "texts": texts}))
+}
+
 /// Marks a reply whose text was partly read with OCR: how long that took (capture + recognition) and in
 /// which language.
 pub fn mark_ocr(v: &mut Value, ms: u64, lang: &str) {
@@ -116,6 +126,7 @@ pub fn image_reply(file: &str, sent: (u32, u32)) -> Value {
     ok(json!({"file": file, "sent": [sent.0, sent.1]}))
 }
 
+#[derive(Clone)]
 pub struct Control {
     pub role: String,
     pub label: String,
@@ -223,6 +234,10 @@ mod tests {
         assert_eq!(keys(&h), want(&s, "match"));
         assert_eq!(keys(&find_reply(vec![])), want(&s, "findText"));
         assert_eq!(keys(&fail("usage", "x")), want(&s, "error"));
+        let done = vec!["Clicked OK".to_string()];
+        assert_eq!(keys(&act_reply(&w, &done)), want(&s, "act"));
+        assert_eq!(keys(&act_changed(&w, &done, vec![], vec![])), want(&s, "actChanged"));
+        assert_eq!(keys(&crate::plan::act_error("focus", "x", &done)), want(&s, "actError"));
         let mut p = find_reply(vec![]);
         mark_partial(&mut p, Some(Stop::Nodes));
         let mut partial = want(&s, "findText");

@@ -2,11 +2,12 @@
 // (--budget-ms N for tests, --fake-exe NAME to test the hands-off refusal), and --fit <edge>x<tokens> to
 // size capture's image for the model (tokens 0 = no token limit).
 use crate::geom::Rect;
+use crate::plan::{self, Plan};
 use crate::protocol::fail;
 use crate::target::{parse as parse_target, Target};
 use serde_json::Value;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Verb {
     Windows,
     Locate(Target),
@@ -17,9 +18,11 @@ pub enum Verb {
     OcrFile { file: String, origin: (i32, i32) },
     /// Crop (source pixels), resize to exactly `size`, draw numbered marks (output pixels), write JPEG.
     Image { input: String, out: String, crop: Option<Rect>, size: Option<(u32, u32)>, marks: Option<String> },
+    /// Click, fill, choose, scroll and press keys in a window, step by step (checked before anything runs).
+    Act(Plan),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Cmd {
     pub verb: Verb,
     pub budget_ms: u64,
@@ -36,6 +39,7 @@ pub fn default_budget(v: &Verb) -> u64 {
         Verb::FindText { .. } => 6000,
         Verb::OcrFile { .. } => 15000,
         Verb::Image { .. } => 5000,
+        Verb::Act(plan) => plan.budget_ms(),
     }
 }
 
@@ -145,7 +149,12 @@ pub fn parse(argv: &[String]) -> Result<Cmd, Value> {
             Verb::OcrFile { file, origin }
         }
         "image" => image(&args[1..])?,
-        "select" | "act" | "trusted" | "locate-control" => {
+        "act" => {
+            let u = "usage: act '<plan json>', like {\"app\":\"Notepad\",\"steps\":[{\"do\":\"click\",\"id\":3}]}";
+            let [_, json] = args[..] else { return Err(plan::act_error("usage", u, &[])) };
+            Verb::Act(plan::parse(json)?)
+        }
+        "select" | "trusted" | "locate-control" => {
             return Err(fail("usage", &format!("{verb} is only available on macOS")));
         }
         other => return Err(fail("usage", &format!("unknown command {other:?}"))),
@@ -183,11 +192,27 @@ mod tests {
         let c = p(&["image", "a.png", "b.jpg", "--crop", "10,20,300,200", "--size", "600,400", "--marks", "m.json"]).unwrap();
         assert_eq!(c.verb, Verb::Image { input: "a.png".into(), out: "b.jpg".into(), crop: Some(Rect::new(10, 20, 300, 200)), size: Some((600, 400)), marks: Some("m.json".into()) });
         assert_eq!(c.budget_ms, 5000);
+        let c = p(&["act", r#"{"app":"Notepad","steps":[{"do":"wait","seconds":1}]}"#]).unwrap();
+        let Verb::Act(plan) = &c.verb else { panic!("act") };
+        assert_eq!(plan.target, Target::App("Notepad".into()));
+        assert_eq!(c.budget_ms, plan.budget_ms());
+        assert_eq!(p(&["act", r#"{"steps":[{"do":"wait"}]}"#, "--budget-ms", "900"]).unwrap().budget_ms, 900);
+    }
+
+    #[test]
+    fn act_is_no_longer_mac_only() {
+        let e = p(&["act", r#"{"steps":[{"do":"click","id":1}]}"#]).map(|c| c.verb);
+        assert!(matches!(e, Ok(Verb::Act(_))));
+        assert_eq!(p(&["act"]).unwrap_err()["done"], serde_json::json!([]));
+        assert!(!p(&["act", "{}"]).unwrap_err()["error"].as_str().unwrap().contains("macOS"));
+        let k = p(&["act", r#"{"steps":[{"do":"key","key":"win+l"}]}"#]).unwrap_err();
+        assert_eq!((k["code"].as_str(), &k["done"]), (Some("blocked_key"), &serde_json::json!([])));
+        assert!(p(&["select", "x"]).unwrap_err()["error"].as_str().unwrap().contains("macOS"));
     }
 
     #[test]
     fn usage_errors_carry_a_code() {
-        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"], &["ocr-file"], &["ocr-file", "a.png", "--origin"], &["ocr-file", "a.png", "--origin", "1x2"], &["ocr-file", "a.png", "x"], &["image", "a.png"], &["image", "a.png", "b.jpg", "--crop", "1,2,3"], &["image", "a.png", "b.jpg", "--crop", "-1,0,3,3"], &["image", "a.png", "b.jpg", "--crop", "0,0,0,3"], &["image", "a.png", "b.jpg", "--size", "0,3"], &["image", "a.png", "b.jpg", "--size"], &["image", "a.png", "b.jpg", "--what", "x"]] {
+        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["act"], &["act", "{}", "extra"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"], &["ocr-file"], &["ocr-file", "a.png", "--origin"], &["ocr-file", "a.png", "--origin", "1x2"], &["ocr-file", "a.png", "x"], &["image", "a.png"], &["image", "a.png", "b.jpg", "--crop", "1,2,3"], &["image", "a.png", "b.jpg", "--crop", "-1,0,3,3"], &["image", "a.png", "b.jpg", "--crop", "0,0,0,3"], &["image", "a.png", "b.jpg", "--size", "0,3"], &["image", "a.png", "b.jpg", "--size"], &["image", "a.png", "b.jpg", "--what", "x"]] {
             let e = p(bad).unwrap_err();
             assert_eq!(e["ok"], false, "{bad:?}");
             assert_eq!(e["code"], "usage", "{bad:?}");

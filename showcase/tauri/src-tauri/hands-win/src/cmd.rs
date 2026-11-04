@@ -4,20 +4,18 @@ use crate::budget::{publish, Budget, Snapshot, Stop};
 use crate::cli::{Cmd, Verb, FIND_NODES_PER_WINDOW, FIND_WINDOWS, UI_NODES};
 use crate::com::ComGuard;
 use crate::geom::Rect;
-use crate::protocol::{self as p, fail, Control, WinInfo};
+use crate::protocol::{self as p, fail, WinInfo};
 use crate::rank::{self, Hit};
 use crate::target::{app_matches, Target};
+use crate::controls::{retry_empty_page, search_window, UiCollect, PER_WINDOW};
 use crate::uia::{self, Node, Uia};
 use crate::ocr::{self, Engine};
-use crate::{capture, dpi, hands_off, ocr_map, roles, windows};
+use crate::{capture, dpi, hands_off, ocr_map, windows};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use w32::Win32::UI::Accessibility::IUIAutomationElement;
 
-const UI_CONTROLS: usize = 260;
-const UI_OFFSCREEN: usize = 40;
-const PER_WINDOW: usize = 8;
 const OCR_LINES: usize = 200;
 
 pub fn dispatch(c: Cmd, snap: Snapshot) -> Value {
@@ -57,6 +55,7 @@ pub fn dispatch(c: Cmd, snap: Snapshot) -> Value {
         Verb::FindText { target, text, scroll } => find_text(target, text, *scroll, fake, &budget, &snap),
         Verb::OcrFile { file, origin } => ocr_file(file, *origin, &budget),
         Verb::Image { input, out, crop, size, marks } => image(input, out, *crop, *size, marks.as_deref()),
+        Verb::Act(plan) => Ok(crate::act::run(plan, fake, &budget, &snap)),
     };
     res.unwrap_or_else(|e| e)
 }
@@ -80,7 +79,7 @@ fn not_found(t: &Target) -> Value {
 }
 
 /// The window a target names. Minimized windows are found too, so the caller can explain why it refuses.
-fn resolve(t: &Target) -> Result<WinInfo, Value> {
+pub(crate) fn resolve(t: &Target) -> Result<WinInfo, Value> {
     let all = windows::all();
     let shown = || all.iter().filter(|w| !w.minimized);
     let found = match t {
@@ -116,69 +115,6 @@ fn readable(w: &WinInfo) -> Result<(), Value> {
     }
 }
 
-#[derive(Default)]
-struct UiCollect {
-    view: Rect,
-    found: Vec<Control>,
-    hidden: Vec<Control>,
-    texts: Vec<(i32, i32, String)>,
-    elsewhere: Vec<(i32, String)>,
-    seen: HashSet<String>,
-    seen_off: HashSet<String>,
-}
-
-impl UiCollect {
-    fn visit(&mut self, n: &Node) {
-        let Some(b) = n.bounds.filter(|b| b.w > 1 && b.h > 1) else { return };
-        if roles::interactive(n.ct) && n.enabled {
-            let label = if n.name.trim().is_empty() { n.help.clone() } else { n.name.clone() };
-            let mut c = Control { role: n.role().to_string(), label: label.trim().to_string(), bounds: b, value: n.value.clone(), focused: n.focused, offscreen: false };
-            if b.mostly_inside(&self.view) && !n.offscreen {
-                if self.found.len() < UI_CONTROLS {
-                    self.found.push(c);
-                }
-            } else if self.hidden.len() < UI_OFFSCREEN {
-                c.offscreen = true;
-                self.hidden.push(c);
-            }
-        }
-        if n.ct == roles::TEXT || n.heading {
-            let raw = if n.name.trim().is_empty() { n.value.clone().unwrap_or_default() } else { n.name.clone() };
-            let line: String = rank::clean_line(&raw).chars().take(160).collect();
-            if line.chars().count() < 2 {
-                return;
-            }
-            if b.intersects(&self.view) && !n.offscreen {
-                if self.seen.insert(line.clone()) {
-                    self.texts.push((b.y, b.x, line));
-                }
-            } else if self.seen_off.insert(line.clone()) {
-                self.elsewhere.push((b.y, line));
-            }
-        }
-    }
-
-    fn has_content(&self) -> bool {
-        !self.found.is_empty() || !self.hidden.is_empty() || !self.texts.is_empty()
-    }
-
-    /// No control has a name, or there's no text: the app likely draws its own pixels.
-    fn needs_ocr(&self) -> bool {
-        self.texts.is_empty() || !self.found.iter().chain(&self.hidden).any(|c| !c.label.is_empty())
-    }
-
-    fn reply(&self, w: &WinInfo) -> Value {
-        let controls = self.found.iter().chain(self.hidden.iter()).take(UI_CONTROLS).enumerate().map(|(i, c)| p::control(i + 1, c)).collect();
-        let off: Vec<(i32, String)> = self.elsewhere.iter().filter(|(_, l)| !self.seen.contains(l)).cloned().collect();
-        p::ui_reply(w, controls, rank::order_lines(self.texts.clone(), 5000), rank::head_tail(off, 4000))
-    }
-}
-
-/// A browser whose page tree came back empty right after the nudge gets one more walk.
-fn retry_empty_page(nudged: bool, end: &uia::WalkEnd, attempt: usize, budget: &Budget) -> bool {
-    nudged && end.docs > 0 && end.web_nodes == 0 && attempt == 0 && budget.remaining() > Duration::from_secs(1)
-}
-
 fn ui(w: &WinInfo, budget: &mut Budget, snap: &Snapshot) -> Result<Value, Value> {
     readable(w)?;
     let uia = Uia::new(budget)?;
@@ -186,7 +122,7 @@ fn ui(w: &WinInfo, budget: &mut Budget, snap: &Snapshot) -> Result<Value, Value>
     let mut attempt = 0;
     loop {
         let nudged = uia::nudge_browser(hwnd);
-        let mut col = UiCollect { view: w.bounds, ..Default::default() };
+        let mut col = UiCollect::new(w.bounds);
         publish(snap, col.reply(w));
         let mut count = 0usize;
         let mut b = budget.with_nodes(UI_NODES);
@@ -345,63 +281,6 @@ fn image(input: &str, out: &str, crop: Option<Rect>, size: Option<(u32, u32)>, m
     Ok(p::image_reply(out, to))
 }
 
-struct WinSearch {
-    shown: Vec<Value>,
-    hidden: Vec<Hit<IUIAutomationElement>>,
-    stop: Option<Stop>,
-}
-
-/// Every element in one window whose text contains `q`: on-screen ones ranked like findTextEls, and the
-/// whole-ish matches that are scrolled out of view (for "scroll").
-fn search_window(uia: &Uia, w: &WinInfo, q: &str, budget: &Budget) -> Result<WinSearch, Value> {
-    let hwnd = windows::hwnd(w.id);
-    let view = w.bounds;
-    let mut attempt = 0;
-    loop {
-        let mut shown: Vec<Hit<()>> = Vec::new();
-        let mut hidden: Vec<Hit<IUIAutomationElement>> = Vec::new();
-        let nudged = uia::nudge_browser(hwnd);
-        let mut wb = budget.with_nodes(FIND_NODES_PER_WINDOW);
-        // Web pages are searched element by element; their text ranges' lines don't match what's shown.
-        let editors = !nudged && !crate::target::is_browser(&w.app, &w.exe);
-        let end = uia.walk(hwnd, &mut wb, &mut |n: &Node| {
-            let editor = editors && doc_hit(n);
-            let (text, b) = match editor.then(|| uia.text_in_document(n, q)).flatten() {
-                Some(found) => found,
-                None => {
-                    let Some(t) = rank::best_text(&n.texts(), q) else { return };
-                    let Some(b) = n.bounds.filter(|b| b.w > 1 && b.h > 1) else { return };
-                    (t.to_string(), b)
-                }
-            };
-            let Some(score) = rank::score(&text, q).or(editor.then_some(1)) else { return };
-            let role = if editor { "text" } else { n.role() };
-            // An editor's own IsOffscreen says nothing about where the found line is.
-            let on_screen = b.intersects(&view) && (editor || !n.offscreen);
-            // Pointing lands on the part that's actually inside the window.
-            let b = if on_screen { b.clamp_to(&view).unwrap_or(b) } else { b };
-            let item = p::hit(&rank::clean_line(&text), score, role, b, "uia");
-            if on_screen {
-                shown.push(Hit { score, web: n.in_web, area: b.area(), item, el: () });
-            } else if hidden.len() < 50 {
-                hidden.push(Hit { score, web: n.in_web, area: b.area(), item, el: n.el.clone() });
-            }
-        })?;
-        if retry_empty_page(nudged, &end, attempt, budget) {
-            attempt += 1;
-            std::thread::sleep(Duration::from_millis(300));
-            continue;
-        }
-        rank::sort_hits(&mut shown);
-        rank::sort_hits(&mut hidden);
-        return Ok(WinSearch { shown: shown.into_iter().take(PER_WINDOW).map(|h| h.item).collect(), hidden, stop: end.stop });
-    }
-}
-
-fn doc_hit(n: &Node) -> bool {
-    !n.in_web && (n.ct == roles::DOCUMENT || n.ct == roles::EDIT)
-}
-
 /// Hits on screen, scrolled-away hits with their window's z order, and why the search stopped early.
 type Found = (Vec<Value>, Vec<(usize, Hit<IUIAutomationElement>)>, Option<Stop>);
 
@@ -462,7 +341,7 @@ fn find_text(t: &Target, q: &str, scroll: bool, fake: &str, budget: &Budget, sna
                 Err(e) => return Err(e),
             };
             stop = stop.or(r.stop);
-            for (i, mut m) in r.shown.into_iter().enumerate() {
+            for (i, mut m) in r.shown.into_iter().map(|h| h.item).enumerate() {
                 m["window"] = p::win_info(w);
                 m["rank"] = json!(z * 100 + i);
                 all_hits.push(m);

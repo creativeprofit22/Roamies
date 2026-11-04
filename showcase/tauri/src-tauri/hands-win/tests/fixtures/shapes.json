@@ -18,6 +18,9 @@
   "controlOptional": ["focused", "offscreen", "value"],
   "findText": ["matches", "ok", "unit"],
   "match": ["bounds", "match", "rank", "role", "source", "text", "window"],
+  "act": ["done", "ok", "unit", "window"],
+  "actChanged": ["controls", "done", "ok", "texts", "unit", "window"],
+  "actError": ["code", "done", "error", "ok"],
   "error": ["code", "error", "ok"],
   "partial": ["partial", "partialReason"]
 }

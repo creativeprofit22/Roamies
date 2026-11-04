@@ -19,6 +19,7 @@ use w32::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG,
 const MAX_DEPTH: usize = 60;
 const OBJID_CLIENT: i32 = -4;
 
+#[derive(Clone)]
 pub struct Node {
     pub el: IUIAutomationElement,
     pub ct: i32,
@@ -240,6 +241,174 @@ impl Uia {
             false
         }
     }
+
+    /// The element with keyboard focus right now, anywhere on the desktop.
+    pub fn focused_element(&self) -> Option<IUIAutomationElement> {
+        unsafe { self.auto.GetFocusedElement().ok() }
+    }
+
+    pub fn parent(&self, el: &IUIAutomationElement) -> Option<IUIAutomationElement> {
+        unsafe { self.auto.ControlViewWalker().ok()?.GetParentElement(el).ok() }
+    }
+
+    /// A fresh read of one element (same properties as the walk), e.g. after it was focused or changed.
+    pub fn node_of(&self, el: &IUIAutomationElement) -> Option<Node> {
+        let fresh = unsafe { el.BuildUpdatedCache(&self.req) }.ok()?;
+        Some(self.read(fresh, false))
+    }
+
+    /// Walks below one element (a dropdown's options) the same one-level-per-call way as `walk`.
+    pub fn walk_below(&self, el: &IUIAutomationElement, budget: &mut Budget, visit: &mut dyn FnMut(&Node)) {
+        let mut stack: Vec<(IUIAutomationElement, usize)> = vec![(el.clone(), 0)];
+        while let Some((cur, depth)) = stack.pop() {
+            if budget.tick().is_err() {
+                return;
+            }
+            if depth > 0 {
+                let Ok(c) = (unsafe { cur.BuildUpdatedCache(&self.req) }) else { continue };
+                visit(&self.read(c, false));
+            }
+            if depth >= MAX_DEPTH {
+                continue;
+            }
+            let Ok(kids) = (unsafe { cur.FindAll(TreeScope_Children, &self.cond) }) else { continue };
+            let n = unsafe { kids.Length() }.unwrap_or(0);
+            for i in (0..n).rev() {
+                if let Ok(k) = unsafe { kids.GetElement(i) } {
+                    stack.push((k, depth + 1));
+                }
+            }
+        }
+    }
+}
+
+// Pattern calls used by `act`. Adapted from trycua/cua platform-windows/src/browser_setup_ui.rs (MIT, Copyright
+// (c) 2025 Cua AI, Inc.; see licenses/cua-LICENSE.txt): get the pattern, call it, read the state back.
+
+/// What a pattern call did. `Busy` is a UIA timeout: the app is handling it (often a dialog it opened).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Did {
+    Missing,
+    Done,
+    Busy,
+    Failed,
+}
+
+fn did(r: w32::core::Result<()>) -> Did {
+    match r {
+        Ok(()) => Did::Done,
+        Err(e) if is_timeout(&e) => Did::Busy,
+        Err(_) => Did::Failed,
+    }
+}
+
+fn pattern<T: Interface>(el: &IUIAutomationElement, id: UIA_PATTERN_ID) -> Option<T> {
+    unsafe { el.GetCurrentPatternAs::<T>(id) }.ok()
+}
+
+pub fn invoke(el: &IUIAutomationElement) -> Did {
+    match pattern::<IUIAutomationInvokePattern>(el, UIA_InvokePatternId) {
+        Some(p) => did(unsafe { p.Invoke() }),
+        None => Did::Missing,
+    }
+}
+
+/// Toggles a checkbox or switch; Done only when the state read back has changed.
+pub fn toggle(el: &IUIAutomationElement) -> Did {
+    let Some(p) = pattern::<IUIAutomationTogglePattern>(el, UIA_TogglePatternId) else { return Did::Missing };
+    unsafe {
+        let before = p.CurrentToggleState().ok();
+        match did(p.Toggle()) {
+            Did::Done => {}
+            other => return other,
+        }
+        if before.is_some() && p.CurrentToggleState().ok() == before { Did::Failed } else { Did::Done }
+    }
+}
+
+/// Selects a radio button, tab, list item or option; Done only when it reads back as selected.
+pub fn select(el: &IUIAutomationElement) -> Did {
+    let Some(p) = pattern::<IUIAutomationSelectionItemPattern>(el, UIA_SelectionItemPatternId) else { return Did::Missing };
+    unsafe {
+        match did(p.Select()) {
+            Did::Done => {}
+            other => return other,
+        }
+        match p.CurrentIsSelected() {
+            Ok(b) if !b.as_bool() => Did::Failed,
+            _ => Did::Done,
+        }
+    }
+}
+
+pub fn expand(el: &IUIAutomationElement) -> Did {
+    let Some(p) = pattern::<IUIAutomationExpandCollapsePattern>(el, UIA_ExpandCollapsePatternId) else { return Did::Missing };
+    unsafe {
+        match p.CurrentExpandCollapseState() {
+            Ok(s) if s == ExpandCollapseState_LeafNode => Did::Missing,
+            Ok(s) if s == ExpandCollapseState_Expanded => Did::Done,
+            _ => did(p.Expand()),
+        }
+    }
+}
+
+/// The text a field shows through ValuePattern (None when it has none).
+pub fn value_get(el: &IUIAutomationElement) -> Option<String> {
+    let p = pattern::<IUIAutomationValuePattern>(el, UIA_ValuePatternId)?;
+    unsafe { p.CurrentValue() }.ok().map(|b| b.to_string())
+}
+
+/// True when the element takes a value (has ValuePattern and isn't read-only).
+pub fn value_writable(el: &IUIAutomationElement) -> bool {
+    pattern::<IUIAutomationValuePattern>(el, UIA_ValuePatternId).is_some_and(|p| unsafe { p.CurrentIsReadOnly() }.is_ok_and(|r| !r.as_bool()))
+}
+
+pub fn value_set(el: &IUIAutomationElement, text: &str) -> Did {
+    let Some(p) = pattern::<IUIAutomationValuePattern>(el, UIA_ValuePatternId) else { return Did::Missing };
+    if unsafe { p.CurrentIsReadOnly() }.is_ok_and(|r| r.as_bool()) {
+        return Did::Missing;
+    }
+    did(unsafe { p.SetValue(&BSTR::from(text)) })
+}
+
+/// The whole text of an editor or page through TextPattern, at most `max` UTF-16 units.
+pub fn text_of(el: &IUIAutomationElement, max: i32) -> Option<String> {
+    let tp = pattern::<IUIAutomationTextPattern>(el, UIA_TextPatternId)?;
+    unsafe { tp.DocumentRange().ok()?.GetText(max).ok() }.map(|b| b.to_string())
+}
+
+/// Scrolls one step with ScrollPattern; Missing when the element can't scroll that way.
+pub fn scroll(el: &IUIAutomationElement, down: bool, right: bool, horizontal: bool, large: bool) -> Did {
+    let Some(p) = pattern::<IUIAutomationScrollPattern>(el, UIA_ScrollPatternId) else { return Did::Missing };
+    let can = unsafe { if horizontal { p.CurrentHorizontallyScrollable() } else { p.CurrentVerticallyScrollable() } };
+    if !can.is_ok_and(|b| b.as_bool()) {
+        return Did::Missing;
+    }
+    let amount = match (if horizontal { right } else { down }, large) {
+        (true, true) => ScrollAmount_LargeIncrement,
+        (true, false) => ScrollAmount_SmallIncrement,
+        (false, true) => ScrollAmount_LargeDecrement,
+        (false, false) => ScrollAmount_SmallDecrement,
+    };
+    let (h, v) = if horizontal { (amount, ScrollAmount_NoAmount) } else { (ScrollAmount_NoAmount, amount) };
+    did(unsafe { p.Scroll(h, v) })
+}
+
+pub fn set_focus(el: &IUIAutomationElement) -> bool {
+    unsafe { el.SetFocus() }.is_ok()
+}
+
+pub fn has_focus(el: &IUIAutomationElement) -> bool {
+    unsafe { el.CurrentHasKeyboardFocus() }.is_ok_and(|b| b.as_bool())
+}
+
+pub fn current_rect(el: &IUIAutomationElement) -> Option<Rect> {
+    let r = unsafe { el.CurrentBoundingRectangle() }.ok()?;
+    Rect::from_ltrb(r.left, r.top, r.right, r.bottom).filter(|b| b.w > 1 && b.h > 1)
+}
+
+pub fn process_id(el: &IUIAutomationElement) -> Option<u32> {
+    unsafe { el.CurrentProcessId() }.ok().and_then(|p| u32::try_from(p).ok())
 }
 
 /// The first of the [left, top, width, height, ...] doubles UIA returns for a text range.

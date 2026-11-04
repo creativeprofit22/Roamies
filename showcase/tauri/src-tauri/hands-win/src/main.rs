@@ -7,23 +7,35 @@
 //   roamies-hands ui front|app:<name>|window:<id>            the window's controls and text
 //   roamies-hands find-text <target> <text> [scroll]         where that text is on screen
 //   roamies-hands ocr-file <image.png> [--origin x,y]        test only: OCR an image as if it were a window
+//   roamies-hands act '<plan json>'                          click, fill, choose, scroll, press keys (docs/hands.md)
 //   roamies-hands image <in> <out.jpg> [--crop x,y,w,h] [--size w,h] [--marks m.json]  crop, resize, draw numbered marks
 mod budget;
 mod cli;
 mod draw;
+mod elevation;
 mod fit;
+mod focus;
+mod forms;
 mod geom;
 mod hands_off;
+mod input;
+mod keys;
 mod ocr_map;
+mod plan;
+mod risky;
 mod protocol;
 mod rank;
 mod roles;
 mod target;
 
 #[cfg(windows)]
+mod act;
+#[cfg(windows)]
 mod capture;
 #[cfg(windows)]
 mod cmd;
+#[cfg(windows)]
+mod controls;
 #[cfg(windows)]
 mod com;
 #[cfg(windows)]
@@ -54,7 +66,9 @@ fn main() {
 #[cfg(windows)]
 fn run(c: cli::Cmd) -> Value {
     dpi::set_process();
-    budget::run(c.budget_ms, move |snap| cmd::dispatch(c, snap))
+    // act's per-step snapshot already says how far it got, so it's returned as is.
+    let partial = !matches!(c.verb, cli::Verb::Act(_));
+    budget::run_with(c.budget_ms, partial, move |snap| cmd::dispatch(c, snap))
 }
 
 #[cfg(not(windows))]

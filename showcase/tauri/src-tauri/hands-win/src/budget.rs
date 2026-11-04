@@ -71,7 +71,17 @@ pub const GRACE_MS: u64 = 500;
 /// Runs `work` on its own thread with `ms` to finish (plus a short grace). On a timeout it returns the last
 /// published snapshot flagged partial, or a timeout error when nothing was published (capture never
 /// publishes, so it never returns half an image).
+#[cfg(test)]
 pub fn run<F>(ms: u64, work: F) -> Value
+where
+    F: FnOnce(Snapshot) -> Value + Send + 'static,
+{
+    run_with(ms, true, work)
+}
+
+/// Like `run`; with `mark_partial` false the last snapshot is returned as published (act publishes a
+/// ready-made per-step timeout error, which must not grow partial flags).
+pub fn run_with<F>(ms: u64, mark_partial: bool, work: F) -> Value
 where
     F: FnOnce(Snapshot) -> Value + Send + 'static,
 {
@@ -86,6 +96,7 @@ where
         Err(_) => {
             let last = snap.lock().ok().and_then(|mut s| s.take());
             match last {
+                Some(v) if !mark_partial => v,
                 Some(mut v) => {
                     v["partial"] = json!(true);
                     v["partialReason"] = json!("time");
@@ -140,6 +151,18 @@ mod tests {
         });
         assert_eq!(v["ok"], json!(false));
         assert_eq!(v["code"], json!("timeout"));
+    }
+
+    #[test]
+    fn stuck_worker_snapshot_can_be_returned_as_is() {
+        let start = Instant::now();
+        let v = run_with(50, false, |snap| {
+            publish(&snap, json!({"ok": false, "code": "timeout", "error": "Step 2: Notepad didn't answer in time", "done": ["focus"]}));
+            std::thread::sleep(Duration::from_secs(5));
+            json!({"ok": true})
+        });
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert_eq!(v, json!({"ok": false, "code": "timeout", "error": "Step 2: Notepad didn't answer in time", "done": ["focus"]}));
     }
 
     #[test]

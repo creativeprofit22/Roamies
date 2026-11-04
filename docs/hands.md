@@ -39,7 +39,65 @@ Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
   window and 12 windows.
 - `scroll`: if nothing whole is visible, scroll the best hidden whole match into view and search again.
 
-`select`, `act`, `trusted` and `locate-control` are macOS-only for now.
+`select`, `trusted` and `locate-control` are macOS-only for now.
+
+## act: click and type in other apps
+
+`act '<plan json>'` runs a list of steps in one window, the same steps and replies as `act` in
+`hands/main.swift`. The plan is `{steps: [step], window?: <id from windows>, app?: <name>}` (neither = the
+front window); at most 40 steps. Steps (`do` plus its arguments):
+
+| `do` | Arguments | What it does |
+| --- | --- | --- |
+| `click`, `press_button` | `id` (from `ui`), `confirmed` | presses a control; text fields get the cursor |
+| `focus` | `id` | puts the keyboard focus on a control |
+| `set` | `id` (from `ui`), `text` | replaces the text of the control with that id and reads it back |
+| `fill` | `field` (label, placeholder or `ui` id; empty = the only field in view), `text`, `near`, `id` | finds a field by its label, replaces its text and reads it back |
+| `click_text` | `text`, `near`, `confirmed` | clicks visible text (a checkbox or radio by its label first) |
+| `type` | `text` | types into the field that has the cursor |
+| `choose` | `id` or `field`, `option`, `confirmed` | picks an option in a dropdown |
+| `scroll` | `id` or `text` (visible words in the panel to scroll), `direction` (`up`/`down`/`left`/`right`), `amount`, `to_end` | scrolls a control or the window |
+| `key` | `key` (`"enter"`, `"ctrl+shift+tab"`, …) | presses a key combo; `cmd` means Ctrl on Windows, `opt` Alt |
+| `click_at` | `x`, `y`, `global` | clicks a point: window pixels from its top-left, or with `global: true` physical screen pixels (what pointing sends) |
+| `wait` | `seconds` (max 5) | waits |
+
+Replies: `{ok, unit, done, window}`; when a step changed something, also `controls` (same ids as `ui`) and
+`texts` (2000 characters), read after the window settles. Errors: `{ok: false, code, error, done}`, where
+`done` lists the steps that ran before it stopped.
+
+How each step works on Windows (the window is brought to the front first and checked; the user watches):
+
+- Clicks try UI Automation first (Invoke, then Toggle, then SelectionItem), then a real mouse click at the
+  control's centre after scrolling it into view. An Invoke that times out (the app opened a dialog) counts as
+  done and is never clicked twice.
+- `set`/`fill` put the value in with ValuePattern and read it back; if it doesn't match, they select all and
+  type it as Unicode keystrokes and read it back again. Still different = `mismatch`. Web page fields are typed
+  first (pages ignore set values). Password fields are typed and reported as `••••`: Windows never gives
+  their value back, so they can't be checked.
+- Mouse and keys go through `SendInput`; if Windows takes fewer events than sent, the step fails (`input`).
+  Before sending, the helper waits up to 1.5 s for the user to let go of Ctrl, Alt, Shift or Win (`keys_held`).
+- Before every step the front window is checked again: hands-off, input-only or administrator apps stop the
+  plan, and `key`, `type` and `click_at` stop if another app came to the front and can't be sent back.
+
+Safety (all checked before any input is sent):
+
+- Hands-off apps (below) and input-only apps (`noInput` in `hands-off.json`, plus console and terminal windows by class in `noInputClasses`, whatever shell runs inside: terminals, PowerShell,
+  Registry Editor, the management console; typing there would run commands past `sidecar/safety.mjs`) are
+  refused with `code: "hands_off"`.
+- Apps running at a higher integrity level than the helper (as administrator) are refused with
+  `access_denied`: Windows would silently drop the input. An unknown level counts as higher.
+- Key combos that switch windows or reach the secure desktop are refused with `blocked_key` before anything
+  runs: Alt+Tab, Alt+Esc, Ctrl+Alt+Tab, Ctrl+Esc, Ctrl+Shift+Esc, Ctrl+Alt+Del, Ctrl+Alt+End and every combo
+  with the Win key, also with extra modifiers.
+- Risky labels (delete, send, pay, buy, …; the `RISKY` list in `hands/main.swift`, pinned by
+  `hands-win/tests/fixtures/risky.json` and checked against `isRiskyClick` in `sidecar/safety.mjs`) need
+  `confirmed: true`, else `code: "confirm"`.
+
+Budgets: 6 s per step (`choose` 10 s, `scroll` with `to_end` 27 s, `wait` its seconds + 1), plus 6 s setup
+(2.5 s to bring the window to front, 2.5 s for the first walk, 1 s margin), at most 120 s in all. Each step
+gets only the time really left (minus 1 s), so a slow app runs out between steps, not halfway through input.
+A step whose app stops answering returns `{ok: false, code: "timeout", error: "Step N: … didn't answer in
+time", done}` instead of hanging.
 
 ## Text recognition fallback (Windows)
 
@@ -96,19 +154,22 @@ first, so links and headings inside pages are found.
 
 ## Error codes (Windows)
 
-`usage`, `not_found`, `minimized` (capture/ui of a minimized window), `access_denied` (the app runs as
+`usage`, `not_found`, `minimized` (capture/ui of a minimized window, or one `act` can't restore), `access_denied` (the app runs as
 administrator; Roamies can't read it), `hands_off`, `timeout`, `dpi` (the thread isn't Per-Monitor V2),
 `capture_failed`, `unavailable` (the Windows screen-reading service, COM/UI Automation, couldn't start or
 couldn't read this window; try again), `unsupported` (the helper was run on a system other than Windows),
 `ocr_unavailable` (no text recognition language installed), `ocr_failed` (text recognition or the image
-file failed).
+file failed). `act` adds `blocked_key`, `confirm` (risky label without `confirmed`), `focus` (Windows
+wouldn't bring the window to the front, so nothing was sent), `not_editable` (`type` without a text field
+focused), `mismatch` (a field didn't show the text after typing), `covered` (another window is over the
+spot), `keys_held`, `input` (Windows dropped input).
 
 ## Hands-off
 
 Roamies can point at any window but never reads, captures or types into secrets. On Windows the list is
 `hands-win/hands-off.json` (password managers, Windows Security, admin and sign-in prompts, by exe and
 window class): `capture`, `ui` and `find-text` refuse those windows with `code: "hands_off"`, and
-`find-text screen` skips them. Every exe in it is also in `DICTATION_BLOCK` in `sidecar/safety.mjs`
+`find-text screen` skips them. `act` also refuses them, and the `noInput` apps (terminals and system tools) too. Every exe in it is also in `DICTATION_BLOCK` in `sidecar/safety.mjs`
 (checked by `test/safety.test.mjs`). On macOS the list is `HANDS_OFF` in `hands/main.swift`.
 
 ## Testing
@@ -117,6 +178,7 @@ window class): `capture`, `ui` and `find-text` refuse those windows with `code: 
 cd showcase/tauri/src-tauri/hands-win
 cargo test --locked                     # unit tests + CLI tests
 cargo test --locked notepad -- --ignored  # opens Notepad and finds a known sentence (Windows desktop)
+cargo test --locked act_fills -- --ignored --test-threads=1  # act fills Notepad and clicks a button in a WinForms window (moves the mouse and types: hands off the keyboard)
 cargo test --release --locked ocr_p95_full_hd -- --ignored --nocapture   # OCR timing, p50/p95
 cargo test --locked write_ocr_fixture -- --ignored                       # rebuilds tests/fixtures/ocr.png + ocr.json
 cargo run --release -- find-text app:browser "Example Domain"

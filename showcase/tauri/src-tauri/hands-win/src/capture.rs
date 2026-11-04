@@ -212,7 +212,7 @@ fn fit(img: Image, frame: Rect) -> Image {
     crop(img, Rect::new(0, 0, w, h), Rect::new(0, 0, frame.w.min(w), frame.h.min(h)))
 }
 
-fn wic() -> Result<IWICImagingFactory, String> {
+pub fn wic() -> Result<IWICImagingFactory, String> {
     unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).map_err(|e| format!("WIC factory: {e}")) }
 }
 
@@ -226,7 +226,7 @@ pub fn sent_size(bounds: Rect, fit: Option<(u32, u32)>) -> (u32, u32) {
 }
 
 /// Resizes to exactly `to` with WIC's high-quality cubic filter (a no-op when it's already that size).
-fn scale_to(img: Image, to: (u32, u32)) -> Result<Image, String> {
+pub fn scale_to(img: Image, to: (u32, u32)) -> Result<Image, String> {
     if (img.w as u32, img.h as u32) == to {
         return Ok(img);
     }
@@ -292,8 +292,8 @@ pub fn minimized(w: &WinInfo) -> Value {
     fail("minimized", &format!("{} is minimized, so there's nothing on screen to read. Ask the user to restore it first.", w.app))
 }
 
-/// Captures one window into `file` as JPEG; returns the bounds it covers and the image's size.
-pub fn window(w: &WinInfo, file: &str, limits: Option<(u32, u32)>, budget: &Budget) -> Result<(Rect, (u32, u32)), Value> {
+/// One window's pixels at 1:1 with its drawn frame (physical screen pixels), and that frame.
+pub fn grab(w: &WinInfo, budget: &Budget) -> Result<(Image, Rect), Value> {
     let hwnd = crate::windows::hwnd(w.id);
     if unsafe { IsIconic(hwnd).as_bool() } {
         return Err(minimized(w));
@@ -316,6 +316,12 @@ pub fn window(w: &WinInfo, file: &str, limits: Option<(u32, u32)>, budget: &Budg
     if budget.expired() {
         return Err(fail("timeout", "Capturing took too long. Try again."));
     }
+    Ok((img, frame))
+}
+
+/// Captures one window into `file` as JPEG; returns the bounds it covers and the image's size.
+pub fn window(w: &WinInfo, file: &str, limits: Option<(u32, u32)>, budget: &Budget) -> Result<(Rect, (u32, u32)), Value> {
+    let (img, frame) = grab(w, budget)?;
     let sent = sent_size(frame, limits);
     let img = scale_to(img, sent).map_err(|e| fail("capture_failed", &e))?;
     write_jpeg(file, &img).map_err(|e| fail("capture_failed", &e))?;

@@ -12,6 +12,8 @@ pub enum Verb {
     Capture { out: String, target: Target },
     Ui(Target),
     FindText { target: Target, text: String, scroll: bool },
+    /// Test-only: OCR a PNG as if it were a window whose top-left corner is at `origin`.
+    OcrFile { file: String, origin: (i32, i32) },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +31,7 @@ pub fn default_budget(v: &Verb) -> u64 {
         Verb::Capture { .. } => 5000,
         Verb::Ui(_) => 4000,
         Verb::FindText { .. } => 6000,
+        Verb::OcrFile { .. } => 15000,
     }
 }
 
@@ -95,6 +98,19 @@ pub fn parse(argv: &[String]) -> Result<Cmd, Value> {
             }
             Verb::FindText { target: target(args[1], u)?, text: args[2].to_string(), scroll: args.get(3) == Some(&"scroll") }
         }
+        "ocr-file" => {
+            let u = "usage: ocr-file <image.png> [--origin x,y]";
+            let file = args.get(1).ok_or_else(|| fail("usage", u))?.to_string();
+            let origin = match &args[2..] {
+                [] => (0, 0),
+                ["--origin", xy] => {
+                    let (x, y) = xy.split_once(',').ok_or_else(|| fail("usage", u))?;
+                    (x.trim().parse().map_err(|_| fail("usage", u))?, y.trim().parse().map_err(|_| fail("usage", u))?)
+                }
+                _ => return Err(fail("usage", u)),
+            };
+            Verb::OcrFile { file, origin }
+        }
         "select" | "act" | "trusted" | "locate-control" => {
             return Err(fail("usage", &format!("{verb} is only available on macOS")));
         }
@@ -127,11 +143,13 @@ mod tests {
         assert_eq!(c.verb, Verb::Capture { out: "o.jpg".into(), target: Target::Monitor(2) });
         assert_eq!(c.fit, Some((1568, 0)));
         assert_eq!(p(&["capture", "o.jpg", "front"]).unwrap().fit, None);
+        assert_eq!(p(&["ocr-file", "a.png"]).unwrap().verb, Verb::OcrFile { file: "a.png".into(), origin: (0, 0) });
+        assert_eq!(p(&["ocr-file", "a.png", "--origin", "-1920,40"]).unwrap().verb, Verb::OcrFile { file: "a.png".into(), origin: (-1920, 40) });
     }
 
     #[test]
     fn usage_errors_carry_a_code() {
-        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"]] {
+        for bad in [&[][..], &["nope"], &["capture", "o.jpg"], &["ui", "screen"], &["find-text", "front"], &["find-text", "front", " "], &["locate", "Notepad"], &["act", "{}"], &["windows", "--budget-ms", "x"], &["ui", "screen:1"], &["capture", "o.jpg", "screen:0"], &["capture", "o.jpg", "front", "--fit", "x"], &["capture", "o.jpg", "front", "--fit", "0x0"], &["capture", "o.jpg", "front", "--fit"], &["ocr-file"], &["ocr-file", "a.png", "--origin"], &["ocr-file", "a.png", "--origin", "1x2"], &["ocr-file", "a.png", "x"]] {
             let e = p(bad).unwrap_err();
             assert_eq!(e["ok"], false, "{bad:?}");
             assert_eq!(e["code"], "usage", "{bad:?}");

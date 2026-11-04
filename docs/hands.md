@@ -24,7 +24,7 @@ Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
 | `windows` | `{ok, windows:[window]}` (the front app's windows have `frontApp: true`): up to 30 on-screen windows, front to back, at least 80×60, Roamies left out |
 | `locate <target>` | `{ok, window}`, or `{ok, what:"screen"}` for `screen` |
 | `capture <out.jpg> <target> [--fit <edge>x<tokens>]` | `{ok, file, window}`, or `{ok, file, what:"screen", bounds}` for `screen` / `screen:<n>`; Windows adds `sent: [w, h]` |
-| `ui <target>` | `{ok, window, controls:[control], texts, elsewhere, note}` |
+| `ui <target>` | `{ok, window, controls:[control], texts, elsewhere, note}`; Windows adds `source` (`"uia"` or `"ocr"`), and `ocr`, `ocrMs`, `ocrLang` when text recognition ran (see [Text recognition fallback (Windows)](#text-recognition-fallback-windows)) |
 | `find-text <target> <text> [scroll]` | `{ok, matches:[match]}` |
 
 - `window`: `{id, app, title, bounds}`.
@@ -32,13 +32,34 @@ Firefox, Opera, Vivaldi, Chromium) and `window:<id>` (an id from `windows`).
   at most 40 offscreen. Roles use the macOS names (button, text field, password field, checkbox, radio,
   combo box, link, slider, tab, menu item, menu button, stepper, heading). Password values are never read.
 - `texts`: visible text top to bottom (5000 characters max); `elsewhere`: text scrolled out of view (4000 max).
-- `match`: `{text, match, role, bounds, window, rank}`. `match` is `exact`, `word` (whole word) or `partial`.
+- `match`: `{text, match, role, bounds, window, rank}`; Windows adds `source` (`uia` or `ocr`). `match` is `exact`, `word` (whole word) or `partial`.
   Within a window: exact, then whole word, then partial; web-page text before browser toolbars; then the
   smallest box. Across windows: any exact match first, then by `rank` (front window first). At most 8 per
   window and 12 windows.
 - `scroll`: if nothing whole is visible, scroll the best hidden whole match into view and search again.
 
 `select`, `act`, `trusted` and `locate-control` are macOS-only for now.
+
+## Text recognition fallback (Windows)
+
+Games, videos, images and canvas apps share no UI Automation text. For those, the Windows helper reads the
+window's own pixels (the same grab as `capture`, never written to disk) with `Windows.Media.Ocr`, in memory.
+
+- `ui`: when the window has no named controls or no text, it is OCR'd. The reply gets `source: "ocr"`,
+  `ocr: [{text, bounds, words:[{text, bounds}]}]` (at most 200 lines) and the line texts appended to `texts`.
+  Otherwise `source: "uia"`.
+- `find-text`: every match has `source: "uia"` or `"ocr"`. Each window whose UI Automation search had no
+  visible hit is OCR'd, front to back while time lasts (hands-off and administrator windows are still
+  skipped). OCR hits have role `text`, bounds narrowed to the matching words, and are ranked like the rest.
+- Replies that ran OCR add `ocrMs` and `ocrLang`. Rects are physical screen pixels like everything else.
+- Language: the user's Windows display languages, else `en-US` if installed. With neither, `ui` on a window
+  with nothing through UI Automation replies `code: "ocr_unavailable"` (install a language with text
+  recognition in Settings ▸ Time & language ▸ Language & region); with UI Automation content it keeps that and
+  adds a note. `find-text` skips OCR, so a miss is still an empty `matches`.
+- Budget: OCR starts only with at least 0.8 s left, otherwise the reply is `partial: true`. Images bigger than
+  the engine's maximum are scaled down first and the rects scaled back.
+- Speed: a 1920×1080 image with 36 lines of text takes p50 187 ms, p95 249 ms (release build, 30 runs,
+  Intel i7-8700, Windows 10 22H2, `ocr_p95_full_hd`).
 
 ## Units
 
@@ -77,7 +98,9 @@ first, so links and headings inside pages are found.
 `usage`, `not_found`, `minimized` (capture/ui of a minimized window), `access_denied` (the app runs as
 administrator; Roamies can't read it), `hands_off`, `timeout`, `dpi` (the thread isn't Per-Monitor V2),
 `capture_failed`, `unavailable` (the Windows screen-reading service, COM/UI Automation, couldn't start or
-couldn't read this window; try again), `unsupported` (the helper was run on a system other than Windows).
+couldn't read this window; try again), `unsupported` (the helper was run on a system other than Windows),
+`ocr_unavailable` (no text recognition language installed), `ocr_failed` (text recognition or the image
+file failed).
 
 ## Hands-off
 
@@ -92,6 +115,14 @@ window class): `capture`, `ui` and `find-text` refuse those windows with `code: 
 ```sh
 cd showcase/tauri/src-tauri/hands-win
 cargo test --locked                     # unit tests + CLI tests
-cargo test --locked -- --ignored        # opens Notepad and finds a known sentence (Windows desktop)
+cargo test --locked notepad -- --ignored  # opens Notepad and finds a known sentence (Windows desktop)
+cargo test --release --locked ocr_p95_full_hd -- --ignored --nocapture   # OCR timing, p50/p95
+cargo test --locked write_ocr_fixture -- --ignored                       # rebuilds tests/fixtures/ocr.png + ocr.json
 cargo run --release -- find-text app:browser "Example Domain"
+cargo run --release -- ocr-file tests/fixtures/ocr.png --origin -1920,240
 ```
+
+`ocr-file <image.png> [--origin x,y]` (test-only) runs a PNG through the same text recognition path and prints
+`{ok, unit, source: "ocr", lang, lines, ocrMs}`, rects shifted by `origin`. The fixture test checks every
+word in `ocr.json` within 6 px. CI installs the English OCR language (`Language.OCR~~~en-US~0.0.1.0`)
+first, so the test never skips.

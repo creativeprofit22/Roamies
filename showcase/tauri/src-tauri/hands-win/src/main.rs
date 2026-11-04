@@ -6,11 +6,13 @@
 //   roamies-hands capture <out.jpg> <target> [--fit <edge>x<tokens>]  JPEG sized for the model
 //   roamies-hands ui front|app:<name>|window:<id>            the window's controls and text
 //   roamies-hands find-text <target> <text> [scroll]         where that text is on screen
+//   roamies-hands ocr-file <image.png> [--origin x,y]        test only: OCR an image as if it were a window
 mod budget;
 mod cli;
 mod fit;
 mod geom;
 mod hands_off;
+mod ocr_map;
 mod protocol;
 mod rank;
 mod roles;
@@ -24,6 +26,8 @@ mod cmd;
 mod com;
 #[cfg(windows)]
 mod dpi;
+#[cfg(windows)]
+mod ocr;
 #[cfg(windows)]
 mod uia;
 #[cfg(windows)]

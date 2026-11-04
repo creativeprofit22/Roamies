@@ -46,6 +46,13 @@ w32 = { package = "windows", version = "=0.62.2", features = [
   "Graphics_Capture",
   "Graphics_DirectX",
   "Graphics_DirectX_Direct3D11",
+  "Foundation_Collections",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media",
+  "Media_Ocr",
+  "Storage",
+  "Storage_Streams",
 ] }
 
 [profile.release]

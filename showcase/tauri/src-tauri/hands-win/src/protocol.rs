@@ -91,9 +91,24 @@ pub fn capture_screen_reply(file: &str, bounds: Rect, sent: (u32, u32), mons: &[
 
 pub const NO_CONTROLS: &str = "This app shares no controls. Use a screenshot plus click at coordinates instead.";
 
+pub const NO_OCR: &str = "Windows has no text recognition language installed, so only the text this app shares is listed.";
+
+/// `source` is "uia" (what the app shares through UI Automation) or "ocr" (some of it read from its pixels).
 pub fn ui_reply(w: &WinInfo, controls: Vec<Value>, texts: Vec<String>, elsewhere: Vec<String>) -> Value {
     let note = if controls.is_empty() { NO_CONTROLS } else { "" };
-    ok(json!({"window": win_info(w), "controls": controls, "texts": texts, "elsewhere": elsewhere, "note": note}))
+    ok(json!({"window": win_info(w), "controls": controls, "texts": texts, "elsewhere": elsewhere, "note": note, "source": "uia"}))
+}
+
+/// Marks a reply whose text was partly read with OCR: how long that took (capture + recognition) and in
+/// which language.
+pub fn mark_ocr(v: &mut Value, ms: u64, lang: &str) {
+    v["ocrMs"] = json!(ms);
+    v["ocrLang"] = json!(lang);
+}
+
+/// The test-only ocr-file verb: recognised lines with screen rects (the image placed at --origin).
+pub fn ocr_file_reply(lang: &str, lines: Vec<Value>, ms: u64) -> Value {
+    ok(json!({"source": "ocr", "lang": lang, "lines": lines, "ocrMs": ms}))
 }
 
 pub struct Control {
@@ -124,8 +139,8 @@ pub fn control(id: usize, c: &Control) -> Value {
 }
 
 /// One find-text hit before it's tied to a window (window and rank are added per window).
-pub fn hit(text: &str, score: u8, role: &str, bounds: Rect) -> Value {
-    json!({"text": clip(text, 80), "match": crate::rank::MATCH_NAMES[score as usize], "role": role, "bounds": bounds.json()})
+pub fn hit(text: &str, score: u8, role: &str, bounds: Rect, source: &str) -> Value {
+    json!({"text": clip(text, 80), "match": crate::rank::MATCH_NAMES[score as usize], "role": role, "bounds": bounds.json(), "source": source})
 }
 
 pub fn find_reply(matches: Vec<Value>) -> Value {
@@ -175,13 +190,28 @@ mod tests {
         assert_eq!(keys(&capture_window_reply("o.jpg", &w, (400, 300), &m)), want(&s, "captureWindow"));
         assert_eq!(keys(&capture_screen_reply("o.jpg", Rect::new(0, 0, 1, 1), (1, 1), &m)), want(&s, "captureScreen"));
         assert_eq!(keys(&ui_reply(&w, vec![], vec![], vec![])), want(&s, "ui"));
+        let mut u = ui_reply(&w, vec![], vec![], vec![]);
+        u["ocr"] = json!([]);
+        mark_ocr(&mut u, 120, "en-US");
+        let mut ui_ocr = want(&s, "ui");
+        ui_ocr.extend(want(&s, "uiOcr"));
+        assert_eq!(keys(&u), ui_ocr);
+        let mut f = find_reply(vec![]);
+        mark_ocr(&mut f, 120, "en-US");
+        let mut find_ocr = want(&s, "findText");
+        find_ocr.extend(want(&s, "ocrTiming"));
+        assert_eq!(keys(&f), find_ocr);
+        assert_eq!(keys(&ocr_file_reply("en-US", vec![], 5)), want(&s, "ocrFile"));
+        let line = crate::ocr_map::line_json(&crate::ocr_map::Line { text: "Hi".into(), bounds: Rect::new(0, 0, 9, 9), words: vec![crate::ocr_map::Word { text: "Hi".into(), bounds: Rect::new(0, 0, 9, 9) }] });
+        assert_eq!(keys(&line), want(&s, "ocrLine"));
+        assert_eq!(keys(&line["words"][0]), want(&s, "ocrWord"));
         let bare = Control { role: "button".into(), label: "OK".into(), bounds: Rect::new(1, 2, 3, 4), value: None, focused: false, offscreen: false };
         assert_eq!(keys(&control(1, &bare)), want(&s, "control"));
         let full = Control { value: Some("x".into()), focused: true, offscreen: true, ..bare };
         let mut all = want(&s, "control");
         all.extend(want(&s, "controlOptional"));
         assert_eq!(keys(&control(2, &full)), all);
-        let mut h = hit("Example Domain", 0, "heading", Rect::new(0, 0, 10, 10));
+        let mut h = hit("Example Domain", 0, "heading", Rect::new(0, 0, 10, 10), "uia");
         h["window"] = win_info(&w);
         h["rank"] = json!(0);
         assert_eq!(keys(&h), want(&s, "match"));

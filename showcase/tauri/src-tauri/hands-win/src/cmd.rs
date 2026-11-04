@@ -1,4 +1,5 @@
-// The verbs: windows, locate, capture, ui and find-text. Runs on the budget's worker thread.
+// The verbs: windows, locate, capture, ui and find-text (with an OCR fallback for apps that share no text),
+// plus the test-only ocr-file. Runs on the budget's worker thread.
 use crate::budget::{publish, Budget, Snapshot, Stop};
 use crate::cli::{Cmd, Verb, FIND_NODES_PER_WINDOW, FIND_WINDOWS, UI_NODES};
 use crate::com::ComGuard;
@@ -7,15 +8,17 @@ use crate::protocol::{self as p, fail, Control, WinInfo};
 use crate::rank::{self, Hit};
 use crate::target::{app_matches, Target};
 use crate::uia::{self, Node, Uia};
-use crate::{capture, dpi, hands_off, roles, windows};
+use crate::ocr::{self, Engine};
+use crate::{capture, dpi, hands_off, ocr_map, roles, windows};
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use w32::Win32::UI::Accessibility::IUIAutomationElement;
 
 const UI_CONTROLS: usize = 260;
 const UI_OFFSCREEN: usize = 40;
 const PER_WINDOW: usize = 8;
+const OCR_LINES: usize = 200;
 
 pub fn dispatch(c: Cmd, snap: Snapshot) -> Value {
     let _com = match ComGuard::mta() {
@@ -52,6 +55,7 @@ pub fn dispatch(c: Cmd, snap: Snapshot) -> Value {
         }),
         Verb::Ui(t) => resolve(t).and_then(|w| guard(&w, fake).map(|_| w)).and_then(|w| ui(&w, &mut budget, &snap)),
         Verb::FindText { target, text, scroll } => find_text(target, text, *scroll, fake, &budget, &snap),
+        Verb::OcrFile { file, origin } => ocr_file(file, *origin, &budget),
     };
     res.unwrap_or_else(|e| e)
 }
@@ -153,6 +157,15 @@ impl UiCollect {
         }
     }
 
+    fn has_content(&self) -> bool {
+        !self.found.is_empty() || !self.hidden.is_empty() || !self.texts.is_empty()
+    }
+
+    /// No control has a name, or there's no text: the app likely draws its own pixels.
+    fn needs_ocr(&self) -> bool {
+        self.texts.is_empty() || !self.found.iter().chain(&self.hidden).any(|c| !c.label.is_empty())
+    }
+
     fn reply(&self, w: &WinInfo) -> Value {
         let controls = self.found.iter().chain(self.hidden.iter()).take(UI_CONTROLS).enumerate().map(|(i, c)| p::control(i + 1, c)).collect();
         let off: Vec<(i32, String)> = self.elsewhere.iter().filter(|(_, l)| !self.seen.contains(l)).cloned().collect();
@@ -189,9 +202,115 @@ fn ui(w: &WinInfo, budget: &mut Budget, snap: &Snapshot) -> Result<Value, Value>
             continue;
         }
         let mut v = col.reply(w);
-        p::mark_partial(&mut v, end.stop);
+        let mut stop = end.stop;
+        if col.needs_ocr() {
+            stop = stop.or(ocr_ui(w, &col, &mut v, budget)?);
+        }
+        p::mark_partial(&mut v, stop);
         return Ok(v);
     }
+}
+
+fn add_note(v: &mut Value, note: &str) {
+    let n = v["note"].as_str().unwrap_or("");
+    v["note"] = json!(if n.is_empty() { note.to_string() } else { format!("{n} {note}") });
+}
+
+/// `ui`'s fallback: reads the window's pixels and adds what it says to `texts` (and line rects as `ocr`).
+/// Returns why it stopped early; ocr_unavailable only when UI Automation gave nothing either.
+fn ocr_ui(w: &WinInfo, col: &UiCollect, v: &mut Value, budget: &Budget) -> Result<Option<Stop>, Value> {
+    let engine = match Engine::new() {
+        Ok(e) => e,
+        Err(e) if !col.has_content() => return Err(e),
+        Err(_) => {
+            add_note(v, p::NO_OCR);
+            return Ok(None);
+        }
+    };
+    if budget.remaining() < ocr::MIN_LEFT {
+        return Ok(Some(Stop::Time));
+    }
+    let t0 = Instant::now();
+    let Ok((img, frame)) = capture::grab(w, budget) else { return Ok(None) };
+    let read = match engine.read(img, frame, budget) {
+        Ok(Some(r)) => r,
+        Ok(None) => return Ok(Some(Stop::Time)),
+        Err(_) => return Ok(None),
+    };
+    let lines = &read.lines[..read.lines.len().min(OCR_LINES)];
+    let texts = if col.texts.is_empty() {
+        rank::order_lines(ocr_map::positioned(lines), 5000)
+    } else {
+        let mut t: Vec<String> = v["texts"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
+        for l in lines {
+            if !col.seen.contains(&l.text) && !t.contains(&l.text) {
+                t.push(l.text.clone());
+            }
+        }
+        t
+    };
+    v["texts"] = json!(texts);
+    v["ocr"] = Value::Array(lines.iter().map(ocr_map::line_json).collect());
+    v["source"] = json!("ocr");
+    p::mark_ocr(v, t0.elapsed().as_millis() as u64, &engine.lang);
+    Ok(None)
+}
+
+/// find-text's fallback: windows where UI Automation found nothing on screen are read from their pixels,
+/// front to back while time lasts. Returns how long that took and the language when OCR ran;
+/// with no OCR language it's skipped, so a miss stays an ordinary empty result.
+fn ocr_find(wins: &[WinInfo], skip: &[bool], q: &str, hits: &mut Vec<Value>, stop: &mut Option<Stop>, budget: &Budget, snap: &Snapshot) -> Result<Option<(u64, String)>, Value> {
+    let with_hits: HashSet<i64> = hits.iter().filter_map(|m| m["window"]["id"].as_i64()).collect();
+    let todo: Vec<usize> = (0..wins.len()).filter(|z| !skip[*z] && !with_hits.contains(&wins[*z].id)).collect();
+    if todo.is_empty() {
+        return Ok(None);
+    }
+    let Ok(engine) = Engine::new() else { return Ok(None) };
+    let (mut ms, mut ran) = (0u64, false);
+    for z in todo {
+        if budget.remaining() < ocr::MIN_LEFT {
+            *stop = stop.or(Some(Stop::Time));
+            break;
+        }
+        let w = &wins[z];
+        let t0 = Instant::now();
+        let Ok((img, frame)) = capture::grab(w, budget) else { continue };
+        let read = match engine.read(img, frame, budget) {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                *stop = stop.or(Some(Stop::Time));
+                break;
+            }
+            Err(_) => continue,
+        };
+        ms += t0.elapsed().as_millis() as u64;
+        ran = true;
+        for (i, h) in ocr_map::find(&read.lines, q).into_iter().take(PER_WINDOW).enumerate() {
+            let mut m = p::hit(&h.text, h.score, "text", h.bounds, "ocr");
+            m["window"] = p::win_info(w);
+            m["rank"] = json!(z * 100 + i);
+            hits.push(m);
+        }
+        // merge_windows wants front-to-back order.
+        hits.sort_by_key(|m| m["rank"].as_u64());
+        let mut snapshot = p::find_reply(rank::merge_windows(hits.clone(), q));
+        p::mark_partial(&mut snapshot, *stop);
+        p::mark_ocr(&mut snapshot, ms, &engine.lang);
+        publish(snap, snapshot);
+    }
+    Ok(ran.then(|| (ms, engine.lang.clone())))
+}
+
+/// Test-only: OCR an image file as if it were a window at `origin`.
+fn ocr_file(file: &str, origin: (i32, i32), budget: &Budget) -> Result<Value, Value> {
+    if !std::path::Path::new(file).is_file() {
+        return Err(fail("not_found", &format!("No image at {file}.")));
+    }
+    let img = ocr::load_image(file).map_err(|e| fail("ocr_failed", &e))?;
+    let frame = Rect::new(origin.0, origin.1, img.w, img.h);
+    let engine = Engine::new()?;
+    let read = engine.read(img, frame, budget)?.ok_or_else(|| fail("timeout", "Not enough time left to read the image."))?;
+    Ok(p::ocr_file_reply(&engine.lang, read.lines.iter().map(ocr_map::line_json).collect(), read.ms))
 }
 
 struct WinSearch {
@@ -229,7 +348,7 @@ fn search_window(uia: &Uia, w: &WinInfo, q: &str, budget: &Budget) -> Result<Win
             let on_screen = b.intersects(&view) && (editor || !n.offscreen);
             // Pointing lands on the part that's actually inside the window.
             let b = if on_screen { b.clamp_to(&view).unwrap_or(b) } else { b };
-            let item = p::hit(&rank::clean_line(&text), score, role, b);
+            let item = p::hit(&rank::clean_line(&text), score, role, b, "uia");
             if on_screen {
                 shown.push(Hit { score, web: n.in_web, area: b.area(), item, el: () });
             } else if hidden.len() < 50 {
@@ -337,7 +456,11 @@ fn find_text(t: &Target, q: &str, scroll: bool, fake: &str, budget: &Budget, sna
             stop = again.2;
         }
     }
+    let ocr = ocr_find(&wins, &elevated, q, &mut hits, &mut stop, budget, snap)?;
     let mut v = p::find_reply(rank::merge_windows(hits, q));
     p::mark_partial(&mut v, stop);
+    if let Some((ms, lang)) = ocr {
+        p::mark_ocr(&mut v, ms, &lang);
+    }
     Ok(v)
 }

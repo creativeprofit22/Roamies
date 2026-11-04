@@ -40,6 +40,21 @@ mod on_windows {
     }
 
     #[test]
+    fn ocr_file_reads_the_fixture() {
+        let png = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ocr.png");
+        let v = hands(&["ocr-file", png, "--origin", "-1920,240"]);
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["source"], "ocr");
+        assert!(v["ocrMs"].as_u64().is_some());
+        let words: Vec<&str> = v["lines"].as_array().unwrap().iter().flat_map(|l| l["words"].as_array().unwrap()).filter_map(|w| w["text"].as_str()).collect();
+        for want in ["Roamies", "4821", "Settings", "Close"] {
+            assert!(words.contains(&want), "{want} missing from {words:?}");
+        }
+        let first = &v["lines"][0]["bounds"];
+        assert!(first[0].as_i64().unwrap() < -1800 && first[1].as_i64().unwrap() > 240, "origin not applied: {first}");
+    }
+
+    #[test]
     fn locate_screen() {
         let v = hands(&["locate", "screen"]);
         assert_eq!(v["ok"], true, "{v}");

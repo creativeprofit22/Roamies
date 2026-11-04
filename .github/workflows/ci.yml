@@ -190,6 +190,14 @@ jobs:
         with:
           workspaces: showcase/tauri/src-tauri/hands-win -> target
 
+      # Server images may ship without a text recognition language; the OCR tests need one.
+      - name: Install the English OCR language
+        shell: pwsh
+        run: |
+          $cap = Get-WindowsCapability -Online -Name "Language.OCR~~~en-US~0.0.1.0"
+          if ($cap.State -ne "Installed") { Add-WindowsCapability -Online -Name "Language.OCR~~~en-US~0.0.1.0" | Out-Null }
+          (Get-WindowsCapability -Online -Name "Language.OCR~~~en-US~0.0.1.0").State
+
       - name: Test screen helper
         run: cargo test --locked
 

@@ -1,0 +1,198 @@
+{
+  "about": "Expected words in ocr.png (ink boxes, image pixels). Rebuilt by the ignored test ocr::tests::write_ocr_fixture.",
+  "size": [
+    1280,
+    400
+  ],
+  "words": [
+    {
+      "bounds": [
+        44,
+        44,
+        143,
+        29
+      ],
+      "text": "Roamies"
+    },
+    {
+      "bounds": [
+        203,
+        43,
+        91,
+        30
+      ],
+      "text": "reads"
+    },
+    {
+      "bounds": [
+        308,
+        47,
+        64,
+        26
+      ],
+      "text": "text"
+    },
+    {
+      "bounds": [
+        387,
+        43,
+        78,
+        30
+      ],
+      "text": "from"
+    },
+    {
+      "bounds": [
+        483,
+        43,
+        95,
+        39
+      ],
+      "text": "pixels"
+    },
+    {
+      "bounds": [
+        62,
+        133,
+        98,
+        33
+      ],
+      "text": "Quick"
+    },
+    {
+      "bounds": [
+        175,
+        133,
+        107,
+        30
+      ],
+      "text": "brown"
+    },
+    {
+      "bounds": [
+        298,
+        133,
+        88,
+        30
+      ],
+      "text": "foxes"
+    },
+    {
+      "bounds": [
+        399,
+        134,
+        89,
+        38
+      ],
+      "text": "jump"
+    },
+    {
+      "bounds": [
+        503,
+        143,
+        75,
+        20
+      ],
+      "text": "over"
+    },
+    {
+      "bounds": [
+        592,
+        133,
+        64,
+        39
+      ],
+      "text": "lazy"
+    },
+    {
+      "bounds": [
+        669,
+        133,
+        84,
+        39
+      ],
+      "text": "dogs"
+    },
+    {
+      "bounds": [
+        44,
+        224,
+        119,
+        29
+      ],
+      "text": "Invoice"
+    },
+    {
+      "bounds": [
+        176,
+        225,
+        80,
+        28
+      ],
+      "text": "4821"
+    },
+    {
+      "bounds": [
+        276,
+        223,
+        76,
+        30
+      ],
+      "text": "total"
+    },
+    {
+      "bounds": [
+        369,
+        225,
+        40,
+        28
+      ],
+      "text": "37"
+    },
+    {
+      "bounds": [
+        424,
+        233,
+        94,
+        20
+      ],
+      "text": "euros"
+    },
+    {
+      "bounds": [
+        602,
+        314,
+        140,
+        38
+      ],
+      "text": "Settings"
+    },
+    {
+      "bounds": [
+        759,
+        313,
+        77,
+        39
+      ],
+      "text": "Help"
+    },
+    {
+      "bounds": [
+        850,
+        313,
+        145,
+        30
+      ],
+      "text": "Window"
+    },
+    {
+      "bounds": [
+        1008,
+        313,
+        92,
+        30
+      ],
+      "text": "Close"
+    }
+  ]
+}

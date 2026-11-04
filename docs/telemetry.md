@@ -68,7 +68,7 @@ by pairing events or subtracting `ts` (for example "chord down → first reply t
 | `host.dictation_paste` | host | paste start → done | |
 | `host.clipboard_save` / `host.clipboard_set` / `host.key_send` / `host.clipboard_restore` | host | the parts of a paste (children of `host.dictation_paste`) | |
 | `host.dictation_copy` | host | copy-only dictation (no paste) | |
-| `host.request_typed` | host | event: a typed request was sent | |
+| `host.request_typed` | host | event: a typed request was sent (only the "Ask Sidekick" and "What about this?" input, flagged `request: true`; yes/no, key and settings answers are not requests) | |
 | `agent.handoff` | sidecar | host sent the message (`sent_ms`) → sidecar received it | |
 | `agent.request` | sidecar | enqueued → reply done | `source` (`voice`, `typed`, `reminder`, `snap`), `model`, `provider`, `calls`, `tools`, `in`, `cacheRead`, `cacheWrite`, `out`, `image`, `first_text_ms`, `retry`, `retry_of`, `retry_after_ms` |
 | `agent.queue_wait` | sidecar | enqueued → run starts | |

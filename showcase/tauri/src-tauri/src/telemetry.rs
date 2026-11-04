@@ -149,10 +149,11 @@ pub fn attrs(v: Value) -> Attrs {
     }
 }
 
-/// A typed answer from the webview: give a non-empty one a request id (unless it has a valid one) and record it.
+/// A typed request from the webview (an answer flagged `request: true`): give a non-empty one a request id
+/// (unless it has a valid one) and record it. Other answers (yes/no, keys) belong to a running request.
 /// Returns the id it carries.
 pub fn stamp_answer(tel: &Telemetry, msg: &mut Value) -> Option<String> {
-    if msg.get("type").and_then(Value::as_str) != Some("answer") {
+    if msg.get("type").and_then(Value::as_str) != Some("answer") || msg.get("request") != Some(&json!(true)) {
         return None;
     }
     if msg.get("text").and_then(Value::as_str).is_none_or(|t| t.trim().is_empty()) {
@@ -291,7 +292,7 @@ mod tests {
     #[test]
     fn typed_answers_get_a_request_id() {
         let (tel, got) = capture();
-        let mut m = json!({ "type": "answer", "id": 3, "text": "hi" });
+        let mut m = json!({ "type": "answer", "id": 3, "text": "hi", "request": true });
         let rid = stamp_answer(&tel, &mut m).unwrap();
         assert!(is_request_id(&rid));
         assert_eq!(m["request_id"], rid.as_str());
@@ -300,13 +301,22 @@ mod tests {
         assert_eq!(got.lock().unwrap()[0]["request_id"], rid.as_str());
 
         let keep = new_request_id();
-        let mut m = json!({ "type": "answer", "id": 4, "text": "hi", "request_id": keep });
+        let mut m = json!({ "type": "answer", "id": 4, "text": "hi", "request": true, "request_id": keep });
         assert_eq!(stamp_answer(&tel, &mut m).as_deref(), Some(keep.as_str()));
 
-        for mut m in [json!({ "type": "answer", "id": 5, "text": null }), json!({ "type": "answer", "text": "  " }), json!({ "type": "menu", "id": "x" })] {
+        let before = got.lock().unwrap().len();
+        for mut m in [
+            json!({ "type": "answer", "id": 5, "text": null, "request": true }),
+            json!({ "type": "answer", "text": "  ", "request": true }),
+            json!({ "type": "menu", "id": "x" }),
+            // A yes/no inside a running request: not a new request.
+            json!({ "type": "answer", "id": 6, "text": "y" }),
+            json!({ "type": "answer", "id": 7, "text": "y", "request": false }),
+        ] {
             assert_eq!(stamp_answer(&tel, &mut m), None);
             assert!(m.get("request_id").is_none());
         }
+        assert_eq!(got.lock().unwrap().len(), before);
     }
 
     #[test]

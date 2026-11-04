@@ -33,12 +33,13 @@
   const focusField = () => { typing(true); setTimeout(() => field.focus(), 30); ask?.h.focus(true); };
   const finishAsk = (text) => {
     if (!ask) return;
-    const { id, h } = ask;
+    const { id, h, request } = ask;
     ask = null;
     field.blur(); field.value = '';
     typing(false);
     h.close();
-    if (id) send({ type: 'answer', id, text });
+    // Only a new typed request gets a request id from the host; yes/no and key answers belong to a running one.
+    if (id) send({ type: 'answer', id, text, ...(request ? { request: true } : {}) });
   };
   const openAsk = (m) => {
     const a = getAgent();
@@ -49,7 +50,7 @@
     field.type = m.mask ? 'password' : 'text';
     // The question goes in the placeholder, so the bubble reads "Paste your API key…" until you type.
     const h = a.prompt({ placeholder: m.prompt || m.placeholder || '', mask: m.mask, onPress: focusField });
-    ask = { id: m.id, h };
+    ask = { id: m.id, h, request: !!m.request };
     focusField();
   };
   field.addEventListener('input', () => ask?.h.set(field.value));

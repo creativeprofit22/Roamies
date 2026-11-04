@@ -895,7 +895,7 @@ const overlays = () => send({ type: 'overlays', ids: ['sidekick'] });
 async function onMenu(id) {
   if (id === 'show') ui({ kind: 'summon', show: true });
   else if (id === 'ask') {
-    const { text, requestId, sentMs } = await askWithId({ placeholder: 'Ask me anything…' });
+    const { text, requestId, sentMs } = await askWithId({ placeholder: 'Ask me anything…', request: true });
     if (text?.trim()) enqueue(text.trim(), { requestId, sentMs, source: 'typed' });
   } else if (id === 'stop') { if (busy) abortReason = 'user_stop'; controller?.abort(); }
   else if (id === 'new') {
@@ -1029,7 +1029,7 @@ async function areaSnap() {
       if (!snap) return; // sent with what was said
       snap.waitingVoice = false;
     }
-    const { text: q, requestId, sentMs } = await askWithId({ placeholder: 'What about this?' });
+    const { text: q, requestId, sentMs } = await askWithId({ placeholder: 'What about this?', request: true });
     if (!snap) return; // already sent by voice
     if (q === null) { snap = null; return; } // Escape: drop it
     const s = snap; snap = null;

@@ -9,7 +9,8 @@ agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, macOS
 `src-tauri/voice-core` (protocol, session and chord state machine). Both compile elsewhere too, to test speech
 without a Windows PC: `--wav <wav>` runs one clip, `--bench <dir>` scores wav+txt pairs (models come from each
 crate's `fetch-*.sh`). The Windows screen helper `src-tauri/hands-win` (`roamies-hands`, Rust + UI Automation) is
-the twin of `hands/main.swift`: same verbs and JSON, rects in physical pixels (see `docs/hands.md`).
+the twin of `hands/main.swift`: same verbs and JSON, rects in physical pixels (see `docs/hands.md`). The host's
+dictation and hands-win's paste fallback share the clipboard save/paste/restore code in `src-tauri/paste-core`.
 
 Telemetry (one request id across host, voice helper, sidecar and webview; written only by the sidecar,
 local only): see `docs/telemetry.md`. Each layer has its own `telemetry` module with the same start/end/record API.

@@ -188,7 +188,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: showcase/tauri/src-tauri/hands-win -> target
+          workspaces: |
+            showcase/tauri/src-tauri/hands-win -> target
+            showcase/tauri/src-tauri/paste-core -> target
 
       # Server images may ship without a text recognition language; the OCR tests need one.
       - name: Install the English OCR language
@@ -203,6 +205,14 @@ jobs:
 
       - name: Lint screen helper
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test clipboard paste code
+        working-directory: showcase/tauri/src-tauri/paste-core
+        run: cargo test --locked --all-features
+
+      - name: Lint clipboard paste code
+        working-directory: showcase/tauri/src-tauri/paste-core
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Smoke test the windows verb
         run: |

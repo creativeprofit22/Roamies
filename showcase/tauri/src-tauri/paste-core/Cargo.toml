@@ -1,0 +1,19 @@
+# Shared by the Roamies host (dictation) and the Windows screen helper hands-win (fill's paste fallback):
+# save the clipboard, put text on it, send the paste chord, wait, always restore.
+[package]
+name = "roamies-paste-core"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Roamies: paste text through the clipboard and put the user's clipboard back"
+publish = false
+
+[features]
+# The real system clipboard (arboard). Without it only the traits and the paste order build, for tests.
+system = ["dep:arboard"]
+
+[dependencies]
+arboard = { version = "=3.7.0", optional = true }
+
+# Standalone: not part of the Tauri app's build.
+[workspace]

@@ -1,7 +1,6 @@
 // Dictation: paste a voice transcript into the app in front. The host reads which app has focus, the sidecar's
 // safety rules (checkDictationTarget) decide, then it replies dictation_paste or dictation_copy.
-// The paste follows Handy's clipboard.rs (MIT): save, write, paste chord, wait, always restore.
-// Limit: only text or an image is saved and restored; copied files and rich-text formatting are not.
+// The save/paste/restore lives in paste-core (Handy's clipboard.rs order, MIT); only text or images come back.
 use std::sync::Mutex;
 use std::{thread, time::Duration};
 
@@ -9,85 +8,17 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use crate::telemetry::{self, Outcome, Step, Telemetry};
+// Shared with hands-win (fill's paste fallback).
+pub use roamies_paste_core::{Chord, Clip, ClipboardPaste, Saved, SystemClip};
 
 /// Where dictated text goes. Kept behind a trait so a "type characters" fallback can be added later.
 pub trait TextSink: Send {
     fn insert(&mut self, text: &str) -> Result<(), String>;
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Image {
-    pub width: usize,
-    pub height: usize,
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Saved {
-    Text(String),
-    Image(Image),
-    Nothing,
-}
-
-pub trait Clip {
-    fn save(&mut self) -> Saved;
-    fn set_text(&mut self, text: &str) -> Result<(), String>;
-    fn restore(&mut self, saved: &Saved) -> Result<(), String>;
-}
-
-pub trait Chord {
-    fn paste(&mut self) -> Result<(), String>;
-}
-
-pub struct ClipboardPaste<C: Clip, K: Chord> {
-    pub clip: C,
-    pub chord: K,
-    pub settle: Duration,
-    pub wait: Duration,
-}
-
 impl<C: Clip + Send, K: Chord + Send> TextSink for ClipboardPaste<C, K> {
     fn insert(&mut self, text: &str) -> Result<(), String> {
-        let saved = self.clip.save();
-        self.clip.set_text(text)?;
-        thread::sleep(self.settle);
-        let pasted = self.chord.paste();
-        // The target reads the clipboard after the chord; restoring too early pastes the old contents.
-        thread::sleep(self.wait);
-        let restored = self.clip.restore(&saved);
-        pasted?;
-        restored
-    }
-}
-
-pub struct SystemClip(arboard::Clipboard);
-
-impl SystemClip {
-    pub fn new() -> Result<Self, String> {
-        arboard::Clipboard::new().map(SystemClip).map_err(|e| format!("clipboard: {e}"))
-    }
-}
-
-impl Clip for SystemClip {
-    fn save(&mut self) -> Saved {
-        if let Ok(t) = self.0.get_text() {
-            return Saved::Text(t);
-        }
-        match self.0.get_image() {
-            Ok(i) => Saved::Image(Image { width: i.width, height: i.height, bytes: i.bytes.into_owned() }),
-            Err(_) => Saved::Nothing,
-        }
-    }
-    fn set_text(&mut self, text: &str) -> Result<(), String> {
-        self.0.set_text(text).map_err(|e| format!("clipboard: {e}"))
-    }
-    fn restore(&mut self, saved: &Saved) -> Result<(), String> {
-        match saved {
-            Saved::Text(t) => self.0.set_text(t.as_str()),
-            Saved::Image(i) => self.0.set_image(arboard::ImageData { width: i.width, height: i.height, bytes: i.bytes.as_slice().into() }),
-            Saved::Nothing => self.0.clear(),
-        }
-        .map_err(|e| format!("clipboard: {e}"))
+        ClipboardPaste::insert(self, text)
     }
 }
 
@@ -271,7 +202,7 @@ pub fn paste(app: &AppHandle, text: String, request_id: Option<String>) {
             let clip = Timed { inner: clip, tel, parent: step.clone() };
             let chord = Timed { inner: SystemChord, tel, parent: step.clone() };
             let mut sink = ClipboardPaste { clip, chord, settle: Duration::from_millis(50), wait: Duration::from_millis(300) };
-            sink.insert(&text)
+            TextSink::insert(&mut sink, &text)
         });
         if result.is_err() {
             if let Ok(mut c) = SystemClip::new() {
@@ -311,9 +242,6 @@ mod tests {
         fn now(&self) -> Saved {
             self.0.lock().unwrap().0.clone()
         }
-        fn last(&self) -> Option<String> {
-            self.0.lock().unwrap().1.last().cloned()
-        }
     }
     impl Clip for FakeClip {
         fn save(&mut self) -> Saved {
@@ -347,40 +275,6 @@ mod tests {
                 Ok(())
             }
         }
-    }
-
-    fn run(start: Saved, fail: bool) -> (Result<(), String>, FakeClip, Option<Saved>) {
-        let clip = FakeClip::with(start);
-        let seen = Arc::new(Mutex::new(None));
-        let chord = FakeChord { clip: clip.clone(), fail, seen: seen.clone() };
-        let mut sink = ClipboardPaste { clip: clip.clone(), chord, settle: Duration::ZERO, wait: Duration::ZERO };
-        let r = sink.insert("hello world");
-        let s = seen.lock().unwrap().clone();
-        (r, clip, s)
-    }
-
-    #[test]
-    fn restores_after_success() {
-        let (r, clip, seen) = run(Saved::Text("mine".into()), false);
-        assert!(r.is_ok());
-        assert_eq!(seen, Some(Saved::Text("hello world".into())), "the chord sees the dictated text");
-        assert_eq!(clip.now(), Saved::Text("mine".into()));
-    }
-
-    #[test]
-    fn restores_before_returning_a_chord_error() {
-        let (r, clip, _) = run(Saved::Text("mine".into()), true);
-        assert_eq!(r, Err("keyboard: denied".into()));
-        assert_eq!(clip.now(), Saved::Text("mine".into()));
-        assert_eq!(clip.last().as_deref(), Some("restore"));
-    }
-
-    #[test]
-    fn clears_when_nothing_was_saved() {
-        let (r, clip, _) = run(Saved::Nothing, false);
-        assert!(r.is_ok());
-        assert_eq!(clip.now(), Saved::Nothing);
-        assert_eq!(clip.last().as_deref(), Some("clear"));
     }
 
     fn timed_run(fail: bool) -> (Result<(), String>, Vec<Value>) {
@@ -429,13 +323,5 @@ mod tests {
         let key = ev.iter().find(|e| e["kind"] == "end" && e["step"] == "host.key_send").unwrap();
         assert_eq!((&key["outcome"], &key["error_code"]), (&json!("error"), &json!("key_send_failed")));
         assert!(ev.iter().any(|e| e["kind"] == "end" && e["step"] == "host.clipboard_restore" && e["outcome"] == "ok"));
-    }
-
-    #[test]
-    fn restores_an_image() {
-        let img = Saved::Image(Image { width: 1, height: 1, bytes: vec![1, 2, 3, 255] });
-        let (r, clip, _) = run(img.clone(), false);
-        assert!(r.is_ok());
-        assert_eq!(clip.now(), img);
     }
 }

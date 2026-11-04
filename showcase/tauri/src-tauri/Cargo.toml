@@ -18,6 +18,8 @@ arboard = "=3.7.0"
 enigo = "=0.6.1"
 # Shared with the Windows voice helpers: the `metrics` shape and word scoring.
 roamies-voice-core = { path = "voice-core" }
+# Clipboard save/paste/restore, shared with hands-win.
+roamies-paste-core = { path = "paste-core", features = ["system"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"

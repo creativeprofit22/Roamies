@@ -7,7 +7,7 @@ import { z } from 'zod';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'roamies-tools-test-'));
 process.env.HOME = TMP; process.env.USERPROFILE = TMP;
 process.on('exit', () => fs.rmSync(TMP, { recursive: true, force: true }));
-const { createTools, isWinAppName, winInAppPlan } = await import('../tools.mjs');
+const { createTools, isWinAppName, winInAppPlan, shellFor, run } = await import('../tools.mjs');
 
 const noop = () => {};
 const { tools } = createTools({ allowActions: () => false, ui: noop, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: () => '' });
@@ -301,4 +301,20 @@ console.log('windows open-in-app plan tests: passed');
   assert.deepEqual(snapArgs('C:\t\a.png', 'win32', { maxEdge: 2000, maxTokens: 1568 }), ['select', 'C:\t\a.png', '--fit', '2000x1568']);
   assert.deepEqual(snapArgs('a.png', 'win32', { maxEdge: 1024, maxTokens: Infinity }), ['select', 'a.png', '--fit', '1024x0']);
   console.log('snap args tests: passed');
+}
+
+// run_command on Windows: double quotes inside the command must reach the program, not be escaped into text.
+{
+  const [bin, args, opts] = shellFor('powershell -Command "Set-Clipboard -Value \'hi\'"', 'win32');
+  assert.equal(bin, 'cmd');
+  assert.deepEqual(args, ['/d', '/s', '/c', '"powershell -Command "Set-Clipboard -Value \'hi\'""']);
+  assert.equal(opts.windowsVerbatimArguments, true);
+  assert.deepEqual(shellFor('echo "a b"', 'darwin').slice(1), [['-lc', 'echo "a b"'], {}]);
+  if (process.platform === 'win32') {
+    const [b, a, o] = shellFor('node -e "console.log(1 + 1)" && echo "two words"');
+    const r = await run(b, a, o);
+    assert.equal(r.err, null, r.stderr);
+    assert.deepEqual(r.stdout.trim().split(/\r?\n/), ['2', '"two words"']);
+  }
+  console.log('run_command shell tests: passed');
 }

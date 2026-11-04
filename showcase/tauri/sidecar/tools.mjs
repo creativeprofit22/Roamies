@@ -36,6 +36,11 @@ const notFound = (t, apps) => {
   return new Error(`Couldn't find an app called "${t}". ${near.length ? `Closest Start-menu apps: ${near.join(', ')}.` : 'No similar apps found.'}`);
 };
 // A bare Start-menu app name (not a link like mailto:/ms-settings:/https:, nor a path), so it goes to the app finder.
+// Node's default Windows quoting turns "a b" into \"a b\", which cmd doesn't undo, so quoted commands ran as text.
+// /s /c "…" is how Node's own shell option hands cmd a command line untouched; /d skips AutoRun scripts.
+export const shellFor = (command, platform = process.platform) => platform === 'win32'
+  ? ['cmd', ['/d', '/s', '/c', `"${command}"`], { windowsVerbatimArguments: true }]
+  : [process.env.SHELL || '/bin/zsh', ['-lc', command], {}];
 export const isWinAppName = (t) => {
   t = String(t).trim();
   const isPath = /^[~/.]/.test(t) || /^[a-z]:\\/i.test(t);
@@ -558,8 +563,8 @@ ${res.note}` : ''}${ocr}`;
         if (v.level === ASK && !(await confirm(`Run \`${command.length > 70 ? command.slice(0, 67) + '…' : command}\`?${v.reason ? ' ' + v.reason : ''} Type y to run it.`, ctx))) {
           throw new Error(`${userName} said no, so the command didn't run.`);
         }
-        const shell = process.platform === 'win32' ? ['cmd', ['/c', command]] : [process.env.SHELL || '/bin/zsh', ['-lc', command]];
-        const r = await run(shell[0], shell[1], { cwd: HOME });
+        const [bin, args, opts] = shellFor(command);
+        const r = await run(bin, args, { ...opts, cwd: HOME });
         const out = clip((r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')).trim() || '(no output)', 12_000);
         if (r.err && r.err.code !== 0) throw new Error(`Exit ${r.err.code ?? r.err.signal}\n${out}`);
         return out;

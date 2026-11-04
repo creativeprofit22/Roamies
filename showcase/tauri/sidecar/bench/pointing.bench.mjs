@@ -80,7 +80,7 @@ function writeFakeHelper(dir, fixture, helper, limits) {
   for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body);
 }
 
-async function signIn(modelId) {
+export async function signIn(modelId) {
   const core = await import('@kenkaiiii/gg-core');
   const auth = new core.AuthStorage();
   let model = modelId ? core.getModel(modelId) : null;

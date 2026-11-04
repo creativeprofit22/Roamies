@@ -170,7 +170,7 @@ console.log('store tests: all passed');
   const msgs = [...turn1, { role: 'user', content: 'q2' }, ...shot('s2'), ...shot('s3'), ...shot('s4')];
   const f = S5.fitContext(msgs, { budgetTokens: 1e6 });
   const datas = (JSON.stringify(f).match(/"data":"(\w+)"/g) ?? []).map((d) => d.slice(8, -1));
-  assert.deepEqual(datas, ['s3', 's4'], 'older requests lose their images; the current one keeps its newest two');
+  assert.deepEqual(datas, ['s2', 's3', 's4'], 'older requests lose their images; the current one drops none until a batch is due');
   const oldRead = f.find((m) => m.role === 'tool' && m.content[0].toolCallId === 'r1').content[0].content;
   assert.match(oldRead, /^Brave — Settings\n\[The full list of this window's controls was shown/, 'an old window read shrinks to its first line');
   // The older part renders the same however many calls the current request makes: the cache prefix holds.
@@ -179,6 +179,20 @@ console.log('store tests: all passed');
   assert.equal(upToQ2(later), upToQ2(f), 'earlier messages are byte-identical between calls');
   const cur = S5.fitContext([{ role: 'system', content: 'sys' }, { role: 'user', content: 'q' }, ...read('r9')], { budgetTokens: 1e6 });
   assert.match(cur.at(-1).content[0].content, /link "Billing"/, 'a read from the current request stays whole');
+  // Screenshots in the current request go in batches: kept count stays between KEEP_IMAGES and KEEP_IMAGES + IMAGE_BATCH - 1.
+  const live = (h) => (JSON.stringify(h).match(/"data":"(\w+)"/g) ?? []).map((d) => d.slice(8, -1));
+  let h = [{ role: 'system', content: 'sys' }, { role: 'user', content: 'q' }];
+  const kept = [], changed = [];
+  for (let i = 1; i <= 9; i++) {
+    const prev = JSON.stringify(h);
+    const stats = {};
+    h = S5.fitContext([...h, ...shot(`b${i}`)], { budgetTokens: 1e6, stats });
+    kept.push(live(h).length);
+    changed.push(!JSON.stringify(h).startsWith(prev.slice(0, -1)) ? stats.images_dropped : 0);
+  }
+  assert.deepEqual(kept, [1, 2, 3, 4, 2, 3, 4, 2, 3], 'drops three at a time, never below the newest two');
+  assert.equal(changed.filter(Boolean).length, 2, 'the earlier conversation changed only when a batch went (2 of 9 calls)');
+  assert.deepEqual(live(h), ['b7', 'b8', 'b9'], 'the newest screenshots are the ones kept');
   console.log('cache stability tests: passed');
 }
 
@@ -254,4 +268,64 @@ console.log('store tests: all passed');
   assert.equal(await S7.clearFinished(t + 24 * H), 0, 'nothing more to delete');
   void late; void soon; void tmrw; void any;
   console.log('list tests: passed');
+}
+
+// Over budget, the history is trimmed well below it, so the next requests don't each move the start (and re-send it all).
+{
+  const S7 = await import('../store.mjs?trim');
+  let h = [{ role: 'system', content: 'sys' }];
+  const firsts = [];
+  let trims = 0;
+  for (let i = 0; i < 40; i++) {
+    const stats = {};
+    h = S7.fitContext([...h, { role: 'user', content: `q${i} ` + 'x'.repeat(3000) }, { role: 'assistant', content: `a${i}` }], { budgetTokens: 10000, stats });
+    if (stats.trimmed_msgs) { trims++; assert.ok(stats.trimmed_tokens > 0); }
+    assert.ok(JSON.stringify(h).length < 10000 * 3.6 + 4000, 'fits the budget');
+    assert.equal(h[1].role, 'user');
+    firsts.push(h[1].content.match(/q\d+/)[0]);
+  }
+  const moves = firsts.filter((f, i) => i && f !== firsts[i - 1]).length;
+  assert.equal(moves, trims, 'the start only moves on a trim');
+  assert.ok(trims <= 8, `trimmed ${trims} times in 40 requests (one per request would be 29)`);
+  assert.ok(h[1].content.startsWith('[Older parts'), 'trim is noted');
+  console.log('trim hysteresis tests: passed');
+}
+
+// Token budget measured, not assumed: number-heavy text runs ~1.5 letters per token, so the same letters trim sooner.
+{
+  const S8 = await import('../store.mjs?rate');
+  assert.equal(S8.calibrateCharsPerToken(150_000, 100_000), 1.5);
+  assert.equal(S8.calibrateCharsPerToken(900_000, 100_000), S8.CHARS_PER_TOKEN, 'never more lenient than the default');
+  assert.equal(S8.calibrateCharsPerToken(10, 100_000), 1, 'floor');
+  assert.equal(S8.calibrateCharsPerToken(0, 5, 2.2), 2.2, 'no measurement keeps the last rate');
+  assert.equal(S8.calibrateCharsPerToken(4000, 10_000, 3.6), 3.6, 'a small call is mostly system prompt: not measured');
+  const h = [{ role: 'system', content: 'sys' }];
+  for (let i = 0; i < 6; i++) h.push({ role: 'user', content: `q${i} ` + '1234 5678 '.repeat(2000) }, { role: 'assistant', content: `a${i}` });
+  const chars = S8.contextChars(h);
+  const loose = {}, tight = {};
+  S8.fitContext(h, { budgetTokens: 50_000, stats: loose });
+  const fitted = S8.fitContext(h, { budgetTokens: 50_000, stats: tight, charsPerToken: 1.5 });
+  assert.equal(loose.trimmed_msgs, 0, `${chars} letters look like ${Math.round(chars / 3.6)} tokens at the default`);
+  assert.ok(tight.trimmed_msgs > 0, 'at the measured rate it is over budget and trims');
+  assert.ok(S8.contextChars(fitted) / 1.5 <= 50_000, 'and then fits');
+  console.log('measured token rate tests: passed');
+}
+
+// Regression: an image counted as 6000 letters (~1,667 tokens at 3.6), so screenshot-heavy history ran far over budget.
+{
+  const S9 = await import('../store.mjs?images');
+  const n = 25;
+  const calls = Array.from({ length: n }, (_, i) => ({ type: 'tool_call', id: `p${i}`, name: 'take_screenshot', args: {} }));
+  const h = [{ role: 'system', content: 'sys' }];
+  for (let i = 0; i < 4; i++) h.push({ role: 'user', content: `q${i}` }, { role: 'assistant', content: `a${i}` });
+  h.push({ role: 'user', content: 'compare all of these' }, { role: 'assistant', content: calls },
+    { role: 'tool', content: calls.map((c) => ({ type: 'tool_result', toolCallId: c.id, content: [{ type: 'image', mediaType: 'image/jpeg', data: c.id }] })) });
+  assert.equal(S9.contextImages(h), n);
+  assert.ok(S9.contextChars(h) < 2000, 'images are not counted as letters');
+  const stats = {};
+  const fitted = S9.fitContext(h, { budgetTokens: 100_000, stats });
+  assert.ok(stats.trimmed_msgs > 0, `${n} screenshots (~${n * S9.IMAGE_TOKENS} tokens) exceed a 100k budget and trim`);
+  assert.equal(S9.contextImages(fitted), n, 'the current request keeps its screenshots');
+  assert.ok(stats.trimmed_tokens > 0 && stats.trimmed_tokens < 100, 'only the little old text was trimmed');
+  console.log('image token budget tests: passed');
 }

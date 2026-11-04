@@ -25,6 +25,7 @@ npm test                                # sidecar tests (reply stream, storage, 
 npm run build                           # bundle the sidecar into dist/
 npm run bench:telemetry                 # telemetry overhead (p95, memory)
 npm run bench:pointing                  # pointing hit rates per path; needs sign-in, spends tokens (docs/pointing.md)
+npm run bench:context                   # history trim vs baseline, prompt-cache cost; free offline, --repeat 5 for a verdict, --live spends tokens
 cd .. && ./build.sh dev                 # web files + sidecar + debug `cargo build`
 ./build.sh                              # release bundle for this OS (signs on macOS if a Developer ID is in the keychain)
 ```

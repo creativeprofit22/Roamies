@@ -339,6 +339,51 @@ export function byVersion(events) {
   });
 }
 
+// Prompt cache, per history-trim policy (agent.turn ctx_policy; turns from before it was tagged are the baseline).
+// Cost in input-token units at Anthropic's one-hour cache prices: a cache write costs 2×, a read 0.1×.
+export const CACHE_PRICE = { input: 1, write: 2, read: 0.1 };
+export const BASELINE_POLICY = 'baseline';
+// The policy misses the mark when, over at least min_calls calls each, cost per call doesn't drop by cost_drop.
+export const CACHE_TARGET = { min_calls: 30, cost_drop: 0.15 };
+const CACHE_TTL_MS = 55 * 60 * 1000;
+
+export function promptCache(events, rule = CACHE_TARGET) {
+  const turns = events.filter((e) => e.step === 'agent.turn' && e.kind === 'end' && finite(e.attrs?.cacheRead) && finite(e.attrs?.cacheWrite))
+    .sort((a, b) => a.ts - b.ts);
+  const by = new Map();
+  let prev = null;
+  for (const e of turns) {
+    const a = e.attrs, policy = a.ctx_policy ?? BASELINE_POLICY;
+    const g = by.get(policy) ?? by.set(policy, { policy, calls: 0, in: 0, cacheRead: 0, cacheWrite: 0, out: 0, breaks: 0, rewritten: 0, images_dropped: 0, trims: 0, first_ts: e.ts, last_ts: e.ts }).get(policy);
+    g.calls++; g.last_ts = e.ts;
+    g.in += a.in ?? 0; g.cacheRead += a.cacheRead; g.cacheWrite += a.cacheWrite; g.out += a.out ?? 0;
+    g.images_dropped += a.ctx_images_dropped ?? 0;
+    if (a.ctx_trimmed_msgs) g.trims++;
+    // A warm cache holds everything the previous call sent; reading less means the history changed before its end.
+    if (prev && e.ts - prev.ts < CACHE_TTL_MS) {
+      const had = prev.attrs.cacheRead + prev.attrs.cacheWrite;
+      if (a.cacheRead + 256 < had) { g.breaks++; g.rewritten += had - a.cacheRead; }
+    }
+    prev = e;
+  }
+  const policies = [...by.values()].map((g) => {
+    const cost = g.in * CACHE_PRICE.input + g.cacheWrite * CACHE_PRICE.write + g.cacheRead * CACHE_PRICE.read;
+    const sent = g.in + g.cacheRead + g.cacheWrite;
+    return { ...g, cost_units: Math.round(cost), cost_per_call: cost / g.calls, write_per_call: g.cacheWrite / g.calls, sent_per_call: sent / g.calls,
+      hit_rate: sent ? g.cacheRead / sent : null, breaks_per_call: g.breaks / g.calls, rewritten_per_call: g.rewritten / g.calls };
+  }).sort((x, y) => x.first_ts - y.first_ts);
+  const base = policies.find((x) => x.policy === BASELINE_POLICY), cur = policies.filter((x) => x.policy !== BASELINE_POLICY).at(-1);
+  let verdict = null;
+  if (base && cur) {
+    const change = cur.cost_per_call / base.cost_per_call - 1;
+    const enough = base.calls >= rule.min_calls && cur.calls >= rule.min_calls;
+    verdict = { from: base.policy, to: cur.policy, cost_change: change, write_change: cur.write_per_call / base.write_per_call - 1,
+      breaks_change: cur.breaks_per_call - base.breaks_per_call,
+      status: !enough ? 'not_enough_data' : change <= -rule.cost_drop ? 'on_target' : 'missed' };
+  }
+  return { rule, price: CACHE_PRICE, policies, verdict };
+}
+
 export const REGRESSION = { p95_growth: 0.2, error_rate_points: 0.05, min_n: 5 };
 
 // Newest known version vs the one before: p95 up >= 20 % or error rate up >= 5 points, with n >= 5 on both sides.
@@ -410,6 +455,7 @@ export function buildReport(events, stats, opts = {}) {
     lifecycle: lifecycle(events),
     memory: memory(events),
     stt: stt(events),
+    prompt_cache: promptCache(events),
     bench: opts.benchDoc === null ? null : benchResults(opts.benchDoc ?? DEFAULT_BENCH_DOC),
     bench_doc: opts.benchDoc ?? DEFAULT_BENCH_DOC,
     by_version: versions,
@@ -531,6 +577,24 @@ export function formatMarkdown(s) {
   else {
     if (s.bench.machine) out.push(s.bench.machine, '');
     for (const t of s.bench.tables) out.push(`**${t.title}**`, '', table(t.columns, t.rows.map((row) => t.columns.map((c) => row[c]))), '');
+  }
+
+  h('## Prompt cache');
+  const pc = s.prompt_cache;
+  out.push(`Per history-trim policy (\`agent.turn\` \`ctx_policy\`). Cost is in input-token units at one-hour cache prices`
+    + ` (write ${pc.price.write}×, read ${pc.price.read}×). A break is a call that read less from the cache than the previous call had stored:`
+    + ' the history changed before its end and everything after the change was sent again. New conversations count as breaks too.', '');
+  out.push(table(['policy', 'calls', 'cost / call', 'cache write / call', 'sent / call', 'hit rate', 'breaks / call', 're-sent / call', 'screenshots dropped', 'trims', 'from', 'to'],
+    pc.policies.map((g) => [code(g.policy), g.calls, num(g.cost_per_call, 0), num(g.write_per_call, 0), num(g.sent_per_call, 0), pcnt(g.hit_rate),
+      num(g.breaks_per_call, 2), num(g.rewritten_per_call, 0), g.images_dropped, g.trims, day(g.first_ts), day(g.last_ts)])));
+  const v = pc.verdict;
+  if (!v) out.push('', 'Needs calls from both the baseline and a newer policy to compare.');
+  else {
+    const sign = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)} %`;
+    const say = { on_target: '**On target**', missed: '**Missed the mark**', not_enough_data: '**Not enough data yet**' }[v.status];
+    out.push('', `${say}: ${code(v.from)} → ${code(v.to)}, cost per call ${sign(v.cost_change)}, cache writes per call ${sign(v.write_change)},`
+      + ` breaks per call ${v.breaks_change >= 0 ? '+' : ''}${v.breaks_change.toFixed(2)}. Target: cost per call down at least ${pc.rule.cost_drop * 100} %`
+      + ` over ${pc.rule.min_calls}+ calls each. Calls differ between days (tasks, screenshots), so check \`npm run bench:context\` before acting on a miss.`);
   }
 
   h('## By version');

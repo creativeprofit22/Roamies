@@ -25,3 +25,4 @@ showcase/tauri/src-tauri/voice-rs/models/
 showcase/tauri/src-tauri/voice-win/models/
 showcase/tauri/src-tauri/voice-rs/bench-data/
 showcase/tauri/sidecar/bench-pointing.json
+showcase/tauri/sidecar/bench-context.json

@@ -73,7 +73,7 @@ by pairing events or subtracting `ts` (for example "chord down → first reply t
 | `agent.request` | sidecar | enqueued → reply done | `source` (`voice`, `typed`, `reminder`, `snap`), `model`, `provider`, `calls`, `tools`, `in`, `cacheRead`, `cacheWrite`, `out`, `image`, `first_text_ms`, `retry`, `retry_of`, `retry_after_ms` |
 | `agent.queue_wait` | sidecar | enqueued → run starts | |
 | `agent.first_text` | sidecar | event: first reply text from the model | |
-| `agent.turn` | sidecar | one model call (generation span) | `model`, `provider`, `ttft_ms` (call start → first streamed token), `stream_ms` (first → last token), `in`, `cacheRead`, `cacheWrite`, `out` |
+| `agent.turn` | sidecar | one model call (generation span) | `model`, `provider`, `ttft_ms` (call start → first streamed token), `stream_ms` (first → last token), `in`, `cacheRead`, `cacheWrite`, `out`; what the history trim did before the call: `ctx_policy` (trim rules version), `ctx_images_dropped`, `ctx_trimmed_msgs`, `ctx_trimmed_tokens`, `ctx_chars_per_token` (letters per token measured from the provider's counts, used to size the history) |
 | `agent.tool` | sidecar | tool call start → end | `name`, `anim`, `variant` |
 | `agent.safety` | sidecar | one `safety.mjs` check (child of its `agent.tool`) | `check` (`read`, `write`, `url`, `open`, `command`, `click`), `level` |
 | `hands.ocr` | sidecar | Windows screen helper text recognition inside one tool call (child of its `agent.tool`, back-dated by `ocrMs`) | `verb` (`ui`, `find-text`), `lines`, `lang`; never the text |

@@ -23,7 +23,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { performance } from 'node:perf_hooks';
 import {
   clearFacts, clearFinished, fitContext, flushWrites, forgetFact, listItems, listFacts, nextDue, pickFacts, touchFacts, forDisk, forProvider, isStale, loadLatestSession, newSession, openCommitments,
-  pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson, DIR,
+  pruneSessions, saveSession, takeDueReminders, updateCommitment, writeJson, DIR, CONTEXT_POLICY,
+  CHARS_PER_TOKEN, IMAGE_TOKENS, calibrateCharsPerToken, contextChars, contextImages,
 } from './store.mjs';
 import { EMOTES, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, talkLabel, totalBytes } from './voice-model.mjs';
@@ -356,6 +357,23 @@ let session = null;
 // instead of starting a new one that it then replaces.
 const resumed = loadLatestSession().then((s) => { if (s && !isStale(s) && !session) session = s; }).catch((e) => console.error('resume', e));
 const BUDGET_CAP = 120_000;
+// What fitContext changed before the latest model call, for that call's agent.turn telemetry.
+let lastFit = null;
+// Letters per token in this conversation on this model, from the provider's own counts (a log is about half of prose).
+let tokenRate = { key: null, cpt: CHARS_PER_TOKEN };
+const rateKey = () => `${session?.id ?? ''}|${config.model}`;
+const charsPerToken = () => (tokenRate.key === rateKey() ? tokenRate.cpt : CHARS_PER_TOKEN);
+const measureTokens = (u) => {
+  // Images are a fixed token cost, so take them out before measuring the text rate.
+  const tokens = (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0) - (lastFit?.images ?? 0) * IMAGE_TOKENS;
+  if (lastFit?.chars) tokenRate = { key: rateKey(), cpt: calibrateCharsPerToken(lastFit.chars, tokens, charsPerToken()) };
+};
+const fitAttrs = () => {
+  const f = lastFit ?? {};
+  lastFit = null;
+  return { ctx_policy: CONTEXT_POLICY, ctx_images_dropped: f.images_dropped ?? 0, ctx_trimmed_msgs: f.trimmed_msgs ?? 0, ctx_trimmed_tokens: f.trimmed_tokens ?? 0,
+    ctx_chars_per_token: Math.round(charsPerToken() * 100) / 100 };
+};
 function makeAgent() {
   const m = getModel(config.model);
   controller = new AbortController();
@@ -372,9 +390,12 @@ function makeAgent() {
     tools,
     maxTurns: 24,
     transformContext: (msgs, o) => {
-      const fitted = fitContext(msgs, { budgetTokens: Math.min(BUDGET_CAP, getContextWindow(config.model) * 0.5), force: o?.force });
+      lastFit = {};
+      const fitted = fitContext(msgs, { budgetTokens: Math.min(BUDGET_CAP, getContextWindow(config.model) * 0.5), force: o?.force, stats: lastFit, charsPerToken: charsPerToken() });
       // Fresh live block every call, on the newest user message; older copies are dropped.
       const out = withLive(fitted);
+      lastFit.chars = contextChars(out);
+      lastFit.images = contextImages(out);
       touchFacts(lastFactIds);
       return out;
     },
@@ -515,8 +536,9 @@ async function prompt(text, image = null, t = {}) {
         reply.endTurn();
         // Cache health, for the log: how much of each call was read from the prompt cache.
         const u = e.usage ?? {};
+        measureTokens(u);
         use.calls++; use.in += u.inputTokens ?? 0; use.cacheRead += u.cacheRead ?? 0; use.cacheWrite += u.cacheWrite ?? 0; use.out += u.outputTokens ?? 0;
-        tel.end(turnStep, { attrs: { ...turnAttrs(), in: u.inputTokens ?? 0, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0, out: u.outputTokens ?? 0 } });
+        tel.end(turnStep, { attrs: { ...turnAttrs(), ...fitAttrs(), in: u.inputTokens ?? 0, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0, out: u.outputTokens ?? 0 } });
         turnStep = null;
         if (process.env.ROAMIES_USAGE) console.error(`[usage] in=${u.inputTokens ?? '?'} cacheRead=${u.cacheRead ?? 0} cacheWrite=${u.cacheWrite ?? 0} out=${u.outputTokens ?? '?'}`);
       }

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { benchResults, buildReport, chain, compareVersions, formatChain, formatStt, loadEvents, p95, quantiles, readEvents, stt } from '../telemetry-report.mjs';
+import { benchResults, buildReport, chain, compareVersions, formatChain, formatStt, loadEvents, p95, promptCache, quantiles, readEvents, stt } from '../telemetry-report.mjs';
 
 const rid = 'ef'.repeat(16);
 const ev = (kind, step, step_id, ts, extra = {}) => ({ schema: 1, ts, request_id: rid, step_id, parent_step_id: null, kind, step, component: 'sidecar', duration_ms: null, outcome: null, error_code: null, attrs: {}, ...extra });
@@ -171,7 +171,7 @@ assert.match(printed, /3 malformed and 1 unsupported-schema/);
 const json = JSON.parse(fs.readFileSync(path.join(outDir, 'telemetry-report.json'), 'utf8'));
 assert.equal(json.steps.find((r) => r.step === 'agent.turn').p95, 900);
 const md = fs.readFileSync(path.join(outDir, 'telemetry-report.md'), 'utf8');
-for (const h of ['Input', 'Regressions', 'Steps', 'Components', 'Share of request time', 'Slowest requests', 'Errors and cancels', 'Crashes and restarts', 'Memory', 'Voice engines', 'By version']) {
+for (const h of ['Input', 'Regressions', 'Steps', 'Components', 'Share of request time', 'Slowest requests', 'Errors and cancels', 'Crashes and restarts', 'Memory', 'Voice engines', 'Prompt cache', 'By version']) {
   assert.match(md, new RegExp(`^## ${h}$`, 'm'), h);
 }
 assert.match(md, /Moonshine small streaming \| 8\.6 %/);
@@ -179,5 +179,20 @@ const emptyDir = path.join(tmp, 'empty');
 fs.mkdirSync(emptyDir);
 execFileSync(process.execPath, [script, 'report', '--dir', emptyDir, '--out', path.join(tmp, 'out-empty')], { encoding: 'utf8' });
 assert.ok(fs.existsSync(path.join(tmp, 'out-empty', 'telemetry-report.json')));
+// Prompt cache by trim policy: untagged turns are the baseline; a break is reading less than the last call stored.
+{
+  const turn = (ts, cacheRead, cacheWrite, policy) => ({ ts, step: 'agent.turn', kind: 'end', attrs: { in: 10, cacheRead, cacheWrite, out: 5, ...(policy ? { ctx_policy: policy } : {}) } });
+  const base = [], next = [];
+  for (let i = 0; i < 30; i++) base.push(turn(1000 + i * 1000, i % 3 ? 22000 : 5000, i % 3 ? 0 : 17000));
+  for (let i = 0; i < 30; i++) next.push(turn(100000 + i * 1000, 22000, 0, 'batch-v1'));
+  const pc = promptCache([...base, ...next]);
+  assert.deepEqual(pc.policies.map((g) => g.policy), ['baseline', 'batch-v1']);
+  assert.equal(pc.policies[0].breaks, 9, 'every third call broke, except the first (nothing before it)');
+  assert.equal(pc.policies[1].breaks, 0);
+  assert.equal(pc.verdict.status, 'on_target');
+  assert.equal(promptCache([...base, ...base.map((e) => ({ ...e, ts: e.ts + 99000, attrs: { ...e.attrs, ctx_policy: 'batch-v1' } }))]).verdict.status, 'missed', 'no change in cost is a miss');
+  assert.equal(promptCache([...base, ...next.slice(0, 5)]).verdict.status, 'not_enough_data');
+  assert.equal(promptCache(base).verdict, null);
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('telemetry report tests passed');

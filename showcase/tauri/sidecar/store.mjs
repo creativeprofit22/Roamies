@@ -118,21 +118,55 @@ export function forProvider(messages, from, to) {
 
 // ---------- context budget ----------
 
-const textLen = (c) => (typeof c === 'string' ? c.length : Array.isArray(c) ? c.reduce((n, p) => n + (p?.type === 'image' ? 6000 : (p?.text ?? p?.content ?? '').length + JSON.stringify(p?.args ?? '').length), 0) : 0);
+// An image costs a fixed number of tokens, not letters: the most a high-res screenshot takes on Claude 5-class models
+// (pointing.mjs imageLimits, bench/context.bench.mjs). Counting it as letters made it ~3x too cheap at prose rates.
+export const IMAGE_TOKENS = 4784;
+const textLen = (c) => (typeof c === 'string' ? c.length : Array.isArray(c) ? c.reduce((n, p) => n + (p?.type === 'image' ? 0 : (p?.text ?? p?.content ?? '').length + JSON.stringify(p?.args ?? '').length), 0) : 0);
 const approxChars = (m) => (m.role === 'tool' ? m.content.reduce((n, r) => n + textLen(r.content), 0) : textLen(m.content));
+const imagesIn = (c) => (Array.isArray(c) ? c.filter((p) => p?.type === 'image').length : 0);
+const imageCount = (m) => (m.role === 'tool' ? m.content.reduce((n, r) => n + imagesIn(r.content), 0) : imagesIn(m.content));
 
 // Window reads from earlier requests are out of date and large; they shrink to their first line.
 const READ_TOOLS = new Set(['read_window']);
 const OLD_READ = "[The full list of this window's controls was shown for an earlier request and has been trimmed since to save space; your answer then was based on all of it. The screen has likely changed: read it again if you need it now.]";
 const textOfResult = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((p) => p?.text ?? '').join('') : '');
 
+// The current request keeps its newest KEEP_IMAGES screenshots; older ones go IMAGE_BATCH at a time. Dropping one per
+// new screenshot changed the conversation mid-request on every call, so the provider re-cached everything after it.
+export const KEEP_IMAGES = 2;
+export const IMAGE_BATCH = 3;
+// Over budget, trim down to this share of it: the start then holds still for many requests instead of moving every call.
+export const TRIM_TO = 0.6;
+// Letters per token when nothing has been measured yet (ordinary English). Logs, numbers and tables run nearer 1.5,
+// so after each call the real token count calibrates it (calibrateCharsPerToken), never above this.
+export const CHARS_PER_TOKEN = 3.6;
+const MIN_CHARS_PER_TOKEN = 1;
+// Below this the fixed system prompt and tools (~10k tokens) swamp the history and the rate reads far too low.
+const MIN_MEASURED_TOKENS = 20_000;
+
+/** Letters per token from the last call: what was sent (contextChars) over what the provider counted. */
+export function calibrateCharsPerToken(chars, tokens, prev = CHARS_PER_TOKEN) {
+  if (!(chars > 0) || !(tokens >= MIN_MEASURED_TOKENS)) return prev;
+  // The count includes the system prompt and tools, so this errs low (trims a little early), which is the safe side.
+  return Math.min(CHARS_PER_TOKEN, Math.max(MIN_CHARS_PER_TOKEN, chars / tokens));
+}
+
+/** Letters of text sent, images excluded (they are counted by contextImages). */
+export const contextChars = (messages) => messages.reduce((n, m) => n + approxChars(m), 0);
+export const contextImages = (messages) => messages.reduce((n, m) => n + imageCount(m), 0);
+
+// Telemetry tag for this policy (agent.turn ctx_policy), so reports can compare it with what came before.
+// v2: trims by measured letters per token (calibrateCharsPerToken) instead of a fixed guess.
+export const CONTEXT_POLICY = 'batch-v2';
+
 /**
- * Before each model call. Everything from before the newest request is rewritten the same way every
- * time (screenshots and window reads collapse to a line), so it changes at most once and the prompt
- * cache keeps hitting; the current request keeps its newest two images. If the history is over budget,
- * the oldest exchanges are dropped (cutting at a user message so tool calls stay paired).
+ * Before each model call; the result replaces the agent's history. Everything from before the newest request is
+ * rewritten the same way every time (screenshots and window reads collapse to a line), so it changes at most once
+ * and the prompt cache keeps hitting. If the history is over budget, the oldest exchanges are dropped down to
+ * TRIM_TO of it (cutting at a user message so tool calls stay paired). Size is text letters over charsPerToken (measured
+ * per conversation by the caller) plus IMAGE_TOKENS per image. `stats`, if given, gets what this call changed.
  */
-export function fitContext(messages, { budgetTokens, force = false }) {
+export function fitContext(messages, { budgetTokens, force = false, stats = null, charsPerToken = CHARS_PER_TOKEN }) {
   // Images come from screenshot tool results and from area snaps in the user's own message.
   const hasImage = (m) => m.role === 'tool'
     ? m.content.some((r) => Array.isArray(r.content) && r.content.some((p) => p?.type === 'image'))
@@ -140,7 +174,9 @@ export function fitContext(messages, { budgetTokens, force = false }) {
   const isRequest = (m) => m.role === 'user' && (typeof m.content === 'string' || m.content.some((p) => p?.type === 'text'));
   let current = -1;
   messages.forEach((m, i) => { if (isRequest(m)) current = i; });
-  const keepImg = new Set(messages.map((m, i) => (i >= current && hasImage(m) ? i : -1)).filter((i) => i >= 0).slice(-2));
+  const curImg = messages.map((m, i) => (i >= current && hasImage(m) ? i : -1)).filter((i) => i >= 0);
+  const keepImg = new Set(curImg.slice(Math.max(0, Math.floor((curImg.length - KEEP_IMAGES) / IMAGE_BATCH) * IMAGE_BATCH)));
+  let dropped = 0;
   const names = new Map();
   for (const m of messages) if (m.role === 'assistant' && Array.isArray(m.content)) for (const p of m.content) if (p?.type === 'tool_call') names.set(p.id, p.name);
   let out = messages.map((m, i) => {
@@ -149,23 +185,28 @@ export function fitContext(messages, { budgetTokens, force = false }) {
       m = { ...m, content: m.content.map((r) => (READ_TOOLS.has(names.get(r.toolCallId)) ? { ...r, content: `${textOfResult(r.content).split('\n')[0]}\n${OLD_READ}` } : r)) };
     }
     if (keepImg.has(i) || !hasImage(m)) return m;
+    dropped++;
     if (m.role === 'tool') return { ...m, content: m.content.map((r) => ({ ...r, content: stripImages(r.content) })) };
     return { ...m, content: stripImages(m.content) };
   });
-  const budget = (force ? 0.6 : 1) * budgetTokens * 3.6;
-  let total = out.reduce((n, m) => n + approxChars(m), 0);
+  const budget = (force ? 0.6 : 1) * budgetTokens;
+  const tokensOf = (ms) => ms.reduce((n, m) => n + approxChars(m) / charsPerToken + imageCount(m) * IMAGE_TOKENS, 0);
+  let total = tokensOf(out);
+  if (stats) Object.assign(stats, { images_dropped: dropped, trimmed_msgs: 0, trimmed_tokens: 0 });
   if (total <= budget) return out;
   const sys = out.filter((m) => m.role === 'system');
   let rest = out.filter((m) => m.role !== 'system');
-  while (total > budget && rest.length > 2) {
+  const before = rest.length, beforeTokens = total;
+  while (total > budget * TRIM_TO && rest.length > 2) {
     let cut = rest.findIndex((m, i) => i > 0 && m.role === 'user');
     if (cut < 0) break;
-    total -= rest.slice(0, cut).reduce((n, m) => n + approxChars(m), 0);
+    total -= tokensOf(rest.slice(0, cut));
     rest = rest.slice(cut);
   }
   const first = rest[0];
   const note = '[Older parts of this conversation were trimmed to save space.]\n';
   if (first?.role === 'user' && typeof first.content === 'string' && !first.content.startsWith(note)) rest[0] = { ...first, content: note + first.content };
+  if (stats) Object.assign(stats, { trimmed_msgs: before - rest.length, trimmed_tokens: Math.round(beforeTokens - total) });
   return [...sys, ...rest];
 }
 

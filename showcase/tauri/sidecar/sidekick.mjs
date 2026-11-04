@@ -28,7 +28,7 @@ import {
 import { EMOTES, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, talkLabel, totalBytes } from './voice-model.mjs';
 import { DEFAULT_ENGINE, ENGINES, chooseEngine, engine, manifestFor, shadowEngine, shadowPayload } from './voice-engines.mjs';
-import { createTools, expand, fitImage, imageBlock, screenPrompt, winOpen } from './tools.mjs';
+import { canSnap, createTools, expand, fitImage, imageBlock, screenPrompt, snapArgs, winOpen } from './tools.mjs';
 import { imageLimits } from './pointing.mjs';
 import { createTelemetry, newRequestId } from './telemetry.mjs';
 import { createCorrections, recordCorrection } from './stt-correction.mjs';
@@ -269,7 +269,7 @@ function anim(name, args) {
 // every time memory changed; at the end, only the new message is fresh. The live block is never saved.
 const menuGuide = () => (COMPACT_TRAY
   ? `Tray menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), Stop (only while you're working), Install Update … and Restart (only when one is ready; updates download, are signature-checked and install by themselves), Settings…, Quit Roamies. Right-clicking you also opens Settings. The Settings window has: AI (sign in to providers, pick the model), ${VOICE_OK ? 'Voice (on/off, Voice Mode: Computer Use sends what they say to you, Dictation types it into the app in front instead; speech engines), ' : ''}General (Sound Effects, Open at Login, Edit files, run commands and use apps), Lists & memory (open commitments, what you remember, Forget everything), Privacy (Telemetry: a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder; Show Logs), About (version, Check for Updates, Setup Guide for shortcuts, Licences).`
-  : `${MAC ? 'Menu bar' : 'Tray'} menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), ${process.platform === 'darwin' ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow Edits, Commands & Clicks, Telemetry (a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder)${VOICE_OK ? ', Voice, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies.`);
+  : `${MAC ? 'Menu bar' : 'Tray'} menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), ${canSnap() ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow Edits, Commands & Clicks, Telemetry (a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder)${VOICE_OK ? ', Voice, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies.`);
 const stablePrompt = () => `You are Sidekick, a tiny glowing pixel creature who lives on ${userName}'s screen as a desktop companion. You are the main creature of Roamies, a desktop app by Ken Kai (Mac and Windows) that puts little creatures on your screen; you are Roamies ${VERSION}.
 About Roamies, for when ${userName} asks about you or the app: ${MAC ? 'it lives in the menu bar at the top of the screen (no Dock icon)' : 'it lives in the system tray at the bottom right of the taskbar (no taskbar button); Windows may tuck the icon behind the ^ arrow next to the clock, and dragging it onto the taskbar keeps it in view'}. ${menuGuide()} Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
 You talk through small pixel speech bubbles, so keep replies short: one to three sentences unless asked for detail. Plain text only: no markdown, no asterisks, and never narrate actions like *waves*. An emoji now and then is fine; the bubbles show them. Your body does the acting: to act out a feeling, start your reply with one tag, which is never shown: ${EMOTES.map((e) => `[${e}]`).join(' ')}. hype celebrates a win, upset is for when they're dodging work, remind nudges about something they said they'd do, motivate is a push to start, wave is hello or goodbye. Most replies need no tag.
@@ -299,7 +299,7 @@ const livePrompt = (context = '') => {
   return `Live state (current as of this moment):
 - Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF in ${whereIs('General')} (tell the user to turn on "${COMPACT_TRAY ? 'Edit files, run commands and use apps' : 'Allow Edits, Commands & Clicks'}" if they want it)`}.
 ${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? (NEEDS_MODEL ? `using the ${engineLabel(activeEngine().id)} speech engine, ` : '') + (dictating() ? `on in Dictation mode; ${userName} holds ${talkWords()} to type what they say into the app in front, so spoken words don't reach you` : `on; ${userName} holds ${talkWords()} to talk`) : `on, but the speech model isn't downloaded yet (${voiceModels[activeEngine().id].status === 'downloading' ? 'downloading now' : (COMPACT_TRAY ? 'Download in Settings → Voice' : `Settings > Download Voice in the ${TRAY} menu`)})`}.` : ''}
-- Shortcuts: show or hide you ${keyWords(keys().summon)}${MAC ? `; ask about an area ${keyWords(keys().snap)}` : ''}; show the list ${keyWords(keys().list)}.${screenPrompt().live}
+- Shortcuts: show or hide you ${keyWords(keys().summon)}${canSnap() ? `; ask about an area ${keyWords(keys().snap)}` : ''}; show the list ${keyWords(keys().list)}.${screenPrompt().live}
 ${open ? `Open commitments:\n${open}` : 'No open commitments.'}${doneTodayText() ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${doneTodayText()}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}`;
 };
@@ -753,7 +753,7 @@ function snapshot() {
   const now = Date.now(), active = activeEngine(), activeVm = voiceModels[active.id];
   const shadow = NEEDS_MODEL ? shadowEngine({ active: active.id, ready: (id) => voiceModels[id].status === 'ready' }) : null;
   return {
-    platform: process.platform, version: VERSION, licenses: existsSync(LICENSES),
+    platform: process.platform, canSnap: canSnap(), version: VERSION, licenses: existsSync(LICENSES),
     busy, loggingIn, hasSession: !!session?.messages.length,
     providerLabels: PROVIDER_LABELS, current: getModel(config.model) ?? null, provider: config.provider, model: config.model,
     providers: MENU_PROVIDERS.map((p) => {
@@ -1009,13 +1009,14 @@ async function onSettings(m) {
 // The next question (typed in the bubble, or spoken with the talk keys) is sent with the picture.
 let snap = null;
 async function areaSnap() {
-  if (process.platform !== 'darwin' || snapping) return;
+  if (!canSnap() || snapping) return;
   snapping = true;
   try {
     const file = path.join(os.tmpdir(), `sidekick-area-${Date.now()}.png`);
-    const res = await hands('select', file);
+    const limits = imageLimits(config.model);
+    const res = await hands(...snapArgs(file, process.platform, limits));
     if (res.cancelled) return;
-    await fitImage(file, imageLimits(config.model));
+    if (MAC) await fitImage(file, limits); // Windows' helper already wrote it at the sent size
     snap = { image: await imageBlock(file, 'image/png'), at: Date.now() };
     // In Dictation mode a spoken question would be pasted, not asked, so ask by typing.
     if (VOICE_OK && config.voice && !dictating()) {
@@ -1053,6 +1054,7 @@ function obState() {
   ob({
     kind: 'state',
     platform: process.platform,
+    canSnap: canSnap(),
     step: config.onboardStep ?? 0,
     oauth: Object.keys(OAUTH).map((id) => ({ id, name: OAUTH_NAMES[id]?.[0] ?? PROVIDER_LABELS[id], company: OAUTH_NAMES[id]?.[1] ?? '', connected: !!signedIn.get(id) })),
     apikey: AUTH_PROVIDERS.filter((p) => p.methods?.includes('apikey')).map((p) => ({ id: p.value, name: p.label, connected: !!signedIn.get(p.value) })),

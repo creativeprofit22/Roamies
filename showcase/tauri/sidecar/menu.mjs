@@ -22,6 +22,7 @@ function compactMenu(v) {
   return [
     { id: 'show', label: 'Show Sidekick', accel: v.keys.summon },
     { id: 'ask', label: 'Ask Sidekick…', enabled: !v.busy },
+    ...(v.canSnap ? [{ id: 'snap', label: 'Ask About an Area…', accel: v.keys.snap }] : []),
     { id: 'list', label: 'Show List', accel: v.keys.list },
     ...(v.busy ? [{ id: 'stop', label: 'Stop' }] : []),
     ...(v.update.available ? [updateItem(v)] : []),
@@ -50,7 +51,7 @@ function fullMenu(v) {
     { id: 'status', label: statusLine(v), enabled: false },
     { sep: true },
     { id: 'show', label: 'Show Sidekick', accel: v.keys.summon },
-    ...(v.platform === 'darwin' ? [{ id: 'snap', label: 'Ask About an Area…', accel: v.keys.snap }] : []),
+    ...(v.canSnap ? [{ id: 'snap', label: 'Ask About an Area…', accel: v.keys.snap }] : []),
     { id: 'ask', label: 'Ask Sidekick…', enabled: !v.busy },
     ...(v.voiceOk && v.voice && v.voiceReady ? [{ id: 'voicehint', label: `Hold ${v.talkSymbols} to ${v.dictating ? 'Dictate' : 'Talk'} · Tap for Hands-Free`, enabled: false }] : []),
     { id: 'stop', label: 'Stop', enabled: v.busy },

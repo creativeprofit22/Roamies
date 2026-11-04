@@ -8,17 +8,17 @@ const ids = (items) => flat(items).filter((i) => i.id).map((i) => i.id);
 
 // Compact: short, plain rows; Stop and the update only when relevant; no greyed-out info rows.
 const idle = trayMenu(snap(), { compact: true });
-assert.deepEqual(ids(idle), ['show', 'ask', 'list', 'settings', 'quit']);
+assert.deepEqual(ids(idle), ['show', 'ask', 'snap', 'list', 'settings', 'quit']);
 assert.ok(idle.every((i) => !i.items), 'no submenus');
 assert.ok(idle.every((i) => i.sep || i.enabled !== false), 'no disabled rows while idle');
 assert.equal(idle.find((i) => i.id === 'show').accel, 'Ctrl+Shift+Space');
 assert.equal(idle.find((i) => i.id === 'list').accel, 'Ctrl+Shift+L');
 
 const busy = trayMenu(snap({ busy: true, update: { available: '2.0.0', installing: false } }), { compact: true });
-assert.deepEqual(ids(busy), ['show', 'ask', 'list', 'stop', 'install_update', 'settings', 'quit']);
+assert.deepEqual(ids(busy), ['show', 'ask', 'snap', 'list', 'stop', 'install_update', 'settings', 'quit']);
 assert.equal(busy.find((i) => i.id === 'ask').enabled, false);
 assert.equal(busy.find((i) => i.id === 'install_update').label, 'Install Update 2.0.0 and Restart');
-assert.ok(busy.length <= 8);
+assert.ok(busy.length <= 9); // 8, plus Ask About an Area… where the snap works
 
 const installing = trayMenu(snap({ update: { available: '2.0.0', installing: true } }), { compact: true });
 assert.equal(installing.find((i) => i.id === 'install_update').enabled, false);
@@ -43,3 +43,8 @@ assert.ok(ids(fullEmpty).includes('none'));
 assert.ok(ids(trayMenu(snap({ update: { available: '2.0.0', installing: false } }))).includes('install_update'));
 
 console.log('menu tests passed');
+
+// Ask About an Area… shows wherever the area snap works (macOS, and Windows with the screen helper).
+assert.ok(ids(trayMenu(snap({ platform: 'win32', canSnap: true }), { compact: true })).includes('snap'));
+assert.ok(!ids(trayMenu(snap({ platform: 'win32', canSnap: false }), { compact: true })).includes('snap'));
+console.log('menu snap tests passed');

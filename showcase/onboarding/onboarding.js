@@ -397,7 +397,7 @@
         return b;
       }));
       keys.tryLabel();
-      $('snap-line').hidden = !isMac() || !k.snap;
+      $('snap-line').hidden = !state?.canSnap || !k.snap;
       for (const w of ['summon', 'snap']) if (keys.recording !== w && k[w]) fillCaps($(`${w}-caps`), accelCaps(k[w]));
       nav();
     },
@@ -457,7 +457,7 @@
       recap.replaceChildren();
       if (state?.voice && k) recap.append(el('dt', {}, capsEl(capsFor(k.talk))), el('dd', { textContent: 'Hold to talk to me' }));
       if (k) recap.append(el('dt', {}, capsEl(accelCaps(k.summon))), el('dd', { textContent: 'Show or hide me' }));
-      if (k?.snap && isMac()) recap.append(el('dt', {}, capsEl(accelCaps(k.snap))), el('dd', { textContent: 'Ask about an area of the screen' }));
+      if (k?.snap && state?.canSnap) recap.append(el('dt', {}, capsEl(accelCaps(k.snap))), el('dd', { textContent: 'Ask about an area of the screen' }));
       const tray = el('span', { className: 'caps' }); const cap = el('kbd', { className: 'px cap' }); cap.innerHTML = TRAY_SVG; tray.append(cap);
       recap.append(el('dt', {}, tray), el('dd', { textContent: isMac() ? 'Everything else, in the menu bar' : 'Everything else, in the system tray' }));
       // Windows keeps tray icons at the bottom right, and new ones start hidden behind the ^ arrow.
@@ -582,7 +582,7 @@
     // ?platform=win32 previews Windows (&blocked=1: microphone switched off in Privacy settings; &model=downloading|ready|error).
     const sys = win ? { type: 'perms', mic: q.get('blocked') === '1' ? 'denied' : 'granted', input: true } : { type: 'perms', mic: pre, speech: old ? pre : 'granted', speechNeeded: old, screen: pre, accessibility: pre };
     const st = {
-      kind: 'state', platform: q.get('platform') || 'darwin', step: +(q.get('step') || 0), sound: true, voice: true, actions: false, login: true, filesAsked: false,
+      kind: 'state', platform: q.get('platform') || 'darwin', canSnap: true, step: +(q.get('step') || 0), sound: true, voice: true, actions: false, login: true, filesAsked: false,
       keys: q.get('platform') === 'win32' ? { talk: ['control', 'option'], summon: 'Control+Shift+KeyS', snap: 'Control+Shift+KeyA' } : { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA' }, connected: null,
       voiceModel: win ? { status: q.get('model') || 'missing', done: q.get('model') === 'downloading' ? 60000000 : 0, total: 142300974, error: q.get('model') === 'error' ? "Couldn't download it. Check your internet connection and try again." : null, size: '142 MB' } : null,
       oauth: [['anthropic', 'Claude', 'Anthropic'], ['openai', 'ChatGPT', 'OpenAI'], ['gemini', 'Gemini', 'Google'], ['xai', 'Grok', 'xAI'], ['moonshot', 'Kimi', 'Moonshot']].map(([id, name, company]) => ({ id, name, company, connected: false })),

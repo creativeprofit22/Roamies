@@ -18,7 +18,7 @@ window.RoamiesSettingsPreview = () => {
       models: empty ? [] : [{ provider: 'anthropic', label: 'Anthropic', models: [['sonnet', 'Claude Sonnet 4.5', true], ['opus', 'Claude Opus 4.1', false], ['haiku', 'Claude Haiku 4.5', false]].map(([id, name, selected]) => ({ id, name, selected })) }],
     },
     voice: {
-      on: true, mode: 'agent', ready: model === 'ready',
+      on: true, mode: 'agent', ready: model === 'ready', canSnap: true,
       keys: mac ? { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA', list: 'Control+Alt+KeyL' } : { talk: ['control', 'option'], summon: 'Control+Shift+KeyS', snap: 'Control+Shift+KeyA', list: 'Control+Shift+KeyL' },
       engines: mac ? null : [
         { id: 'moonshine', label: 'Moonshine', about: 'Fast, small, English.', status: model === 'downloading' ? 'downloading' : model === 'error' ? 'error' : 'ready', done: model === 'downloading' ? 60 * MB : 0, total: 142 * MB, pct: model === 'downloading' ? 42 : 0, size: '142 MB', error: model === 'error' ? "Couldn't download it. Check your internet connection and try again." : null, selected: true },

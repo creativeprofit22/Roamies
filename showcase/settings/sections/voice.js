@@ -35,12 +35,11 @@ RoamiesSettings.section('voice', {
 
     if (v.mute != null) root.append(k.group('While talking', k.toggle({ key: 'muteWhileTalking', title: 'Mute other sounds', desc: 'Quiets your Mac while you hold the talk keys.', on: v.mute })));
 
-    const mac = api.isMac();
     const keys = el('div', { className: 'rows' },
       k.row('Talk', 'Hold, talk, let go.', capsEl(capsFor(v.keys.talk, null, api.isMac))),
       k.row('Show or hide Sidekick', null, capsEl(accelCaps(v.keys.summon, api.isMac))),
       k.row('Show list', null, capsEl(accelCaps(v.keys.list, api.isMac))),
-      ...(mac && v.keys.snap ? [k.row('Ask about an area', null, capsEl(accelCaps(v.keys.snap, api.isMac)))] : []));
+      ...(v.canSnap && v.keys.snap ? [k.row('Ask about an area', null, capsEl(accelCaps(v.keys.snap, api.isMac)))] : []));
     root.append(k.group('Shortcuts', keys, el('div', { className: 'actions spaced' }, k.btn('Change in setup guide', () => api.act('setup_keys'), { focus: 'keys-change' }))));
   },
 });

@@ -9,6 +9,7 @@ export function settingsView(v) {
     mode: v.dictating ? 'dictation' : 'agent',
     ready: v.voiceReady,
     keys: v.keys,
+    canSnap: !!v.canSnap,
     engines: v.needsModel ? v.engines.map((e) => ({ id: e.id, label: e.label, about: e.about, status: e.status, done: e.done, total: e.total, pct: pct(e), size: e.size, error: e.error ?? null, selected: v.voiceEngine === e.id })) : null,
     using: v.needsModel && v.activeEngine.id !== v.voiceEngine ? v.activeEngine.label : null,
     shadow: v.needsModel && v.shadow ? { label: v.shadow.label, on: v.shadow.on, ready: v.shadow.ready, needsTelemetry: !v.telemetry.on } : null,

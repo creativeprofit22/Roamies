@@ -290,3 +290,15 @@ console.log('windows open-in-app plan tests: passed');
   } finally { process.chdir(cwd); }
   console.log('windows act tests: passed');
 }
+
+{
+  const { canSnap, snapArgs } = await import('../tools.mjs');
+  assert.equal(canSnap('darwin', ''), true);
+  assert.equal(canSnap('win32', 'C:\roamies-hands.exe'), true);
+  assert.equal(canSnap('win32', ''), false);
+  assert.equal(canSnap('linux', '/x'), false);
+  assert.deepEqual(snapArgs('/tmp/a.png', 'darwin', { maxEdge: 1568, maxTokens: 1568 }), ['select', '/tmp/a.png']);
+  assert.deepEqual(snapArgs('C:\t\a.png', 'win32', { maxEdge: 2000, maxTokens: 1568 }), ['select', 'C:\t\a.png', '--fit', '2000x1568']);
+  assert.deepEqual(snapArgs('a.png', 'win32', { maxEdge: 1024, maxTokens: Infinity }), ['select', 'a.png', '--fit', '1024x0']);
+  console.log('snap args tests: passed');
+}

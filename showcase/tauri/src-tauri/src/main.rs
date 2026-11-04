@@ -828,7 +828,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
         }
         Some("keybinds") => {
             for (slot, which) in [(0usize, "summon"), (1, "snap"), (2, "list")] {
-                if which == "snap" && !cfg!(target_os = "macos") {
+                if which == "snap" && !cfg!(any(target_os = "macos", windows)) {
                     continue;
                 }
                 if let Some(accel) = msg.get(which).and_then(Value::as_str) {

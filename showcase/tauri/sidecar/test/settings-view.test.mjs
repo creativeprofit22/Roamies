@@ -15,6 +15,8 @@ assert.equal(settingsView(snap({ platform: 'darwin', needsModel: false })).voice
 const noVoice = settingsView(snap({ voiceOk: false }));
 assert.deepEqual(noVoice.sections, ['ai', 'general', 'memory', 'privacy', 'about']);
 assert.equal(noVoice.voice, null);
+assert.equal(settingsView(snap({ platform: 'win32', canSnap: true })).voice.canSnap, true, 'snap shortcut listed on Windows');
+assert.equal(settingsView(snap({ platform: 'win32', canSnap: false })).voice.canSnap, false);
 assert.equal(settingsView(snap({ login: { supported: false, on: false } })).general.login, null);
 
 // AI: connected model and per-provider model list for signed-in providers only.

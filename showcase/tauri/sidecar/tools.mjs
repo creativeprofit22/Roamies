@@ -57,6 +57,11 @@ const actionsOff = `File edits, commands and app control are switched off. Tell 
 
 // "hands": the bundled screen helper (macOS: hands/main.swift; Windows x64: hands-win, see docs/hands.md).
 const HANDS = process.env.ROAMIES_HANDS || '';
+// Area snap (`select`): macOS always has the helper; Windows needs roamies-hands, which scales the picture itself.
+export const canSnap = (platform = process.platform, handsBin = HANDS) => platform === 'darwin' || (platform === 'win32' && !!handsBin);
+export const snapArgs = (file, platform = process.platform, { maxEdge = 1568, maxTokens = 1568 } = {}) =>
+  platform === 'win32' ? ['select', file, '--fit', `${maxEdge}x${Number.isFinite(maxTokens) ? maxTokens : 0}`] : ['select', file];
+
 // What the model is told about seeing and pointing on each platform (sidekick.mjs puts these in its prompt).
 export function screenPrompt({ platform = process.platform, hands = HANDS } = {}) {
   const mac = platform === 'darwin', winSees = platform === 'win32' && !!hands;

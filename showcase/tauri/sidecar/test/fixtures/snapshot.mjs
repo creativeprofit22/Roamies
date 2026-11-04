@@ -1,7 +1,7 @@
 // A synthetic snapshot() for the pure menu and settings-view tests.
 export function snap(over = {}) {
   return {
-    platform: 'win32', version: '1.2.3', licenses: true,
+    platform: 'win32', canSnap: true, version: '1.2.3', licenses: true,
     busy: false, loggingIn: null, hasSession: true,
     providerLabels: { anthropic: 'Anthropic', openai: 'OpenAI' },
     current: { name: 'Claude Sonnet' }, provider: 'anthropic', model: 'sonnet',

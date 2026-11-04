@@ -78,6 +78,7 @@ by pairing events or subtracting `ts` (for example "chord down → first reply t
 | `agent.safety` | sidecar | one `safety.mjs` check (child of its `agent.tool`) | `check` (`read`, `write`, `url`, `open`, `command`, `click`), `level` |
 | `hands.ocr` | sidecar | Windows screen helper text recognition inside one tool call (child of its `agent.tool`, back-dated by `ocrMs`) | `verb` (`ui`, `find-text`), `lines`, `lang`; never the text |
 | `hands.marks` | sidecar | numbered marks for a window screenshot: the helper's `ui` read (parallel with the capture), picking and drawing (child of its `agent.tool`) | `marks` (count, 0 when none were drawn), `source` (`uia`, `ocr`) |
+| `hands.act` | sidecar | one run of the screen helper's `act` (from `act_in_app` or a `point_at` click; child of its `agent.tool`, back-dated by its duration). A "no" to a risky click is recorded as `cancelled` | `via` (`act_in_app`, `point_at`), `steps`, `done` (steps that ran), `kinds` (step names like `fill/click_text`), `failed_step`; never the typed text, labels or fields |
 | `hands.crop` | sidecar | closer look for a small `point_at` box: native recapture plus crop and upscale | `upscale` |
 | `pointing.locate` | sidecar | event: how one `point_at` found its place (see `docs/pointing.md`) | `path` (`text`, `mark`, `id`, `box`, `point`, `refine`), `refine_ms` (crop sent → refined answer, the extra model turn; `refine` only) |
 | `dictation.check` | sidecar | safety check of the dictation target | `level` |
@@ -98,6 +99,7 @@ Every error path that shows a bubble or logs also writes an event with outcome `
 |---|---|
 | `agent.request`, `agent.turn` | `not_signed_in`, `rate_limited`, `auth`, `failed`; cancels (outcome `cancelled`): `user_stop` (Stop menu), `interrupted` (a new talk), `aborted` |
 | `agent.tool` / `agent.safety` | `tool_error` / `safety_blocked` |
+| `hands.act` | the helper's code: `hands_off`, `access_denied` (app running as administrator), `confirm`, `blocked_key`, `focus`, `covered`, `mismatch`, `not_editable`, `keys_held`, `input`, `timeout`, `not_found`, or `act_failed` when it gave none; `user_declined` (cancelled) |
 | `voice.session` | `no_input`, `unavailable`, `nothing_heard`, `permission`, `user_cancel` (cancelled) |
 | `voice.warmup` | `model_load_failed` |
 | `ui.error_shown` (the bubble) | `sign_in_needed`, `permission`, `no_input`, `nothing_heard`, `dictation_off`, `stt_failed`, `dictation_blocked`, `paste_failed`, `login_failed`, `login_busy`, `login_item_approval`, `snap_failed`, `update_failed`, `update_download_failed`, voice model download codes |
@@ -256,6 +258,8 @@ on or fails because of telemetry.
   `redactText`/`redactValue` (API keys, tokens, `password=` values) first.
 - Tool arguments go through `redactArgs` from `safety.mjs`, and only identifiers survive (tool name, which
   animation it played). File paths, commands and URLs are not recorded.
+- The activity log keeps only the start of each tool result; for `act_in_app` and `read_window` it goes through
+  `redactResult` first, so field values show as `[n chars]`, never what was typed.
 
 ## OTLP mapping
 

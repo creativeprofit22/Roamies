@@ -54,6 +54,21 @@ export function redactArgs(name, args = {}) {
   return args;
 }
 
+/** The label an act step would click (act_in_app and point_at share this), or null when it clicks nothing named. */
+export function clickLabel(step) {
+  const s = step ?? {};
+  const l = s.do === 'click_text' ? s.text : s.do === 'click' || s.do === 'focus' ? s.label : s.do === 'choose' ? s.option : null;
+  return l == null || l === '' ? null : String(l);
+}
+
+/** Tool results as they go in the activity log: field values read from other apps become their length. */
+export function redactResult(name, text) {
+  const t = String(text ?? '');
+  if (name !== 'act_in_app' && name !== 'read_window') return t;
+  // Values aren't escaped in the control list, so a value runs to the last quote before "(focused)" or the line end.
+  return t.replace(/ = "(.*)"(?= \(focused\)$|$)/gm, (_, v) => ` = [${v.length} chars]`);
+}
+
 /** read_file / list_files / search_files. Returns { level, reason, path }. */
 export function checkRead(p, home, { recursive = false } = {}) {
   home = slash(home);

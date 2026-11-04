@@ -299,5 +299,22 @@ for (const enabled of [false, true]) {
   assert.deepEqual(ev[4].attrs, { path: 'refine', refine_ms: 2400 });
 }
 
+// hands.act (working another app): step kinds, counts, the failing step and the helper's code, no text
+{
+  const dir = freshDir();
+  const t = createTelemetry({ dir, now: () => T0, mono: () => 5000, timer: false });
+  const rid = newRequestId();
+  t.end(t.start('hands.act', { requestId: rid, at: T0 - 800, attrs: { via: 'act_in_app' } }), { outcome: 'error', errorCode: 'access_denied', attrs: { via: 'act_in_app', steps: 3, done: 1, kinds: 'fill/click_text', failed_step: 2 } });
+  t.end(t.start('hands.act', { requestId: rid, at: T0 - 10, attrs: { via: 'point_at' } }), { outcome: 'cancelled', errorCode: 'user_declined', attrs: { via: 'point_at', steps: 1, done: 0, kinds: 'click_at' } });
+  await t.close();
+  const ev = read(dir, '2026-10-30');
+  assert.deepEqual(ev.map((e) => `${e.step}:${e.kind}`), ['hands.act:start', 'hands.act:end', 'hands.act:start', 'hands.act:end']);
+  assert.equal(ev[1].request_id, rid);
+  assert.equal(ev[1].duration_ms, 800);
+  assert.equal(ev[1].outcome, 'error'); assert.equal(ev[1].error_code, 'access_denied');
+  assert.deepEqual(ev[1].attrs, { via: 'act_in_app', steps: 3, done: 1, kinds: 'fill/click_text', failed_step: 2 });
+  assert.equal(ev[3].outcome, 'cancelled'); assert.equal(ev[3].error_code, 'user_declined');
+}
+
 assert.equal(DEFAULTS.keepDays, 14);
 console.log('telemetry tests passed');

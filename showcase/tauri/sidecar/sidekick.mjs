@@ -5,7 +5,7 @@
 // in:  {type:'menu', id} {type:'answer', id, text} {type:'ui_ready'}
 // out: {type:'menu', items} {type:'ui', msg} {type:'overlays', ids}
 import { Agent } from '@kenkaiiii/gg-agent';
-import { BLOCK, checkDictationTarget, redactArgs } from './safety.mjs';
+import { BLOCK, checkDictationTarget, redactArgs, redactResult } from './safety.mjs';
 import { agentEvents } from './agentstream.mjs';
 import { agentUserAgent } from './useragent.mjs';
 import {
@@ -203,8 +203,16 @@ function onPointing({ kind, ms, marks, source, upscale, path: how, refineMs }) {
   const h = tel.start(step, { ...ctx, at: Date.now() - ms });
   tel.end(h, { outcome: 'ok', attrs: kind === 'marks' ? { marks, source } : { upscale } });
 }
+// Working another app (act_in_app, point_at clicks): step kinds, counts and the helper's code; typed text never.
+function onAct({ via, kinds, steps, done, ms, outcome, code, failedStep }) {
+  const id = toolCtx.getStore()?.toolCallId, parent = toolSteps.get(id);
+  const h = tel.start('hands.act', { requestId: parent?.requestId ?? current?.rid ?? null, parent: parent ?? current?.req ?? null, at: Date.now() - (ms || 0), attrs: { via } });
+  const errorCode = typeof code === 'string' && /^[a-z0-9_]{1,48}$/.test(code) ? code : outcome === 'ok' ? null : 'act_failed';
+  const kind = [...new Set((kinds ?? []).map(String))].join('/').slice(0, 64);
+  tel.end(h, { outcome: ['ok', 'cancelled'].includes(outcome) ? outcome : 'error', errorCode, attrs: { via, steps, done, kinds: kind, ...(failedStep ? { failed_step: failedStep } : {}) } });
+}
 const { tools: rawTools, hands, pointWaits, nextTurn } = createTools({
-  allowActions: () => config.allowActions, ui, ask, openUrl, userName, onCheck, onHandsTiming, onPointing,
+  allowActions: () => config.allowActions, ui, ask, openUrl, userName, onCheck, onHandsTiming, onPointing, onAct,
   imageLimits: () => imageLimits(config.model),
   commitmentsText: () => [commitmentsText(), doneTodayText() && `Done today:\n${doneTodayText()}`].filter(Boolean).join('\n'),
   onCommitments: (c) => { menu(); scheduleReminders(); showList({ flash: c?.id, seconds: 6 }); },
@@ -524,8 +532,8 @@ async function prompt(text, image = null, t = {}) {
         toolStep(e.toolCallId, e.name, a);
         ui({ kind: 'agent', e: { type: 'tool', id: e.toolCallId, anim: a } });
       } else if (e.type === 'tool_call_end') {
-        logLine(e.isError ? 'tool_error' : 'tool_done', { turn, id: e.toolCallId, ms: e.durationMs, result: String(e.result ?? '').replace(/\s+/g, ' ').slice(0, e.isError ? 1000 : 400) });
-        if (process.env.ROAMIES_USAGE) console.error(`[tool_end] ${e.isError ? 'ERROR' : 'ok'} ${Date.now() - (toolT.get(e.toolCallId) ?? Date.now())}ms ${String(typeof e.result === 'string' ? e.result : JSON.stringify(e.result ?? '')).replace(/\s+/g, ' ').slice(0, 160)}`);
+        logLine(e.isError ? 'tool_error' : 'tool_done', { turn, id: e.toolCallId, ms: e.durationMs, result: redactResult(e.name, String(e.result ?? '')).replace(/\s+/g, ' ').slice(0, e.isError ? 1000 : 400) });
+        if (process.env.ROAMIES_USAGE) console.error(`[tool_end] ${e.isError ? 'ERROR' : 'ok'} ${Date.now() - (toolT.get(e.toolCallId) ?? Date.now())}ms ${redactResult(e.name, String(typeof e.result === 'string' ? e.result : JSON.stringify(e.result ?? ''))).replace(/\s+/g, ' ').slice(0, 160)}`);
         toolT.delete(e.toolCallId);
         tel.end(toolSteps.get(e.toolCallId), e.isError ? { outcome: 'error', errorCode: 'tool_error' } : {});
         toolSteps.delete(e.toolCallId);

@@ -40,18 +40,18 @@ for (const app of [{ name: 'Google Chrome', appId: 'Chrome' }, { name: 'Settings
 }
 console.log('windows open-in-app plan tests: passed');
 
-// Seeing and pointing on each platform: Windows gets them with the helper, act_in_app stays macOS only.
+// Seeing, pointing and working other apps on each platform: Windows gets them all with the helper.
 {
   const { screenPrompt } = await import('../tools.mjs');
   const names = (platform, hands) => createTools({ allowActions: () => false, ui: noop, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: () => '', platform, hands }).tools.map((t) => t.name);
   const has = (list, n) => list.includes(n);
   const win = names('win32', 'C:\roamies-hands.exe'), winBare = names('win32', ''), mac = names('darwin', '/x/hands');
-  for (const n of ['list_windows', 'read_window', 'point_at']) { assert.ok(has(win, n), `win32 + helper offers ${n}`); assert.ok(!has(winBare, n), `win32 without helper hides ${n}`); assert.ok(has(mac, n), `mac offers ${n}`); }
-  assert.ok(!has(win, 'act_in_app') && !has(winBare, 'act_in_app') && has(mac, 'act_in_app'), 'act_in_app is macOS only');
+  for (const n of ['list_windows', 'read_window', 'point_at', 'act_in_app']) { assert.ok(has(win, n), `win32 + helper offers ${n}`); assert.ok(!has(winBare, n), `win32 without helper hides ${n}`); assert.ok(has(mac, n), `mac offers ${n}`); }
   const winTools = createTools({ allowActions: () => false, ui: noop, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: () => '', platform: 'win32', hands: 'C:\roamies-hands.exe' }).tools;
-  for (const t of winTools.filter((t) => ['take_screenshot', 'read_window', 'point_at', 'list_windows'].includes(t.name))) {
-    assert.doesNotMatch(t.description, /act_in_app|click_text/, `${t.name} on Windows doesn't mention Mac-only tools`);
-  }
+  const act = winTools.find((t) => t.name === 'act_in_app').description;
+  assert.match(act, /click_text/); assert.match(act, /click_at/); assert.match(act, /'ctrl\+l'/); assert.doesNotMatch(act, /cmd\+l/);
+  const pointDesc = winTools.find((t) => t.name === 'point_at').description;
+  assert.match(pointDesc, /Set click true/); assert.doesNotMatch(pointDesc, /isn't available/);
   assert.match(winTools.find((t) => t.name === 'take_screenshot').description, /screen:<n>/);
   // Model input never reaches the helper's command line unchecked.
   const byName = (n) => winTools.find((t) => t.name === n);
@@ -67,7 +67,11 @@ console.log('windows open-in-app plan tests: passed');
   const all = Object.values(p).join(' ');
   assert.match(all, /point_at/);
   assert.doesNotMatch(all, /pointing[^.]*Mac only/i, 'win32 + helper: pointing is not called Mac only');
-  assert.match(p.live, /Mac only/, 'still says what is Mac only (asking about an area, working other apps)');
+  assert.match(p.abilities, /act_in_app/, 'win32 + helper: working other apps is offered');
+  assert.match(p.live, /act_in_app work/);
+  assert.match(p.live, /area[^.]*Mac only/, 'asking about an area is still Mac only');
+  assert.doesNotMatch(all, /working other apps[^.]*Mac only/i);
+  assert.match(p.live, /administrator/, 'says admin apps cannot be worked');
   assert.ok(p.coords, 'coordinate rule is given');
   const bare = screenPrompt({ platform: 'win32', hands: '' });
   assert.match(bare.live, /pointing[^.]*Mac only/i, 'win32 without the helper: pointing is unavailable');
@@ -220,4 +224,69 @@ console.log('windows open-in-app plan tests: passed');
   } finally { process.chdir(cwd); }
   POINTING.refine = false;
   console.log('crop-and-refine tests: passed');
+}
+
+// Working other apps on Windows: the plan reaches the helper, risky clicks ask first, telemetry gets kinds and codes, never text.
+{
+  const dir = fs.mkdtempSync(path.join(TMP, 'fake-act-'));
+  const script = (name, body) => fs.writeFileSync(path.join(dir, name), body);
+  const win = { id: 4, app: 'msedge', title: 'Form' };
+  // act saves the plan it was given and prints the reply in act-reply.json.
+  script('act', `const fs = require('fs'); fs.writeFileSync('plan.json', process.argv[2]); console.log(fs.readFileSync('act-reply.json', 'utf8'))`);
+  const actReply = (v) => fs.writeFileSync(path.join(dir, 'act-reply.json'), JSON.stringify(v));
+  const ran = () => { const f = path.join(dir, 'plan.json'); if (!fs.existsSync(f)) return null; const v = JSON.parse(fs.readFileSync(f, 'utf8')); fs.rmSync(f); return v; };
+  script('find-text', `console.log(${JSON.stringify(JSON.stringify({ ok: true, matches: [{ source: 'uia', match: 'word', text: 'Delete', bounds: [300, 40, 60, 18] }] }))})`);
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    let answer = 'no'; const acts = [], asks = [];
+    const made = createTools({ allowActions: () => true, ui: (m) => { if (m.e?.type === 'point') made.pointWaits.get(m.e.id)?.(); }, ask: async (q) => { asks.push(q.placeholder); return answer; }, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'Ken', platform: 'win32', hands: process.execPath, onAct: (x) => acts.push(x) });
+    const act = made.tools.find((t) => t.name === 'act_in_app'), pointAt = made.tools.find((t) => t.name === 'point_at');
+
+    actReply({ ok: true, window: win, done: ['filled Email', 'clicked Submit'] });
+    const out = await act.execute({ target: 'front', steps: [{ do: 'fill', field: 'Email', text: 'ken@example.com' }, { do: 'click_text', text: 'Submit' }] }, { toolCallId: 'a1' });
+    assert.match(out, /filled Email, clicked Submit/);
+    assert.deepEqual(ran().steps.map((st) => st.do), ['fill', 'click_text']);
+    assert.equal(asks.length, 0, 'Submit needs no yes');
+    assert.deepEqual({ ...acts[0], ms: 0 }, { via: 'act_in_app', kinds: ['fill', 'click_text'], steps: 2, ms: 0, done: 2, outcome: 'ok', code: null, failedStep: null });
+    assert.doesNotMatch(JSON.stringify(acts), /ken@example/, 'typed text never reaches telemetry');
+
+    // Delete asks; "no" stops before the helper runs anything.
+    acts.length = 0;
+    await assert.rejects(act.execute({ steps: [{ do: 'click_text', text: 'Delete' }] }, { toolCallId: 'a2' }), /Ken said no/);
+    assert.equal(ran(), null, 'nothing ran after a no');
+    assert.match(asks.pop(), /Click "Delete"/);
+    assert.equal(acts[0].outcome, 'cancelled'); assert.equal(acts[0].code, 'user_declined');
+    answer = 'y';
+    actReply({ ok: true, window: win, done: ['clicked Delete'] });
+    await act.execute({ steps: [{ do: 'click_text', text: 'Delete' }] }, { toolCallId: 'a3' });
+    assert.equal(ran().steps[0].confirmed, true, 'a yes is sent as confirmed');
+
+    // Hands-off apps are refused before the helper is asked.
+    await assert.rejects(act.execute({ target: 'KeePass', steps: [{ do: 'type', text: 'x' }] }, { toolCallId: 'a4' }), /Blocked for safety/);
+    assert.equal(ran(), null);
+
+    // Helper refusals reach the model as given, with their code in telemetry.
+    acts.length = 0;
+    const admin = 'Notepad is running as administrator, so Roamies cannot work it. Ask the user to do this step.';
+    actReply({ ok: false, code: 'access_denied', error: admin });
+    await assert.rejects(act.execute({ target: 'Notepad', steps: [{ do: 'type', text: 'hello' }] }, { toolCallId: 'a5' }), (e) => e.message === admin);
+    assert.equal(acts[0].outcome, 'error'); assert.equal(acts[0].code, 'access_denied');
+    actReply({ ok: false, code: 'not_editable', error: 'Step 2: that field is read-only.' });
+    acts.length = 0; ran();
+    await assert.rejects(act.execute({ steps: [{ do: 'key', key: 'tab' }, { do: 'type', text: 'x' }] }, { toolCallId: 'a6' }), /read-only/);
+    assert.equal(acts[0].failedStep, 2); assert.equal(acts[0].done, 1);
+
+    // point_at click on a risky label asks too, and sends the yes.
+    asks.length = 0; answer = 'y';
+    actReply({ ok: true, window: win, done: ['clicked'] });
+    assert.match(await pointAt.execute({ target: 'front', text: 'Delete', say: 'here', click: true }, { toolCallId: 'p1' }), /clicked it/);
+    assert.match(asks[0], /Click "Delete"/);
+    const st = ran().steps[0];
+    assert.equal(st.do, 'click_at'); assert.equal(st.confirmed, true);
+    answer = 'no';
+    await assert.rejects(pointAt.execute({ target: 'front', text: 'Delete', say: 'here', click: true }, { toolCallId: 'p2' }), /said no/);
+    assert.equal(ran(), null);
+  } finally { process.chdir(cwd); }
+  console.log('windows act tests: passed');
 }

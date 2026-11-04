@@ -1,4 +1,4 @@
-// The agent's tools: screen capture, reading and working other apps (macOS "hands" helper), files, commands,
+// The agent's tools: screen capture, reading and working other apps (the "hands" helper on macOS and Windows), files, commands,
 // web pages and memory. Every file, command, URL and open goes through safety.mjs first.
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -62,11 +62,11 @@ export function screenPrompt({ platform = process.platform, hands = HANDS } = {}
   const mac = platform === 'darwin', winSees = platform === 'win32' && !!hands;
   return {
     abilities: mac ? ' and work other apps for them: fill in forms, type, click buttons (read_window, then act_in_app)'
-      : winSees ? ', and list and read app windows and point at things on screen (list_windows, read_window, point_at)' : '',
+      : winSees ? ', list and read app windows, point at things on screen (list_windows, read_window, point_at), and work other apps for them: fill in forms, type, click buttons (read_window, then act_in_app)' : '',
     coords: mac || winSees ? 'Screenshot coordinates are always absolute pixels of your latest screenshot, never a 0–1000 scale; for anything bigger than an icon, give point_at a box.\n' : '',
     howTo: mac ? '"how do I add a layer mask"' : 'a how-to',
     live: mac ? ''
-      : winSees ? ' take_screenshot works here: the whole screen, one monitor (screen:2, list_windows lists them) or one app window, so look when asked what is on screen. list_windows, read_window and point_at work here too, so when asked where something is, point at it. Asking about an area and working other apps (act_in_app, clicking or typing for them) are Mac only for now; point and tell them what to click.'
+      : winSees ? ' take_screenshot works here: the whole screen, one monitor (screen:2, list_windows lists them) or one app window, so look when asked what is on screen. list_windows, read_window, point_at and act_in_app work here too, so when asked where something is, point at it, and when asked to do something in an app, do it. Apps running as administrator, password managers and terminals cannot be worked: tell the user to do that step themselves. Asking about an area is Mac only for now.'
       : ' take_screenshot works here (it always captures the whole screen), so look when asked what is on screen. Asking about an area, reading app windows, pointing and working other apps are Mac only for now.',
   };
 }
@@ -108,10 +108,10 @@ export const imageBlock = async (file, mediaType) => {
 };
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, onHandsTiming = null, onPointing = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, onHandsTiming = null, onPointing = null, onAct = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS }) {
   const MAC = platform === 'darwin', WIN = platform === 'win32';
-  // Seeing and pointing need the helper; working other apps (act_in_app, clicks) is macOS only for now.
-  const CAN_SEE = MAC || (WIN && !!handsBin), CAN_ACT = MAC;
+  // Seeing, pointing and working other apps (act_in_app, clicks) need the helper on Windows.
+  const CAN_SEE = MAC || (WIN && !!handsBin), CAN_ACT = MAC || (WIN && !!handsBin);
   const pxUnit = WIN ? { unit: 'px' } : {}; // Windows rects are physical pixels; the host converts them per monitor
   // Each safety check reports its verdict and time (telemetry agent.safety); the checks themselves are unchanged.
   const timed = (check, fn) => (...a) => {
@@ -173,10 +173,27 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         if (Date.now() - axNudged > 60_000) { axNudged = Date.now(); openUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'); }
         throw new Error('Accessibility is off for Roamies, so I can\'t read or control other apps yet. I just opened System Settings → Privacy & Security → Accessibility: switch on Roamies there, then ask again. Tell the user exactly that, briefly.');
       }
-      throw new Error(res.error || 'That did not work.');
+      throw Object.assign(new Error(res.error || 'That did not work.'), { code: res.code ?? null });
     }
     return res;
   }
+  // One act run, timed for telemetry (hands.act): step kinds, counts and the helper's code, never typed text.
+  async function runAct(plan, via) {
+    const t0 = performance.now(), kinds = plan.steps.map((st) => String(st.do));
+    const report = (o) => onAct?.({ via, kinds, steps: kinds.length, ms: performance.now() - t0, ...o });
+    try {
+      const res = await hands('act', JSON.stringify(plan));
+      report({ done: Array.isArray(res.done) ? res.done.length : kinds.length, outcome: 'ok', code: null, failedStep: null });
+      return res;
+    } catch (err) {
+      // The helper names the failing step only in its message ("Step 3: …").
+      const n = Number(/^Step (\d+):/.exec(String(err?.message ?? ''))?.[1]) || null;
+      report({ done: n ? n - 1 : 0, outcome: 'error', code: err?.code ?? null, failedStep: n });
+      throw err;
+    }
+  }
+  // A "no" to a risky click, reported like a helper refusal so it shows in telemetry.
+  const declined = (steps, via) => onAct?.({ via, kinds: steps.map((st) => String(st.do)), steps: steps.length, done: 0, ms: 0, outcome: 'cancelled', code: 'user_declined', failedStep: null });
   // A yes/no in an input bubble. Stop (or the turn ending) counts as no.
   async function confirm(question, ctx) {
     const answer = await ask({ placeholder: question }, ctx?.signal);
@@ -405,11 +422,19 @@ ${res.note}` : ''}${ocr}`;
           const done = new Promise((resolve) => pointWaits.set(ctx.toolCallId, resolve));
           ui({ kind: 'agent', e: { type: 'point', id: ctx.toolCallId, rect, say: text, step, of: total, label, ...pxUnit } });
           await done;
-          if (click && !CAN_ACT) return `Pointed at ${label || 'the spot'}. Clicking isn't available on Windows yet, so ask the user to click it.`;
+          if (click && !CAN_ACT) return `Pointed at ${label || 'the spot'}. Clicking isn't available here, so ask the user to click it.`;
           if (click) {
             if (!allowActions()) throw new Error(actionsOff);
-            if (id != null) await hands('act', JSON.stringify({ steps: [{ do: 'click', id: liveId }], ...(t === 'front' ? {} : { app: t }) }));
-            else await hands('act', JSON.stringify({ steps: [{ do: 'click_at', x: at[0], y: at[1], global: true }], ...(t === 'front' || t === 'screen' ? {} : { app: t }) }));
+            const st = id != null ? { do: 'click', id: liveId } : { do: 'click_at', x: at[0], y: at[1], global: true };
+            // Same yes as act_in_app: the helper refuses risky ids without it and can't label-check click_at.
+            if (label && isRiskyClick(label)) {
+              if (!(await confirm(`Click "${label}"${t === 'front' || t === 'screen' ? '' : ` in ${t}`}? It could delete, pay, send or sign out. Type y to let me.`, ctx))) {
+                declined([st], 'point_at');
+                throw new Error(`${userName} said no, so I didn't click "${label}".`);
+              }
+              st.confirmed = true;
+            }
+            await runAct({ steps: [st], ...(t === 'front' || (id == null && t === 'screen') ? {} : { app: t }) }, 'point_at');
             if (lastShot) lastShot.used = true;
           } else if (wait_for_user) {
             // Give them time to do it themselves before the next step.
@@ -422,7 +447,7 @@ ${res.note}` : ''}${ocr}`;
     ...(CAN_ACT ? [
       {
         name: 'act_in_app',
-        description: "Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and point_at find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape', 'cmd+l'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} absolute pixels in your latest screenshot (never 0–1000), last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.",
+        description: `Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and point_at find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape', '${WIN ? 'ctrl+l' : 'cmd+l'}'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} absolute pixels in your latest screenshot (never 0–1000), last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.`,
         parameters: z.object({
           target: z.string().optional(),
           steps: z.array(z.object({
@@ -435,7 +460,7 @@ ${res.note}` : ''}${ocr}`;
         executionMode: 'sequential',
         execute: async ({ target = 'front', steps }, ctx) => {
           if (!allowActions()) throw new Error(actionsOff);
-          const asked = String(target || 'front');
+          const asked = screenTarget(String(target || 'front'));
           // Stay on the exact window read for this request: an app can have several, and keystrokes must land in this one.
           const sameApp = lastRead?.turn === turn && (asked === 'front' || (lastRead.app ?? '').toLowerCase().includes(asked.toLowerCase()) || (asked.toLowerCase() === 'browser'));
           const t = sameApp ? `window:${lastRead.win}` : asked;
@@ -452,9 +477,10 @@ ${res.note}` : ''}${ocr}`;
           }
           // Delete, pay, send, sign out: ask first, whatever the request was. The helper refuses these clicks without it.
           for (const s of mapped) {
-            const label = s.do === 'click_text' ? s.text : s.do === 'click' ? s.label : s.do === 'choose' ? s.option : null;
+            const label = safety.clickLabel(s);
             if (label && isRiskyClick(label)) {
               if (!(await confirm(`Click "${label}"${asked === 'front' ? '' : ` in ${asked}`}? It could delete, pay, send or sign out. Type y to let me.`, ctx))) {
+                declined(mapped, 'act_in_app');
                 throw new Error(`${userName} said no, so I didn't click "${label}" (nothing after it ran either).`);
               }
               s.confirmed = true;
@@ -464,13 +490,13 @@ ${res.note}` : ''}${ocr}`;
           const plan = { steps: mapped, ...(t === 'front' ? {} : t.startsWith('window:') ? { window: +t.slice(7) } : { app: t }) };
           let res;
           try {
-            try { res = await hands('act', JSON.stringify(plan)); }
+            try { res = await runAct(plan, 'act_in_app'); }
             catch (err) {
               // The window read earlier closed (a date picker or popup): use the app's front window instead.
               if (!plan.window || !/No matching window/.test(String(err?.message ?? err))) throw err;
               delete plan.window;
               if (asked !== 'front' && lastRead?.app) plan.app = lastRead.app;
-              res = await hands('act', JSON.stringify(plan));
+              res = await runAct(plan, 'act_in_app');
             }
           } finally { if (lastShot && mapped.some((s) => s.do !== 'wait')) lastShot.used = true; }
           if (!res.controls) return `In ${res.window.app}: ${res.done.join(', ')}.`;

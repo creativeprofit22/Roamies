@@ -274,3 +274,28 @@ console.log('redirect into new file tests: all passed');
   ]);
   console.log('screen target tests: passed');
 }
+
+// The label each act step would click, shared by act_in_app and point_at; values read from apps stay out of the log.
+{
+  const { clickLabel, redactResult } = await import('../safety.mjs');
+  assert.equal(clickLabel({ do: 'click_text', text: 'Delete' }), 'Delete');
+  assert.equal(clickLabel({ do: 'click', id: 3, label: 'Send' }), 'Send');
+  assert.equal(clickLabel({ do: 'click', id: 3 }), null);
+  assert.equal(clickLabel({ do: 'choose', field: 'Plan', option: 'Cancel my subscription' }), 'Cancel my subscription');
+  assert.equal(clickLabel({ do: 'focus', id: 2, label: 'Search' }), 'Search');
+  assert.equal(clickLabel({ do: 'type', text: 'delete me' }), null);
+  assert.equal(clickLabel({ do: 'key', key: 'delete' }), null);
+  assert.equal(clickLabel({ do: 'fill', field: 'Email', text: 'x' }), null);
+  assert.equal(clickLabel(null), null);
+  const out = 'In Edge: filled Email.\n3 edit "Email" = "ken@example.com" (focused)\n4 button "Submit"';
+  for (const name of ['act_in_app', 'read_window']) {
+    const r = redactResult(name, out);
+    assert.ok(!r.includes('ken@example.com'), `${name} result hides field values`);
+    assert.match(r, /3 edit "Email" = \[15 chars\] \(focused\)/);
+    assert.match(r, /4 button "Submit"/);
+  }
+  assert.equal(redactResult('read_window', 'a = "say \\"hi\\""'), 'a = [10 chars]');
+  assert.equal(redactResult('read_file', 'x = "secret"'), 'x = "secret"');
+  assert.equal(redactResult('act_in_app', undefined), '');
+  console.log('click label and result redaction tests: passed');
+}

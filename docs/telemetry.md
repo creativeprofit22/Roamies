@@ -99,7 +99,7 @@ Every error path that shows a bubble or logs also writes an event with outcome `
 |---|---|
 | `agent.request`, `agent.turn` | `not_signed_in`, `rate_limited`, `auth`, `failed`; cancels (outcome `cancelled`): `user_stop` (Stop menu), `interrupted` (a new talk), `aborted` |
 | `agent.tool` / `agent.safety` | `tool_error` / `safety_blocked` |
-| `hands.act` | the helper's code: `hands_off`, `access_denied` (app running as administrator), `confirm`, `blocked_key`, `focus`, `covered`, `mismatch`, `not_editable`, `keys_held`, `input`, `timeout`, `not_found`, or `act_failed` when it gave none; `user_declined` (cancelled) |
+| `hands.act` | the helper's code: `hands_off`, `access_denied` (app running as administrator), `confirm`, `blocked_key`, `focus`, `covered`, `mismatch`, `not_editable`, `keys_held`, `input`, `timeout`, `not_found`, `usage` (unknown key, point off every screen), `minimized` (a window `act` can't restore), `unavailable` (UI Automation couldn't start), `dpi` (the thread isn't Per-Monitor V2), or `act_failed` when it gave none; `user_declined` (cancelled) |
 | `voice.session` | `no_input`, `unavailable`, `nothing_heard`, `permission`, `user_cancel` (cancelled) |
 | `voice.warmup` | `model_load_failed` |
 | `ui.error_shown` (the bubble) | `sign_in_needed`, `permission`, `no_input`, `nothing_heard`, `dictation_off`, `stt_failed`, `dictation_blocked`, `paste_failed`, `login_failed`, `login_busy`, `login_item_approval`, `snap_failed`, `update_failed`, `update_download_failed`, voice model download codes |

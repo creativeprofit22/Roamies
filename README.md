@@ -57,7 +57,10 @@ your Dock.
 Voice works best on macOS 26+, which doesn't need Siri or Dictation turned on. On Windows, voice runs
 Moonshine speech on your PC by default (about 140 MB, downloaded once from the setup guide), so your
 voice never leaves it. For the best accuracy, switch to NVIDIA's Parakeet (about 670 MB, no live text) in the
-tray's Settings › Voice Engine. Window reading, pointing and app control are macOS only for now.
+tray's Settings › Voice Engine. Roamies also reads app windows, points at things and works other apps on
+Windows (fills in forms, clicks and types). It never reads or types in apps running as administrator or in
+password managers, and never types or clicks in terminals. Asking about an area of the screen is macOS only
+for now.
 
 ## Get started
 

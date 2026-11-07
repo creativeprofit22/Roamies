@@ -32,6 +32,10 @@ pub(crate) fn watch_screenshots(app: AppHandle) {
             if fade || fade != faded {
                 set_overlay_alpha(&app, if fade { 0.0 } else { 1.0 });
             }
+            if fade != faded {
+                // The natively drawn sidekick (voice helper) steps aside with the overlays.
+                crate::voice::to_voice(&app, &serde_json::json!({ "cmd": "buddy_alpha", "a": if fade { 0.0 } else { 1.0 } }));
+            }
             faded = fade;
         }
     });

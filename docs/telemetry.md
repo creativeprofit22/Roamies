@@ -102,7 +102,7 @@ Every error path that shows a bubble or logs also writes an event with outcome `
 | `hands.act` | the helper's code: `hands_off`, `access_denied` (app running as administrator), `confirm`, `blocked_key`, `focus`, `covered`, `mismatch`, `not_editable`, `keys_held`, `input`, `timeout`, `not_found`, `usage` (unknown key, point off every screen), `minimized` (a window `act` can't restore), `unavailable` (UI Automation couldn't start), `dpi` (the thread isn't Per-Monitor V2), or `act_failed` when it gave none; `user_declined` (cancelled) |
 | `voice.session` | `no_input`, `unavailable`, `nothing_heard`, `permission`, `user_cancel` (cancelled) |
 | `voice.warmup` | `model_load_failed` |
-| `ui.error_shown` (the bubble) | `sign_in_needed`, `permission`, `no_input`, `nothing_heard`, `dictation_off`, `stt_failed`, `dictation_blocked`, `paste_failed`, `login_failed`, `login_busy`, `login_item_approval`, `snap_failed`, `update_failed`, `update_download_failed`, voice model download codes |
+| `ui.error_shown` (the bubble) | `sign_in_needed`, `permission`, `no_input`, `nothing_heard`, `dictation_off`, `stt_failed`, `dictation_blocked`, `paste_failed`, `login_failed`, `login_busy`, `login_item_approval`, `snap_failed`, `update_failed`, `update_download_failed`, voice model download codes, Fish Audio spoken replies: `fish_key_invalid`, `fish_key_failed`, `fish_unreachable`, `fish_voice_failed`, `fish_key_save_failed`, `fish_key_remove_failed` |
 | `dictation.check` | `dictation_blocked` |
 | `host.dictation_paste` and its parts | `paste_failed`, `copy_failed`, `key_send_failed` |
 | `host.helper_start` / `host.helper_exit` | `helper_missing`, `helper_spawn_failed` / `helper_crashed` |

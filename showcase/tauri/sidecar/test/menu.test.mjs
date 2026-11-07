@@ -48,3 +48,7 @@ console.log('menu tests passed');
 assert.ok(ids(trayMenu(snap({ platform: 'win32', canSnap: true }), { compact: true })).includes('snap'));
 assert.ok(!ids(trayMenu(snap({ platform: 'win32', canSnap: false }), { compact: true })).includes('snap'));
 console.log('menu snap tests passed');
+
+// The creature's name follows the chosen look (upstream's looks); Sidekick when none is given.
+const named = trayMenu(snap({ name: 'Pixel' }), { compact: true });
+assert.ok(named.some((i) => i.label === 'Show Pixel') && named.some((i) => i.label === 'Ask Pixel…'));

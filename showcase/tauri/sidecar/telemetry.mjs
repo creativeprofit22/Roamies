@@ -78,6 +78,9 @@ export function createTelemetry({
   fs = fsp, now = Date.now, mono = () => performance.now(), redact = redactText, timer = true, ...opts
 } = {}) {
   const cfg = { ...DEFAULTS, ...opts };
+  // Exact secret values (say, the Fish Audio key, plain hex the generic redactor can't spot) are cut first.
+  const secrets = new Set();
+  const scrub = (v, o) => { let s = v; for (const k of secrets) s = s.split(k).join('[REDACTED]'); return redact(s, o); };
   let queue = [], on = !!enabled, text = !!includeText;
   const sizes = new Map(), capped = new Set();
   const lost = { queue_full: 0, write_failed: 0, invalid: 0 };
@@ -152,7 +155,7 @@ export function createTelemetry({
     if (!batch.length) return;
     const groups = new Map();
     for (const e of batch) {
-      const c = cleanEvent(e, { includeText: text, redact });
+      const c = cleanEvent(e, { includeText: text, redact: scrub });
       if (!c) { lost.invalid++; stats.dropped++; continue; }
       const day = dayOf(c.ts);
       if (!groups.has(day)) groups.set(day, []);
@@ -199,6 +202,7 @@ export function createTelemetry({
     async close() { if (iv) clearInterval(iv); await flush(); },
     setEnabled(v) { on = !!v; if (!on) queue = []; },
     setIncludeText(v) { text = !!v; },
+    addSecret(v) { if (typeof v === 'string' && v.trim().length >= 8) secrets.add(v.trim()); },
     get enabled() { return on; },
     get includeText() { return text; },
     get pending() { return queue.length; },

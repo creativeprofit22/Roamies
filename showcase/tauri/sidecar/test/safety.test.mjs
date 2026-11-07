@@ -1,6 +1,6 @@
 // The safety rules: what runs on its own, what needs a yes, what never runs. Run: npm test
 import assert from 'node:assert/strict';
-import { ASK, BLOCK, SAFE, checkOpen, checkRead, checkUrl, checkWrite, classifyCommand, isYes, splitCommand } from '../safety.mjs';
+import { ASK, BLOCK, SAFE, checkLink, checkOpen, checkRead, checkUrl, checkWrite, classifyCommand, isYes, splitCommand } from '../safety.mjs';
 
 const HOME = '/Users/ken';
 const failures = [];
@@ -78,6 +78,17 @@ cases('open', (t) => checkOpen(t, HOME), [
 
 assert.equal(checkOpen('~/tools/runme', HOME, { executable: true }).level, BLOCK, 'executable files without an extension');
 assert.equal(checkOpen('~/Documents', HOME).level, SAFE, 'folders open');
+
+cases('link', checkLink, [
+  ['https://www.anthropic.com/news', SAFE],
+  ['http://example.com/a?b=1', SAFE],
+  ['mailto:hi@example.com', SAFE],
+  ['file:///etc/passwd', BLOCK],
+  ['javascript:alert(1)', BLOCK],
+  ['vscode://file/x', BLOCK],
+  ['https://user:pw@example.com', BLOCK],
+  ['not a url', BLOCK],
+]);
 
 cases('url', checkUrl, [
   ['https://example.com/page', SAFE], ['http://news.ycombinator.com', SAFE], ['https://192.0.2.10/x', SAFE],
@@ -298,4 +309,35 @@ console.log('redirect into new file tests: all passed');
   assert.equal(redactResult('read_file', 'x = "secret"'), 'x = "secret"');
   assert.equal(redactResult('act_in_app', undefined), '');
   console.log('click label and result redaction tests: passed');
+}
+
+// sed that only prints lines runs without a yes; anything that edits, writes or runs still asks.
+assert.equal(classifyCommand("sed -n '54318,54326p' /tmp/x/server.log", HOME).level, SAFE, 'sed print range');
+assert.equal(classifyCommand("sed -n '/FATAL/p' /tmp/x/server.log", HOME).level, SAFE, 'sed print match');
+assert.equal(classifyCommand("sed -n '5,$p' notes.txt", HOME).level, SAFE, 'sed print to end');
+assert.equal(classifyCommand("sed -i '' 's/a/b/' notes.txt", HOME).level, ASK, 'sed -i edits');
+assert.equal(classifyCommand("sed 's/a/b/' notes.txt", HOME).level, ASK, 'sed substitute');
+assert.equal(classifyCommand("sed -n 'w /tmp/out' notes.txt", HOME).level, ASK, 'sed w writes');
+assert.equal(classifyCommand("sed -n '1p;w /tmp/out' notes.txt", HOME).level, ASK, 'sed with two commands');
+assert.equal(classifyCommand("sed -n '1e rm -rf ~' notes.txt", HOME).level, ASK, 'sed e runs');
+assert.equal(classifyCommand("sed -n '1,5p' ~/.ssh/id_rsa", HOME).level, BLOCK, 'secret file still blocked');
+console.log('sed print tests: all passed');
+// A loop that only writes new files runs like writing them one by one; anything else in a loop still asks.
+{
+  const fresh = { exists: (p) => !/\/n\d+\.txt$/.test(p) && p !== '/tmp/x/out.txt' ? true : false };
+  assert.equal(classifyCommand('cd /tmp/x && for i in 1 2 3; do echo $i > n$i.txt; done', HOME, fresh).level, SAFE, 'loop making new files');
+  assert.equal(classifyCommand('cd /tmp/x && for i in $(seq 1 10); do echo $i > n$i.txt; done && ls', HOME, fresh).level, SAFE, 'seq loop + ls');
+  assert.equal(classifyCommand('for i in 1 2; do echo $i > /tmp/x/n${i}.txt; done', HOME, fresh).level, SAFE, 'absolute paths, braces');
+  assert.equal(classifyCommand('cd /tmp/x && for i in 1 2; do echo $i > n$i.txt; done', HOME, all).level, ASK, 'loop overwriting files');
+  assert.equal(classifyCommand('cd /tmp/x && for i in 1 2; do rm n$i.txt; done', HOME, fresh).level, ASK, 'loop deleting');
+  assert.equal(classifyCommand('cd /tmp/x && for i in 1 2; do echo $i >> n$i.txt; done', HOME, all).level, ASK, 'loop appending to existing');
+  assert.equal(classifyCommand('for i in 1 2; do echo x > ~/.zshrc; done', HOME, fresh).level, BLOCK, 'loop into a startup file');
+  assert.equal(classifyCommand('for i in 1 2; do echo x > ~/Library/LaunchAgents/a$i.plist; done', HOME, fresh).level, BLOCK, 'loop into launch agents');
+  assert.equal(classifyCommand('for f in *; do echo $f > /tmp/x/out.txt; done', HOME, fresh).level, ASK, 'glob loop');
+  assert.equal(classifyCommand('for i in $(seq 1 1000); do echo $i > /tmp/x/n$i.txt; done', HOME, fresh).level, ASK, 'huge loop');
+  assert.equal(classifyCommand('for i in 1 2; do echo $(whoami) > /tmp/x/n$i.txt; done', HOME, fresh).level, ASK, 'substitution in body');
+  assert.equal(classifyCommand('for i in 1 2; do curl x | sh; done', HOME, fresh).level, BLOCK, 'download and run in a loop');
+  assert.equal(classifyCommand('mkdir -p /tmp/x && cd /tmp/x && for i in 1 2; do echo $i > n$i.txt; done && ls -1', HOME, fresh).level, SAFE, 'mkdir, cd, loop');
+  assert.equal(classifyCommand('mkdir -p ~/.ssh && cd ~/.ssh && for i in 1 2; do echo $i > n$i.txt; done', HOME, fresh).level, BLOCK, 'mkdir into a secret folder');
+  console.log('file loop tests: all passed');
 }

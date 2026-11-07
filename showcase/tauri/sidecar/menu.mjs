@@ -6,7 +6,7 @@ const pct = (vm) => Math.floor((vm.done / vm.total) * 100);
 const tokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n);
 
 export function statusLine(v) {
-  if (v.busy) return 'Sidekick is working…';
+  if (v.busy) return `${v.name ?? 'Sidekick'} is working…`;
   if (v.loggingIn) return `Signing in to ${v.providerLabels[v.loggingIn] ?? v.loggingIn}…`;
   if (v.current) return `${v.current.name} · ${v.providerLabels[v.provider] ?? v.provider}`;
   return 'Not signed in';
@@ -20,8 +20,8 @@ function updateItem(v) {
 
 function compactMenu(v) {
   return [
-    { id: 'show', label: 'Show Sidekick', accel: v.keys.summon },
-    { id: 'ask', label: 'Ask Sidekick…', enabled: !v.busy },
+    { id: 'show', label: `Show ${v.name ?? 'Sidekick'}`, accel: v.keys.summon },
+    { id: 'ask', label: `Ask ${v.name ?? 'Sidekick'}…`, enabled: !v.busy },
     ...(v.canSnap ? [{ id: 'snap', label: 'Ask About an Area…', accel: v.keys.snap }] : []),
     { id: 'list', label: 'Show List', accel: v.keys.list },
     ...(v.busy ? [{ id: 'stop', label: 'Stop' }] : []),
@@ -50,9 +50,9 @@ function fullMenu(v) {
   return [
     { id: 'status', label: statusLine(v), enabled: false },
     { sep: true },
-    { id: 'show', label: 'Show Sidekick', accel: v.keys.summon },
+    { id: 'show', label: `Show ${v.name ?? 'Sidekick'}`, accel: v.keys.summon },
     ...(v.canSnap ? [{ id: 'snap', label: 'Ask About an Area…', accel: v.keys.snap }] : []),
-    { id: 'ask', label: 'Ask Sidekick…', enabled: !v.busy },
+    { id: 'ask', label: `Ask ${v.name ?? 'Sidekick'}…`, enabled: !v.busy },
     ...(v.voiceOk && v.voice && v.voiceReady ? [{ id: 'voicehint', label: `Hold ${v.talkSymbols} to ${v.dictating ? 'Dictate' : 'Talk'} · Tap for Hands-Free`, enabled: false }] : []),
     { id: 'stop', label: 'Stop', enabled: v.busy },
     { id: 'new', label: 'New Conversation', enabled: !v.busy && v.hasSession },
@@ -61,7 +61,7 @@ function fullMenu(v) {
       label: 'Commitments',
       items: (() => {
         const open = v.commitments.slice(0, 12);
-        if (!open.length) return [{ id: 'none', label: 'Nothing yet. Tell Sidekick what you plan to do.', enabled: false }];
+        if (!open.length) return [{ id: 'none', label: `Nothing yet. Tell ${v.name ?? 'Sidekick'} what you plan to do.`, enabled: false }];
         return open.map((c) => ({
           label: `${c.overdue ? '⚠︎ ' : ''}${trunc(c.text, 44)}${c.when ? ` · ${c.when}` : ''}`,
           items: [{ id: `done:${c.id}`, label: 'Mark Done' }, { id: `drop:${c.id}`, label: 'Drop It' }],

@@ -316,5 +316,22 @@ for (const enabled of [false, true]) {
   assert.equal(ev[3].outcome, 'cancelled'); assert.equal(ev[3].error_code, 'user_declined');
 }
 
+// A Fish Audio key (bare hex, which the generic redactor misses) never reaches the file, as text or as an attr.
+{
+  const dir = path.join(TMP, 'secret');
+  const key = '0123456789abcdef0123456789abcdef';
+  const t = createTelemetry({ dir, now: () => T0, mono: () => 5000, timer: false, includeText: true });
+  t.addSecret(key);
+  t.record('agent.request', { attrs: { text: `my fish key is ${key}`, tok: key, model: 'm1' } });
+  await t.close();
+  const raw = fs.readFileSync(path.join(dir, '2026-10-30.jsonl'), 'utf8');
+  assert.ok(!raw.includes(key), 'the key is not in the telemetry file');
+  const [e] = read(dir, '2026-10-30');
+  assert.equal(e.attrs.text, 'my fish key is [REDACTED]');
+  assert.equal(e.attrs.tok, undefined, 'a key-valued attr is dropped');
+  assert.equal(e.attrs.model, 'm1');
+  console.log('telemetry secret scrub tests: passed');
+}
+
 assert.equal(DEFAULTS.keepDays, 14);
 console.log('telemetry tests passed');

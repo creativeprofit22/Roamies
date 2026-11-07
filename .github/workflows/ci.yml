@@ -15,10 +15,16 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Linux for the shared code, macOS for the Swift helpers; Windows is covered by the jobs below.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     defaults:
       run:
+        shell: bash
         working-directory: showcase/tauri
     steps:
       - uses: actions/checkout@v7
@@ -43,6 +49,7 @@ jobs:
 
       # Tauri's Linux build dependencies (v2.tauri.app/start/prerequisites, Debian list).
       - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
@@ -53,9 +60,15 @@ jobs:
         with:
           workspaces: showcase/tauri/src-tauri -> target
 
-      # Copies the web files into dist/, bundles the sidecar, then `cargo build` (debug).
+      # Copies the web files into dist/, bundles the sidecar, then `cargo build` (debug). On macOS this also
+      # compiles the Swift helpers.
       - name: Build
         run: ./build.sh dev
+
+      - name: Test the macOS voice helper
+        if: runner.os == 'macOS'
+        run: |
+          src-tauri/binaries/roamies-voice-"$(rustc -vV | sed -n 's/^host: //p')" --test-gain
 
       # Host unit tests (voice engine registry).
       - name: Test host

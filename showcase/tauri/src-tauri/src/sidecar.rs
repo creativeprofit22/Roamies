@@ -43,7 +43,7 @@ fn sidecar_script(app: &AppHandle) -> PathBuf {
 pub(crate) fn spawn_sidecar(app: &AppHandle) {
     let Some(node) = find_node() else {
         telemetry::record_error("host.sidecar_start", None, "node_missing", Default::default());
-        fallback_menu(app, "Sidekick's runtime is missing; reinstall Roamies");
+        fallback_menu(app, "Roamies is missing a part; reinstall it");
         return;
     };
     let attempt = ATTEMPT.fetch_add(1, Ordering::Relaxed) + 1;
@@ -65,7 +65,7 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) {
         Ok(c) => c,
         Err(e) => {
             telemetry::record_error("host.sidecar_start", None, "sidecar_spawn_failed", telemetry::attrs(json!({ "attempt": attempt })));
-            fallback_menu(app, &format!("Sidekick failed to start: {e}"));
+            fallback_menu(app, &format!("Roamies failed to start: {e}"));
             return;
         }
     };
@@ -106,7 +106,7 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) {
         let (outcome, err) = if code == Some(0) { (telemetry::Outcome::Ok, None) } else { (telemetry::Outcome::Error, Some("sidecar_exited")) };
         telemetry::end(exit, outcome, err, telemetry::attrs(json!({ "code": code, "attempt": attempt })));
         let app2 = app.clone();
-        let _ = app.run_on_main_thread(move || fallback_menu(&app2, "Sidekick stopped"));
+        let _ = app.run_on_main_thread(move || fallback_menu(&app2, "Roamies stopped"));
     });
 }
 

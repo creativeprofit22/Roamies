@@ -4,20 +4,29 @@
 <meta charset="utf-8">
 <title>Roamies on the desktop</title>
 <style>
+  /* Bubble and research-card text (the setup guide's body font). */
+  @font-face { font-family: "Martian Mono"; src: url("onboarding/fonts/martian-mono.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
-  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; touch-action: none; }
+  /* Sized and moved by core.js to cover just what's drawn. */
+  canvas { position: fixed; left: 0; top: 0; display: block; cursor: grab; touch-action: none; transform-origin: 0 0; will-change: transform; }
   canvas:active { cursor: grabbing; }
 </style>
 </head>
 <body>
 <canvas id="stage" aria-label="Roamies roaming the desktop"></canvas>
 <script src="roamies/core.js"></script>
+<script src="roamies/markdown.js"></script>
 <script src="roamies/sfx.js"></script>
+<script src="roamies/voice-out.js"></script>
 <script src="roamies/agent.js"></script>
 <script src="roamies/agent-tools.js"></script>
+<script src="roamies/agent-cards.js"></script>
+<script src="roamies/agent-panel.js"></script>
+<script src="roamies/jarvis.js"></script>
+<script src="roamies/people.js"></script>
 <script src="roamies/10-dither.js"></script>
 <script src="roamies/12-sidekick.js"></script>
-<script>Roamie.bootDesktop(document.getElementById("stage"));</script>
+<script>Roamie.bootDesktop(document.getElementById("stage")); document.fonts.load('500 13px "Martian Mono"');</script>
 <script src="roamies/telemetry.js"></script>
 <script src="roamies/host.js"></script>
 </body>

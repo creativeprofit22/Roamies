@@ -88,6 +88,21 @@ function pickTextMatch(matches, find) {
   // OCR bounds are already narrowed to the matched words, so a long recognised line is fine there.
   return (matches ?? []).find((m) => m.match !== 'partial' && (m.source === 'ocr' || m.text.trim().length <= Math.max(40, q.length * 3))) ?? null;
 }
+// An app named in read_window or act_in_app that isn't open: open it (with the open tool's safety check) and wait
+// up to 6 s for its window. True when it's there. Only plain app names, never paths or links.
+async function launchApp(name, hands) {
+  const n = String(name).trim();
+  if (process.platform !== 'darwin' || !n || /[/\\:]/.test(n) || safety.checkOpen(n, HOME).level === BLOCK) return false;
+  // Opened only to act in it: in background mode (the default) it opens behind the user's app, not in front.
+  const r = await run('open', [...(process.env.ROAMIES_BG !== '0' ? ['-g'] : []), '-a', n]);
+  if (r.err && /Unable to find application/i.test(r.stderr)) throw new Error(`There's no app called "${n}" on this Mac (not installed, or it has another name). Don't look for it another way; say so and carry on with the rest.`);
+  if (r.err) return false;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    if (await hands('locate', `app:${n}`).then((r) => r?.ok !== false && r?.window, () => false)) { await new Promise((r) => setTimeout(r, 300)); return true; }
+  }
+  return false;
+}
 // read_window and act_in_app output: visible controls first, then up to 15 scrolled out of view.
 function controlList(controls, texts = [], canAct = true) {
   const vis = controls.filter((c) => !c.offscreen), off = controls.filter((c) => c.offscreen).slice(0, 15);
@@ -118,7 +133,32 @@ export const imageBlock = async (file, mediaType) => {
 };
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, onHandsTiming = null, onPointing = null, onAct = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS }) {
+const BROWSERS = /^(browser|safari|google chrome|chrome|arc|firefox|microsoft edge|edge|brave browser|brave|opera|vivaldi)$/i;
+const ADDRESS = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]\S*)?$/i;
+/** The web address an act_in_app call only types into a browser's address bar (then Return, then maybe a wait), or null. */
+export function typedAddress(target, steps) {
+  if (!BROWSERS.test(String(target).trim())) return null;
+  const i = steps.findIndex((s) => s.do === 'type');
+  if (i < 0 || !ADDRESS.test(String(steps[i].text ?? '').trim()) || /\.app$/i.test(steps[i].text)) return null;
+  const bar = /address|search field|smart search|url|location|new tab|omnibox/i;
+  const before = steps.slice(0, i).every((s) => (s.do === 'key' && /^(cmd|command)\+(l|t)$/i.test(String(s.key).replace(/\s/g, ''))) || (s.do === 'click_text' && bar.test(s.text ?? '')));
+  const ret = steps[i + 1]?.do === 'key' && /^(return|enter)$/i.test(String(steps[i + 1].key).trim());
+  const after = steps.slice(i + 2).every((s) => s.do === 'wait');
+  return before && ret && after ? String(steps[i].text).trim() : null;
+}
+
+// One line for the live state: which app, window and page is in front right now. Query strings and
+// fragments are dropped (they can hold tokens), and long titles are cut.
+export function frontLine(f, who = 'The user') {
+  if (!f?.app) return '';
+  const cut = (t, n) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+  let url = '';
+  try { if (f.url) { const u = new URL(f.url); url = /^https?:$/.test(u.protocol) ? cut(u.host + u.pathname.replace(/\/$/, ''), 120) : ''; } } catch { /* not a URL */ }
+  const title = f.title ? ` — "${cut(String(f.title).replace(/\s+/g, ' ').trim(), 120)}"` : '';
+  return `- Right now ${who} is in ${f.app}${title}${url ? ` (${url})` : ''}. This was just checked and overrides any app or page from earlier messages; they can still ask about something elsewhere.`;
+}
+
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onCheck = null, onHandsTiming = null, onPointing = null, onAct = null, imageLimits = () => ({ maxEdge: 1568, maxTokens: 1568 }), platform = process.platform, hands: handsBin = HANDS, onPlan = () => {} }) {
   const MAC = platform === 'darwin', WIN = platform === 'win32';
   // Seeing, pointing and working other apps (act_in_app, clicks) need the helper on Windows.
   const CAN_SEE = MAC || (WIN && !!handsBin), CAN_ACT = MAC || (WIN && !!handsBin);
@@ -155,7 +195,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   async function shotPoint(x, y) { await checkShot(); return shotPixel(lastShot, x, y); }
   // The control that read_window listed at this id, wherever it is now.
   async function liveControls(spec) {
-    const fresh = await hands('ui', spec);
+    // Only the controls: the page's text isn't needed to re-find ids.
+    const fresh = await hands('ui', spec, 'controls');
     const problem = readProblem(lastRead, fresh.window.id, turn);
     if (problem) throw new Error(problem);
     return (id) => {
@@ -265,7 +306,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     if (CAN_SEE) {
       const s = spec(screenTarget(String(target || 'screen').trim()));
       // Find the window first so the camera animation can frame the real thing (screen points), then shoot.
-      if (!/^screen(:\d+)?$/i.test(s) && ctx?.toolCallId) {
+      // macOS shoots straight away (the Roamie only shows a "looking" tag); Windows still frames the window first.
+      if (WIN && !/^screen(:\d+)?$/i.test(s) && ctx?.toolCallId) {
         const at = await hands('locate', s).catch(() => null);
         if (at?.window) {
           ui({ kind: 'agent', e: { type: 'tool_target', id: ctx.toolCallId, window: at.window, ...pxUnit } });
@@ -280,8 +322,10 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       const uiRead = POINTING.marks && !/^screen(:\d+)?$/i.test(s) ? handsRaw(['ui', s, ...(WIN ? ['--budget-ms', '1500'] : [])]).catch(() => null) : null;
       const res = WIN
         ? await hands('capture', file, s, '--fit', `${limits.maxEdge}x${Number.isFinite(limits.maxTokens) ? limits.maxTokens : 0}`)
-        : await hands('capture', file, s);
-      const size = WIN ? (Array.isArray(res.sent) ? res.sent : null) : await fitImage(file, limits);
+        : await hands('capture', file, s, String(limits.maxEdge));
+      // macOS: the helper shrinks to the edge cap and says the final size (an older one doesn't); sips covers the rest.
+      const macFits = (p) => Array.isArray(p) && p.length === 2 && resizedSize(p[0], p[1], limits.maxEdge, limits.maxTokens).every((v, i) => v === p[i]);
+      const size = WIN ? (Array.isArray(res.sent) ? res.sent : null) : macFits(res.pixels) ? res.pixels : await fitImage(file, limits);
       const bounds = res.window?.bounds ?? res.bounds;
       let where = {};
       if (WIN && bounds) {
@@ -369,7 +413,11 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         execute: async ({ target = 'front' }) => {
           const t = screenTarget(String(target || 'front'));
           if (/^screen(:\d+)?$/i.test(t)) throw new Error("read_window reads one app window: use 'front', an app name or 'window:<id>', not a screen.");
-          const [res, all] = await Promise.all([hands('ui', spec(t)), hands('windows').catch(() => null)]);
+          const read = () => Promise.all([hands('ui', spec(t)), hands('windows').catch(() => null)]);
+          const [res, all] = await read().catch(async (err) => {
+            if (t === 'front' || !/No matching window/.test(String(err?.message ?? err)) || !(await launchApp(t, hands))) throw err;
+            return read();
+          });
           lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
           const others = (all?.windows ?? []).filter((w) => w.app === res.window.app && w.id !== res.window.id).length;
           const head = `${res.window.app}${res.window.title ? ` — ${res.window.title}` : ''}${others ? ` (front window; ${res.window.app} has ${others} more, which point_at with text also searches)` : ''}`;
@@ -457,20 +505,31 @@ ${res.note}` : ''}${ocr}`;
     ...(CAN_ACT ? [
       {
         name: 'act_in_app',
-        description: `Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and point_at find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape', '${WIN ? 'ctrl+l' : 'cmd+l'}'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} absolute pixels in your latest screenshot (never 0–1000), last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.`,
+        description: `Do things in another app for the user: click, fill in forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order; put a whole task in one call. {do:'click_text', text} clicks a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text} fills one text field: field is its label or placeholder as shown (or id), it replaces the text and checks it took; use one fill per field, never click a label and type. {do:'choose', field, option} picks an option in a dropdown, select menu, type-to-search box or picker: it opens it, types or scrolls through the list (hundreds of options, even lists that only load rows as they scroll) and picks; field is its label or id. Never scroll a dropdown list yourself. To go to a web address, use the open tool (instant), not the address bar. Many identical buttons or fields (a Reply under every post): add near, words from that item (author or first words of the post), to click_text or fill and it uses the one belonging to that item, scrolling to it. {do:'scroll', direction:'down'|'up'|'left'|'right', amount, text or id} scrolls the page, or the list or panel under that text or control; needed only for content that loads as you scroll: {do:'scroll', direction:'down', to_end:true} keeps going until the feed stops loading more, in one step; then read_window lists everything that loaded. Things already on the page don't need scrolling: click_text, fill and point_at find them anywhere on it and scroll there themselves. {do:'click', id}; {do:'key', key} e.g. 'return', 'tab', 'escape', '${WIN ? 'ctrl+l' : 'cmd+l'}'; {do:'type', text} only when the cursor is already in a text field; {do:'click_at', x, y} absolute pixels in your latest screenshot (never 0–1000), last resort; {do:'wait', seconds}. Dates: fill the date field with the date as the page shows dates (e.g. 10/30/2026); if a calendar opens instead, choose the month and year, then click_text the day (its label often reads like 'Choose Friday, October 30th, 2026'). After the steps the result lists the window's controls and text as they are now (after scrolls too), with fresh ids and field values, so check them there instead of calling read_window again. Never submit payments, send messages or delete things unless the user clearly asked for exactly that; showing or pointing at a button is not a request to click it. Clicks on delete, pay, send or sign-out buttons always ask the user first, so when they asked you to click one, call act_in_app right away instead of asking in your reply; the app asks them.`,
         parameters: z.object({
           target: z.string().optional(),
           steps: z.array(z.object({
-            do: z.enum(['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait']),
+            // read_window and take_screenshot aren't steps (the result already shows the window), but models put them
+            // in anyway; they're dropped instead of failing the whole call.
+            do: z.enum(['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'wait', 'read_window', 'take_screenshot', 'screenshot']),
             id: z.number().int().optional(), field: z.string().optional(), text: z.string().optional(), option: z.string().optional(), near: z.string().optional(),
             key: z.string().optional(), direction: z.enum(['down', 'up', 'left', 'right']).optional(), amount: z.number().int().optional(), to_end: z.boolean().optional(),
             x: z.number().optional(), y: z.number().optional(), seconds: z.number().optional(),
           })).min(1).max(40),
         }),
         executionMode: 'sequential',
-        execute: async ({ target = 'front', steps }, ctx) => {
+        execute: async ({ target = 'front', steps: given }, ctx) => {
           if (!allowActions()) throw new Error(actionsOff);
           const asked = screenTarget(String(target || 'front'));
+          const steps = given.filter((s) => !['read_window', 'take_screenshot', 'screenshot'].includes(s.do));
+          if (!steps.length) throw new Error('Those steps only read the window. Use read_window or take_screenshot for that.');
+          // "Type a web address into the browser's bar and press Return" is just opening a link: do that directly
+          // (instant, and nothing can land in the wrong field) instead of clicking the bar and typing.
+          const url = typedAddress(asked, steps);
+          if (url) {
+            const r = await tools.find((x) => x.name === 'open').execute({ target: url, app: /^(front|browser)$/i.test(asked) ? undefined : asked });
+            return `${r} (went straight to the address instead of typing it)`;
+          }
           // Stay on the exact window read for this request: an app can have several, and keystrokes must land in this one.
           const sameApp = lastRead?.turn === turn && (asked === 'front' || (lastRead.app ?? '').toLowerCase().includes(asked.toLowerCase()) || (asked.toLowerCase() === 'browser'));
           const t = sameApp ? `window:${lastRead.win}` : asked;
@@ -498,20 +557,28 @@ ${res.note}` : ''}${ocr}`;
             delete s.label;
           }
           const plan = { steps: mapped, ...(t === 'front' ? {} : t.startsWith('window:') ? { window: +t.slice(7) } : { app: t }) };
+          const act = () => runAct(plan, 'act_in_app');
           let res;
           try {
-            try { res = await runAct(plan, 'act_in_app'); }
+            try { res = await act(); }
             catch (err) {
+              // The app isn't open yet: open it (the same check as the open tool) and go on, instead of a round trip.
+              if (plan.app && /No matching window/.test(String(err?.message ?? err)) && await launchApp(plan.app, hands)) { res = await act(); return finish(res); }
               // The window read earlier closed (a date picker or popup): use the app's front window instead.
               if (!plan.window || !/No matching window/.test(String(err?.message ?? err))) throw err;
               delete plan.window;
               if (asked !== 'front' && lastRead?.app) plan.app = lastRead.app;
-              res = await runAct(plan, 'act_in_app');
+              res = await act();
             }
-          } finally { if (lastShot && mapped.some((s) => s.do !== 'wait')) lastShot.used = true; }
-          if (!res.controls) return `In ${res.window.app}: ${res.done.join(', ')}.`;
-          lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
-          return `In ${res.window.app}: ${res.done.join(', ')}.\nNow showing: ${res.window.title || res.window.app}\n${controlList(res.controls, res.texts)}`;
+          } finally {
+            if (lastShot && mapped.some((s) => s.do !== 'wait')) lastShot.used = true;
+          }
+          return finish(res);
+          function finish(res) {
+            if (!res.controls) return `In ${res.window.app}: ${res.done.join(', ')}.`;
+            lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
+            return `In ${res.window.app}: ${res.done.join(', ')}.\nNow showing: ${res.window.title || res.window.app}\n${controlList(res.controls, res.texts)}`;
+          }
         },
       },
     ] : []),
@@ -540,7 +607,7 @@ ${res.note}` : ''}${ocr}`;
       },
     },
     {
-      name: 'write_file', description: 'Create or overwrite a text file with the given content (missing folders are made). Use this, not run_command, to create or change files: a new file needs no yes from the user; overwriting asks them.',
+      name: 'write_file', description: 'Create or overwrite a text file with the given content (missing folders are made). Use this, not run_command, to create or change files: a new file needs no yes from the user; overwriting asks them. Several new files: one write_file call each, all in the same turn (a shell loop that makes files has to ask).',
       parameters: z.object({ path: z.string(), content: z.string() }), executionMode: 'sequential',
       execute: async ({ path: p, content }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
@@ -554,7 +621,7 @@ ${res.note}` : ''}${ocr}`;
       },
     },
     {
-      name: 'run_command', description: "Run a shell command in the user's home folder and return its output. Use it for what the other tools can't do (counting, sorting, wc, mdfind, git, moving or copying); to open a file, folder, app or link use the open tool, which needs no yes. Prefer write_file for creating or editing files; never edit with sed -i or tee. A > redirect into a new file is fine; overwriting an existing file, and commands that change things, make the user confirm first, which is slow.",
+      name: 'run_command', description: "Run a shell command in the user's home folder and return its output. Use it for what the other tools can't do (counting, sorting, wc, mdfind, git, moving or copying); to open a file, folder, app or link use the open tool, which needs no yes. Prefer write_file for creating or editing files (several files: one write_file call each, in the same turn); never edit with sed -i or tee, and never make files in a shell loop (for/while), which always needs a yes. A > redirect into a new file is fine; overwriting an existing file, and commands that change things, make the user confirm first, which is slow.",
       parameters: z.object({ command: z.string() }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
       execute: async ({ command }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
@@ -595,10 +662,14 @@ ${res.note}` : ''}${ocr}`;
       name: 'open', description: `Open a website, a file or folder, or ${process.platform === 'win32' ? 'an app by its Start-menu name (e.g. "Spotify", "Settings", "Calculator", "https://skool.com", "~\\Documents")' : 'a Mac app by name (e.g. "Safari", "https://skool.com", "~/Documents")'}. Links open in the default browser; set app to open one in a particular browser or app (e.g. app "Safari" when the user says "in Safari").`,
       parameters: z.object({ target: z.string(), app: z.string().optional() }),
       execute: async ({ target, app }) => {
-        const t = String(target).trim();
+        let t = String(target).trim();
+        // A bare web address ("example.com", "www.bbc.co.uk/news") is a link, not an app name: it used to fail as
+        // "Unable to find application named example.com" and cost a retry. App bundles ("Notes.app") stay apps.
+        if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]\S*)?$/i.test(t) && !/\.app$/i.test(t)) t = `https://${t}`;
         const isFile = /^[~/.]/.test(t) && await fs.stat(expand(t)).then((s) => s.isFile() && (s.mode & 0o111) !== 0, () => false);
         allowed(checkOpen(t, HOME, { executable: isFile }));
-        const isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(t), isPath = /^[~/.]/.test(t) || /^[a-z]:\\/i.test(t);
+        // mailto: has no //, but it's a link too (it used to be taken for an app name and fail).
+        const isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(t) || /^mailto:/i.test(t), isPath = /^[~/.]/.test(t) || /^[a-z]:\\/i.test(t);
         let r;
         const inApp = app && process.platform === 'darwin' && (isUrl || isPath) ? ['-a', String(app)] : [];
         if (process.platform === 'darwin') r = await run('open', isUrl || isPath ? [...inApp, isPath ? expand(t) : t] : ['-a', t]);
@@ -625,6 +696,8 @@ ${res.note}` : ''}${ocr}`;
           return `Opened ${t} in ${match.app.name}.`;
         } else if (process.platform === 'win32') r = await winOpen(isPath ? expand(t) : t);
         else r = await run('xdg-open', [isPath ? expand(t) : t]);
+        // Not installed: say so plainly, so the model doesn't go hunting for it with scripts (which need a yes each).
+        if (r.err && /Unable to find application/i.test(r.stderr)) throw new Error(`There's no app called "${inApp.length ? app : t}" on this Mac (not installed, or it has another name). Don't look for it another way; tell ${userName} and carry on with the rest.`);
         if (r.err) throw new Error(process.platform === 'win32' ? `Couldn't open ${t}${winSaid(r.stderr)}.` : r.stderr.trim() || `Couldn't open ${t}.`);
         if (lastShot) lastShot.used = true;
         return `Opened ${t}${inApp.length ? ` in ${app}` : ''}.`;
@@ -668,6 +741,17 @@ ${res.note}` : ''}${ocr}`;
       execute: async ({ id }) => { const f = await forgetFact(id); if (!f) throw new Error(`No fact with id ${id}.`); return `Forgot: ${f.text}`; },
     },
     {
+      // The step trail on screen. Free to call: always alongside other tool calls, never in a turn of its own.
+      name: 'plan_steps',
+      description: 'Shows the user a checklist of the parts of a request with 3 or more separate parts (do x, then y, then z). First call: steps, a few words each, in order, in the same turn as your first action. After that, in the same turn as the tool calls that do a part, call it with now: [that part\'s number(s), from 1]; it ticks off by itself when those calls succeed. A part you skip or can\'t do: skipped: [{step, why}], why in a few plain words, in the same turn as your next tool call. Never call it in a turn on its own, and never for one- or two-part requests.',
+      parameters: z.object({
+        steps: z.array(z.string()).min(2).max(8).optional(),
+        now: z.array(z.number().int()).optional(),
+        skipped: z.array(z.object({ step: z.number().int(), why: z.string() })).optional(),
+      }),
+      execute: async (args) => { onPlan(args); return 'ok'; },
+    },
+    {
       name: 'show_list', description: "Show the user their list on screen (reminders and commitments, Today and Later). Use when they ask to see their list, to-dos or reminders; then answer in a few words, don't read it all out.",
       parameters: z.object({}),
       execute: async () => { showList(); return 'The list is on screen.'; },
@@ -679,5 +763,12 @@ ${res.note}` : ''}${ocr}`;
     },
   ];
 
-  return { tools, hands, pointWaits, nextTurn: () => ++turn };
+  // What's in front, for the live state. Quick and never fails: '' if the helper is missing, slow or denied.
+  // Windows' helper has no `front` verb yet, so the live state there leaves this line out.
+  async function whereNow() {
+    if (!MAC || !handsBin) return '';
+    const r = await run(handsBin, ['front'], { timeout: 900 });
+    try { return frontLine(JSON.parse(r.stdout.trim().split('\n').pop() || '{}'), userName); } catch { return ''; }
+  }
+  return { tools, hands, whereNow, pointWaits, nextTurn: () => ++turn };
 }

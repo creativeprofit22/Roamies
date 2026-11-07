@@ -4,7 +4,10 @@
 // (quick tap) on a pause or the next press-and-release. Hold ⌃⌥ = push-to-talk (release sends). Quick tap = hands-free
 // (ends on a pause or another tap). JSON lines on stdout; exits when stdin closes.
 // Modifier state is read with CGEventSource, which needs no Input Monitoring permission.
+// While ⌃⌥ is held the mouse draws on the screen (ink.swift); the marked area goes out with what was said.
+// While listening, a small voice-bar pill rides beside the cursor (wave.swift) instead of a transcript bubble.
 import AVFoundation
+import AppKit
 import CoreAudio
 import CoreGraphics
 import Foundation
@@ -157,7 +160,7 @@ final class LegacyRecognizer: Recognizer {
         if rec.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
         if #available(macOS 13, *) { req.addsPunctuation = true }
         req.taskHint = .dictation
-        req.contextualStrings = ["Sidekick", "Skool", "Yaatuber", "Roamies", "YouTube", "TikTok"]
+        req.contextualStrings = ["Roamies", "Roamie", "JARVIS"]
         task = rec.recognitionTask(with: req) { result, error in
             DispatchQueue.main.async {
                 if let result {
@@ -211,6 +214,37 @@ enum OutputMute {
     }
 }
 
+// Some mics (many USB, headset and webcam ones) deliver speech near -50 dBFS, too faint for Speech to make
+// out words. Boost quiet speech toward ordinary level, at most +20 dB; normal and loud mics pass through as is.
+// Only sounds well above the room's noise count as speech, so silence alone never raises the boost.
+final class AutoGain {
+    static let target: Float = 0.05 // about -26 dBFS RMS, ordinary speech
+    static let maxGain: Float = 10
+    private(set) var gain: Float = 1
+    private var noise: Float = 0, speech: Float = 0
+
+    /// Feed one buffer's RMS (before boosting); returns the boost for it.
+    func next(_ rms: Float) -> Float {
+        noise = noise == 0 ? max(rms, 1e-5) : rms < noise ? max(rms, 1e-5) : noise * 1.002
+        if rms > noise * 3 && rms > 1e-4 { speech = max(speech, rms) } else { speech *= 0.998 }
+        let want = speech > 0 ? min(Self.maxGain, max(1, Self.target / speech)) : 1
+        // Down at once so a louder voice never clips; up gradually (about 0.5 s from 1x to 10x).
+        gain = want < gain ? want : min(want, gain * 1.1)
+        return gain
+    }
+
+    /// Boosts the buffer in place, ramping from the previous boost to avoid clicks.
+    func apply(_ buffer: AVAudioPCMBuffer, rms: Float) {
+        let from = gain, to = next(rms)
+        guard let ch = buffer.floatChannelData, from != 1 || to != 1 else { return }
+        let n = Int(buffer.frameLength), step = (to - from) / Float(max(n, 1))
+        for c in 0 ..< Int(buffer.format.channelCount) {
+            let x = ch[c]
+            for i in 0 ..< n { x[i] = min(1, max(-1, x[i] * (from + step * Float(i + 1)))) }
+        }
+    }
+}
+
 final class Voice {
     enum Phase { case idle, armed, holding, handsFree, finishing }
 
@@ -218,6 +252,8 @@ final class Voice {
     private var chordAt = 0.0, listenAt = 0.0, heardAt = 0.0, voiceAt = 0.0, levelAt = 0.0, releasedAt: Double?
     private var blocked = false, prevChord = false, authorizing = false, reportEmpty = false, failed = false
     private var engine: AVAudioEngine?
+    // Kept across sessions (same mic, usually), so later takes start at the right boost.
+    private let autoGain = AutoGain()
     private var rec: Recognizer?
     private var best = ""
     private var finishTimer: Timer?
@@ -269,7 +305,13 @@ final class Voice {
         return false
     }
 
+    let ink = Ink()
+    let wave = Wave()
+    let buddy = Buddy()
+
     func tick() {
+        // Drawing follows the keys: only while ⌃⌥ is down for a talk.
+        defer { ink.setArmed(phase == .armed || phase == .holding); wave.tick(); buddy.tick() }
         let now = uptime()
         let f = CGEventSource.flagsState(.combinedSessionState).intersection(Self.allMods)
         let held = f.intersection(chordMask)
@@ -309,7 +351,7 @@ final class Voice {
         }
     }
 
-    private func end(_ why: String) { log("session end: \(why) after \(String(format: "%.1f", uptime() - listenAt))s") }
+    private func end(_ why: String) { log("session end: \(why) after \(String(format: "%.1f", uptime() - listenAt))s, mic boost \(String(format: "%.1f", autoGain.gain))x") }
 
     // ---------- session ----------
 
@@ -317,7 +359,11 @@ final class Voice {
         phase = .armed
         chordAt = now
         best = ""
-        if dryRun { return }
+        // The drawing layer first: starting the mic below holds this thread for a moment (longer with Bluetooth),
+        // and a drag begun in that moment would otherwise land in the app underneath.
+        ink.setArmed(true)
+        // ROAMIES_VOICE_DRYRUN_TEXT: what a dry run "hears", to test what goes out with the words (like pen marks).
+        if dryRun { best = ProcessInfo.processInfo.environment["ROAMIES_VOICE_DRYRUN_TEXT"] ?? ""; return }
         // Already allowed: start the mic now so the first word isn't lost. Otherwise wait until
         // the press is clearly a talk (hold or tap), so shortcuts like ⌃⌥S never trigger a prompt.
         if authorized { startAudio() }
@@ -336,7 +382,9 @@ final class Voice {
             }
         }
         if !dryRun { OutputMute.begin() }
-        emit(["type": "state", "state": "listening", "mode": mode])
+        wave.show()
+        // wave: the cursor shows the listening, so the app shows no listening bubble.
+        emit(["type": "state", "state": "listening", "mode": mode, "wave": true])
         if !best.isEmpty { emit(["type": "partial", "text": best]) }
     }
 
@@ -345,6 +393,9 @@ final class Voice {
         let shown = phase != .armed
         reportEmpty = shown && !failed
         phase = .finishing
+        wave.think()
+        wave.setHidden(true)
+        ink.capture { [weak self] in self?.wave.setHidden(false) }
         if shown { emit(["type": "state", "state": "processing"]) }
         guard let r = rec, !failed else { stopAudio(); finalize(); return }
         // Keep the mic open a moment after release so a word said while letting go isn't clipped.
@@ -366,11 +417,22 @@ final class Voice {
         rec?.cancel(); rec = nil
         phase = .idle
         let text = best.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty { emit(["type": "final", "text": text]) }
-        emit(["type": "state", "state": "idle"])
-        // Listened but got no words: say so instead of closing silently.
-        if text.isEmpty && reportEmpty { emit(["type": "error", "code": "nothing_heard", "spoke": voiceAt > listenAt + 0.05]) }
+        if text.isEmpty { wave.hide() } else { wave.awaitAnswer() }
+        let empty = text.isEmpty && reportEmpty, spoke = voiceAt > listenAt + 0.05
         reportEmpty = false
+        let rest = {
+            emit(["type": "state", "state": "idle"])
+            // Listened but got no words: say so instead of closing silently.
+            if empty { emit(["type": "error", "code": "nothing_heard", "spoke": spoke]) }
+        }
+        if text.isEmpty { ink.clear(); rest(); return }
+        // What was marked on screen while talking rides along with the words.
+        ink.take { area in
+            var msg: [String: Any] = ["type": "final", "text": text]
+            if let area { msg["area"] = area }
+            emit(msg)
+            rest()
+        }
     }
 
     private func cancel() {
@@ -379,6 +441,8 @@ final class Voice {
         finishTimer?.invalidate(); finishTimer = nil
         phase = .idle
         reportEmpty = false
+        ink.clear()
+        wave.hide()
         emit(["type": "state", "state": "idle", "cancelled": true])
     }
 
@@ -450,13 +514,16 @@ final class Voice {
             emit(["type": "error", "code": "no_input"])
             return cancel()
         }
+        let gain = autoGain
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            r.append(buffer)
-            guard let samples = buffer.floatChannelData?[0] else { return }
+            guard let samples = buffer.floatChannelData?[0] else { r.append(buffer); return }
             let n = Int(buffer.frameLength)
             var sum: Float = 0
             for i in 0 ..< n { sum += samples[i] * samples[i] }
             let rms = sqrt(sum / Float(max(n, 1)))
+            gain.apply(buffer, rms: rms)
+            r.append(buffer)
+            // Level and pause detection use the mic's own level, so boosted room noise can't hold a session open.
             let level = min(1, max(0, (Double(20 * log10(max(rms, 1e-7))) + 55) / 40))
             DispatchQueue.main.async { self?.onLevel(level) }
         }
@@ -484,6 +551,7 @@ final class Voice {
     private func onLevel(_ v: Double) {
         let now = uptime()
         if v > 0.2 { voiceAt = now }
+        if phase == .holding || phase == .handsFree { wave.setLevel(v) }
         guard phase == .holding || phase == .handsFree, now - levelAt >= 0.05 else { return }
         levelAt = now
         emit(["type": "level", "v": (v * 100).rounded() / 100])
@@ -531,6 +599,29 @@ func permStatus() -> [String: Any] {
     ]
 }
 let args = CommandLine.arguments
+// --test-gain checks the quiet-mic boost with made-up levels; exits 1 on a failure.
+if args.contains("--test-gain") {
+    var bad = 0
+    func check(_ name: String, _ ok: Bool) { print("\(ok ? "ok" : "FAIL") \(name)"); if !ok { bad += 1 } }
+    func run(_ g: AutoGain, _ rms: Float, _ n: Int) { for _ in 0 ..< n { _ = g.next(rms) } }
+    var g = AutoGain(); run(g, 0.001, 50); run(g, 0.06, 50)
+    check("normal mic stays at 1x", g.gain == 1)
+    g = AutoGain(); run(g, 0.0003, 50); run(g, 0.003, 30)
+    check("quiet mic (-50 dB) boosted to 10x within 0.7 s", g.gain == AutoGain.maxGain)
+    g = AutoGain(); run(g, 0.0003, 50); run(g, 0.01, 50)
+    check("slightly quiet mic boosted just to ordinary level", abs(g.gain - 5) < 0.01)
+    g = AutoGain(); run(g, 0.0005, 500)
+    check("silence alone never boosted", g.gain == 1)
+    g = AutoGain(); run(g, 0.0003, 50); run(g, 0.003, 50); _ = g.next(0.2)
+    check("loud sound drops the boost at once", g.gain == 1)
+    let fmt = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 4)!
+    buf.frameLength = 4
+    for c in 0 ..< 2 { for i in 0 ..< 4 { buf.floatChannelData![c][i] = 0.5 } }
+    g = AutoGain(); run(g, 0.0003, 50); run(g, 0.003, 50); g.apply(buf, rms: 0.003)
+    check("boost applies to every channel and never clips", (0 ..< 2).allSatisfy { c in buf.floatChannelData![c][3] == 1 })
+    exit(bad == 0 ? 0 : 1)
+}
 if args.contains("--perms") { emit(permStatus()); exit(0) }
 if let i = args.firstIndex(of: "--request"), i + 1 < args.count {
     let done = DispatchSemaphore(value: 0)
@@ -555,6 +646,11 @@ Thread.detachNewThread {
         switch msg["cmd"] as? String {
         case "cancel": DispatchQueue.main.async { voice.externalCancel() }
         case "listen": DispatchQueue.main.async { voice.listenNow() }
+        // The sidekick is answering (it appears where the cursor is): the listening pill can go.
+        case "handoff": DispatchQueue.main.async { voice.wave.hide() }
+        // The sidekick following the cursor in its cursor form, drawn here (buddy.swift) until the page takes it back.
+        case "buddy": DispatchQueue.main.async { if msg["on"] as? Bool == true { voice.buddy.show(msg) } else { voice.buddy.hide() } }
+        case "buddy_alpha": if let a = msg["a"] as? Double { DispatchQueue.main.async { voice.buddy.setHidden(a < 0.5) } }
         case "chord": if let mods = msg["mods"] as? [String] { DispatchQueue.main.async { voice.setChord(mods) } }
         case "mute": if let on = msg["on"] as? Bool { DispatchQueue.main.async { OutputMute.enabled = on; if !on { OutputMute.end() } } }
         default: break
@@ -573,4 +669,6 @@ for sig in [SIGTERM, SIGINT, SIGHUP] {
     signalSources.append(src)
 }
 emit(["type": "ready", "engine": voice.engineName, "dryRun": dryRun])
-RunLoop.main.run()
+// An app run loop (no Dock icon) so the drawing panels get mouse events.
+NSApplication.shared.setActivationPolicy(.accessory)
+NSApplication.shared.run()

@@ -15,10 +15,14 @@ static SUMMON_ID: AtomicU32 = AtomicU32::new(0);
 /// Id of the registered "ask about an area" hotkey.
 static SNAP_ID: AtomicU32 = AtomicU32::new(0);
 static LIST_ID: AtomicU32 = AtomicU32::new(0);
+/// Id of the Esc hotkey, held only while the Roamie is on screen (0 when it isn't).
+static ESC_ID: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     // The hotkey manager must live on the main thread; it also owns the current show/hide hotkey.
     static HOTKEYS: RefCell<Option<(global_hotkey::GlobalHotKeyManager, [Option<global_hotkey::hotkey::HotKey>; 3])>> = const { RefCell::new(None) };
+    // The overlays that have the Roamie (or its card, or its ask field) on screen right now.
+    static ESC_UP: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 /// Request ids for the talk chord (docs/telemetry.md, "Request ids"): one pending id the helper already has,
@@ -200,7 +204,12 @@ pub(crate) fn start_voice(app: &AppHandle) {
             let app2 = app.clone();
             let _ = app.run_on_main_thread(move || handle_voice(&app2, msg));
         }
-        // Exited. If it is still the wanted helper, it died on its own: retry a few times.
+        // Exited: anything it was drawing is gone, so the page draws the sidekick again.
+        {
+            let app2 = app.clone();
+            let _ = app.run_on_main_thread(move || to_sidekick_buddy(&app2, &json!({ "state": "gone" })));
+        }
+        // If it is still the wanted helper, it died on its own: retry a few times.
         let state = app.state::<Voice>();
         let (ours, code) = {
             let mut slot = state.0.lock().unwrap();
@@ -290,6 +299,20 @@ pub(crate) fn init_hotkeys(app: &AppHandle) {
         let summon = e.id() == SUMMON_ID.load(Ordering::Relaxed);
         let snap = e.id() == SNAP_ID.load(Ordering::Relaxed);
         let list = e.id() == LIST_ID.load(Ordering::Relaxed);
+        let esc = e.id() != 0 && e.id() == ESC_ID.load(Ordering::Relaxed);
+        if esc {
+            // The panel has the keyboard: Esc closes it, as it would without this hotkey.
+            let app2 = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let panel = app2.get_webview_window(PANEL_LABEL).filter(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false));
+                if panel.is_some() {
+                    hide_panel(&app2, "esc");
+                } else {
+                    to_overlays(&app2, &json!({ "kind": "esc" }));
+                }
+            });
+            return;
+        }
         if !summon && !snap && !list {
             return;
         }
@@ -451,7 +474,44 @@ fn track_talk(tel: &telemetry::Telemetry, t: &mut Talk, msg: &Value, streaming: 
     (t.current.clone(), next)
 }
 
+/// Esc stops the Roamie's answer, or sends it away when it's idle (overlay host.js decides which). Global, so it
+/// works without clicking the Roamie first; that means other apps don't get Esc meanwhile, so it's held only
+/// while some overlay has the Roamie on screen. Must run on the main thread.
+pub(crate) fn set_esc(app: &AppHandle, label: &str, on: bool) {
+    use global_hotkey::hotkey::{Code, HotKey};
+    let any = ESC_UP.with(|up| {
+        let mut up = up.borrow_mut();
+        if on {
+            up.insert(label.to_owned());
+        } else {
+            up.remove(label);
+        }
+        // An overlay that closed (its screen went away) can't say it's done.
+        up.retain(|l| app.get_webview_window(l).is_some());
+        !up.is_empty()
+    });
+    HOTKEYS.with(|h| {
+        let mut h = h.borrow_mut();
+        let Some((manager, _)) = h.as_mut() else { return };
+        let key = HotKey::new(None, Code::Escape);
+        let held = ESC_ID.load(Ordering::Relaxed) != 0;
+        if any && !held {
+            match manager.register(key) {
+                Ok(()) => ESC_ID.store(key.id(), Ordering::Relaxed),
+                Err(e) => eprintln!("esc hotkey: {e}"),
+            }
+        } else if !any && held {
+            let _ = manager.unregister(key);
+            ESC_ID.store(0, Ordering::Relaxed);
+        }
+    });
+}
+
 fn handle_voice(app: &AppHandle, msg: Value) {
+    if msg.get("type").and_then(Value::as_str) == Some("buddy") {
+        to_sidekick_buddy(app, &msg);
+        return;
+    }
     // Shadow audio (and anything shadow-shaped) leaves here, before any UI or sidecar route.
     match shadow::route(&msg) {
         shadow::Route::Shadow => return shadow::on_audio(&msg),
@@ -493,6 +553,10 @@ fn handle_voice(app: &AppHandle, msg: Value) {
     let ui = with_rid(ui_message(&msg, streaming), rid);
     // While the setup guide is open, talking is just the "try it" test: it never reaches the agent.
     if ONBOARDING.load(Ordering::Relaxed) {
+        // Nothing answers here, so the listening pill goes as soon as the words are in.
+        if msg.get("type").and_then(Value::as_str) == Some("final") {
+            to_voice(app, &json!({ "cmd": "handoff" }));
+        }
         to_onboarding(app, &ui);
         return;
     }
@@ -507,7 +571,8 @@ fn handle_voice(app: &AppHandle, msg: Value) {
             if DICTATION.load(Ordering::Relaxed) {
                 dictation::on_final(app, msg.get("text").and_then(Value::as_str).unwrap_or(""), rid);
             } else {
-                to_sidecar(app, &with_rid(json!({ "type": "voice", "text": msg.get("text"), "sent_ms": telemetry::now_ms() }), rid));
+                // area: the part of the screen marked with the pen while talking (a PNG, its rect and the strokes).
+                to_sidecar(app, &with_rid(json!({ "type": "voice", "text": msg.get("text"), "area": msg.get("area"), "sent_ms": telemetry::now_ms() }), rid));
             }
         }
         Some("error") => {

@@ -19,18 +19,28 @@
       <ol class="progress" id="progress" aria-label="Setup progress"></ol>
     </header>
 
-    <section class="step" id="step-0" data-name="Welcome" aria-labelledby="h-0">
-      <h1 id="h-0">Hi, I'm Sidekick.</h1>
+    <section class="step" id="step-welcome" data-name="Welcome" aria-labelledby="h-0">
+      <h1 id="h-0">Hi, I'm Roamie.</h1>
       <p class="lead">I live on your screen, help with your work and keep you on track. Setup takes about a minute.</p>
+      <div class="px keyrow">
+        <div class="kline stack">
+          <div><h2 id="look-h">My look</h2><p>Each has its own voice. Change it in Settings.</p></div>
+          <div class="chords" id="looks" role="radiogroup" aria-labelledby="look-h"></div>
+        </div>
+        <div class="kline">
+          <div><h2 id="size-h">My size</h2><p>Cursor is a little pointer.</p></div>
+          <div class="chords" id="sizes" role="radiogroup" aria-labelledby="size-h"></div>
+        </div>
+      </div>
     </section>
 
-    <section class="step" id="step-1" data-name="Permissions" aria-labelledby="h-1" hidden>
+    <section class="step" id="step-perms" data-name="Permissions" aria-labelledby="h-1" hidden>
       <h1 id="h-1">Let me help</h1>
       <p class="lead" id="perm-lead">Only used when you ask me something.</p>
       <ul class="rows" id="perm-rows" aria-live="polite"></ul>
     </section>
 
-    <section class="step" id="step-2" data-name="Connect AI" aria-labelledby="h-2" hidden>
+    <section class="step" id="step-ai" data-name="Connect AI" aria-labelledby="h-2" hidden>
       <h1 id="h-2">Give me a brain</h1>
       <p class="lead">Sign in with an AI account you have. Using GG Coder? You're already in.</p>
       <p class="connected" id="connected" role="status" hidden></p>
@@ -55,7 +65,7 @@
       <p class="error" id="login-error" role="alert" hidden></p>
     </section>
 
-    <section class="step" id="step-3" data-name="Shortcuts" aria-labelledby="h-3" hidden>
+    <section class="step" id="step-keys" data-name="Shortcuts" aria-labelledby="h-3" hidden>
       <h1 id="h-3">Your shortcuts</h1>
       <p class="lead">These work from anywhere. Change them if you like.</p>
       <div class="px keyrow" id="talk-row">
@@ -63,6 +73,7 @@
           <h2>Talk to me</h2>
           <p>Hold, talk, let go. A quick tap listens hands-free.</p>
           <p>Switch Settings → Voice Mode to Dictation to type what you say into any app.</p>
+          <p id="draw-tip" hidden>Hold and drag to draw on screen, too.</p>
         </div>
         <div class="chords" id="chords" role="radiogroup" aria-label="Talk shortcut"></div>
         <div class="try" id="try">
@@ -90,7 +101,27 @@
       <p class="error" id="keys-error" role="alert" hidden></p>
     </section>
 
-    <section class="step" id="step-4" data-name="Find me" aria-labelledby="h-4" hidden>
+    <section class="step" id="step-chat" data-name="About you" aria-labelledby="chat-q" hidden>
+      <p class="count" id="chat-count"></p>
+      <h1 id="chat-q">Getting to know you</h1>
+      <p class="lead chat-lead" id="chat-lead"></p>
+      <p class="waiting chat-busy" id="chat-busy" hidden><span class="led busy"></span> Thinking</p>
+      <!-- Each turn read out once it's all in, not word by word as it reveals. -->
+      <p class="sr-only" id="chat-say" aria-live="polite"></p>
+      <form class="inline chat-form" id="chat-form" hidden>
+        <label for="chat-input" class="sr-only">Your answer</label>
+        <div class="field-row">
+          <span class="px field"><input id="chat-input" maxlength="500" autocomplete="off" placeholder="Type your answer…"></span>
+        </div>
+        <p class="chat-hint" id="chat-hint" hidden></p>
+        <p class="chat-talk" id="chat-talk" hidden><span>Or hold</span> <span id="chat-talk-keys"></span> <span>and talk</span><span class="meter" id="chat-meter" aria-hidden="true"></span></p>
+      </form>
+      <div class="chat-facts" id="chat-facts" hidden>
+        <h2>What I'll remember</h2>
+        <ul class="rows" id="chat-facts-list"></ul>
+      </div>
+    </section>
+    <section class="step" id="step-find" data-name="Find me" aria-labelledby="h-4" hidden>
       <h1 id="h-4">Find me up here</h1>
       <p class="lead"><span id="find-where">I live in your menu bar. Click </span><span class="glyph"><svg class="trayicon" viewBox="0 0 36 36" aria-hidden="true" fill="currentColor"><rect x="30" y="3" width="2" height="2"/><rect x="27" y="6" width="2" height="2"/><rect x="30" y="6" width="2" height="2"/><rect x="33" y="6" width="2" height="2"/><rect x="30" y="9" width="2" height="2"/><rect x="6" y="12" width="2" height="2"/><rect x="9" y="12" width="2" height="2"/><rect x="12" y="12" width="2" height="2"/><rect x="15" y="12" width="2" height="2"/><rect x="3" y="15" width="2" height="2"/><rect x="6" y="15" width="2" height="2"/><rect x="9" y="15" width="2" height="2"/><rect x="12" y="15" width="2" height="2"/><rect x="15" y="15" width="2" height="2"/><rect x="18" y="15" width="2" height="2"/><rect x="0" y="18" width="2" height="2"/><rect x="3" y="18" width="2" height="2"/><rect x="9" y="18" width="2" height="2"/><rect x="12" y="18" width="2" height="2"/><rect x="18" y="18" width="2" height="2"/><rect x="21" y="18" width="2" height="2"/><rect x="0" y="21" width="2" height="2"/><rect x="3" y="21" width="2" height="2"/><rect x="9" y="21" width="2" height="2"/><rect x="12" y="21" width="2" height="2"/><rect x="18" y="21" width="2" height="2"/><rect x="21" y="21" width="2" height="2"/><rect x="0" y="24" width="2" height="2"/><rect x="3" y="24" width="2" height="2"/><rect x="6" y="24" width="2" height="2"/><rect x="9" y="24" width="2" height="2"/><rect x="12" y="24" width="2" height="2"/><rect x="15" y="24" width="2" height="2"/><rect x="18" y="24" width="2" height="2"/><rect x="21" y="24" width="2" height="2"/><rect x="3" y="27" width="2" height="2"/><rect x="6" y="27" width="2" height="2"/><rect x="9" y="27" width="2" height="2"/><rect x="12" y="27" width="2" height="2"/><rect x="15" y="27" width="2" height="2"/><rect x="18" y="27" width="2" height="2"/><rect x="6" y="30" width="2" height="2"/><rect x="9" y="30" width="2" height="2"/><rect x="12" y="30" width="2" height="2"/><rect x="15" y="30" width="2" height="2"/></svg></span><span class="sr-only">the Roamies icon</span> for chats, settings, sign-ins and this guide. Right-click me for settings.</p>
       <div class="px menubar" id="find-bar" aria-hidden="true">
@@ -119,6 +150,9 @@
 <script>window.ROAMIE_AUTOSOUND = true;</script>
 <script src="../roamies/core.js"></script>
 <script src="../roamies/sfx.js"></script>
+<script src="../roamies/voice-out.js"></script>
+<script src="../roamies/jarvis.js"></script>
+<script src="../roamies/people.js"></script>
 <script src="../roamies/10-dither.js"></script>
 <script src="../ui/kit.js"></script>
 <script src="onboarding.js"></script>

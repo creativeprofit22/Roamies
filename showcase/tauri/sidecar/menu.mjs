@@ -20,6 +20,7 @@ function updateItem(v) {
 
 function compactMenu(v) {
   return [
+    { id: 'panel', label: 'Open Panel…' },
     { id: 'show', label: `Show ${v.name ?? 'Sidekick'}`, accel: v.keys.summon },
     { id: 'ask', label: `Ask ${v.name ?? 'Sidekick'}…`, enabled: !v.busy },
     ...(v.canSnap ? [{ id: 'snap', label: 'Ask About an Area…', accel: v.keys.snap }] : []),
@@ -50,6 +51,7 @@ function fullMenu(v) {
   return [
     { id: 'status', label: statusLine(v), enabled: false },
     { sep: true },
+    { id: 'panel', label: 'Open Panel…' },
     { id: 'show', label: `Show ${v.name ?? 'Sidekick'}`, accel: v.keys.summon },
     ...(v.canSnap ? [{ id: 'snap', label: 'Ask About an Area…', accel: v.keys.snap }] : []),
     { id: 'ask', label: `Ask ${v.name ?? 'Sidekick'}…`, enabled: !v.busy },

@@ -1,5 +1,5 @@
 /* Settings window layout. Tokens, fonts, pixel frames and controls live in ../ui/kit.css (loaded first).
-   Calm on purpose: no mascot, no ambient motion. */
+   Calm on purpose: the only motion is the look tiles on Appearance, which stay still under reduced motion. */
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
@@ -35,7 +35,7 @@ h3 { margin: 0; font: 700 13px/1.35 var(--mono); font-stretch: 87.5%; color: var
 .row .side-actions { display: inline-flex; align-items: center; gap: 6px; }
 .empty { margin: 0; padding: 14px; color: var(--ink-3); --bc: var(--line); }
 .pane > .empty { margin-bottom: 22px; }
-.rows + .rows { margin-top: 10px; }
+.rows + .rows, .note + .rows { margin-top: 10px; }
 .note { margin: 6px 0 0; font-size: 11px; color: var(--ink-3); }
 .loading { position: absolute; inset: 40% 0 auto; text-align: center; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -50,6 +50,26 @@ h3 { margin: 0; font: 700 13px/1.35 var(--mono); font-stretch: 87.5%; color: var
 .opt:has(input:checked) { --bc: var(--accent); --fill: #0a2a28; }
 .opt input { flex: none; margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
 .opt p { margin: 1px 0 0; font-size: 11px; color: var(--ink-3); }
+
+/* Look tiles: each look live, picked like a radio. */
+.looks { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.looktile {
+  appearance: none; border: 0; cursor: pointer; display: grid; justify-items: center; gap: 2px; padding: 6px 4px 8px;
+  --bc: var(--line); --fill: var(--panel); color: var(--ink-2);
+}
+.looktile canvas { display: block; width: 104px; height: 76px; }
+.looktile .name { font: 700 11px/1.25 var(--mono); font-stretch: 87.5%; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
+.looktile:hover { --bc: var(--line-hot); color: var(--ink); }
+.looktile[aria-checked="true"] { --bc: var(--accent); --fill: #0a2a28; color: var(--accent); }
+
+/* Recent activity: one line each, newest first. */
+.recent { margin: 0; padding: 4px 14px; list-style: none; --bc: var(--line); }
+.recent li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.recent li:last-child { border-bottom: 0; }
+.recent .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent .ask .text { color: var(--ink-2); }
+.recent .bad .text { color: var(--danger); }
+.recent time { font-size: 11px; color: var(--ink-3); white-space: nowrap; }
 
 /* The API key field: error style keyed on aria-invalid. */
 .field:has(input[aria-invalid="true"]) { --bc: var(--danger); }

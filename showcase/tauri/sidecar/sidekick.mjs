@@ -364,7 +364,7 @@ function anim(name, args) {
 // (tools → system → messages), so putting LIVE in the system prompt would re-bill the whole conversation
 // every time memory changed; at the end, only the new message is fresh. The live block is never saved.
 const menuGuide = () => (COMPACT_TRAY
-  ? `Tray menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), Stop (only while you're working), Install Update … and Restart (only when one is ready; updates download, are signature-checked and install by themselves), Settings…, Quit Roamies. Right-clicking you also opens Settings. The Settings window has: AI (sign in to providers, pick the model), ${VOICE_OK ? 'Voice (on/off, Voice Mode: Computer Use sends what they say to you, Dictation types it into the app in front instead; speech engines), ' : ''}General (Sound Effects, Open at Login, Edit files, run commands and use apps), Lists & memory (open commitments, what you remember, Forget everything), Privacy (Telemetry: a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder; Show Logs), About (version, Check for Updates, Setup Guide for shortcuts, Licences).`
+  ? `Tray menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), Stop (only while you're working), Install Update … and Restart (only when one is ready; updates download, are signature-checked and install by themselves), Settings…, Quit Roamies. Clicking the tray icon or right-clicking you also opens Settings. The Settings window has: AI (sign in to providers, pick the model), Appearance (Look: ${LOOKS.map(([, label]) => label).join(', ').replace(/, ([^,]*)$/, ' or $1')}, each with its own name and voice; Size: Default, Small or Cursor, a little arrow pointer), Voice (Spoken replies: Text only, or Voice and text, which speaks replies with Fish Audio and needs their own Fish Audio API key, added right there; Voice model: Drama 3, the most expressive, slower and pricier, or S2.1 Pro, a natural quicker pace, cheaper${VOICE_OK ? '; voice control on/off, Voice Mode: Computer Use sends what they say to you, Dictation types it into the app in front instead; speech engines' : ''}), General (Sound Effects, Open at Login, Edit files, run commands and use apps), Lists & memory (open commitments, what you did recently, what you remember, Forget everything, Get to know me: a four-question chat so you learn who they are), Privacy (Telemetry: a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder; Show Logs), About (version, Check for Updates, Setup Guide for shortcuts, Licences).`
   : `${MAC ? 'Menu bar' : 'Tray'} menu items: Show Sidekick, Ask Sidekick…, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight), ${canSnap() ? 'Ask About an Area…, ' : ''}Stop, New Conversation, Commitments, Model (pick the AI provider and model), Settings (Sound Effects, Open at Login, Allow Edits, Commands & Clicks, Telemetry (a timing log kept only on this computer; Include What Was Said adds the words; Open Telemetry Folder)${VOICE_OK ? ', Voice, Voice Mode (Computer Use sends what they say to you; Dictation types it into the app in front instead)' : ''}, shortcuts), Setup Guide…, Check for Updates… (becomes "Install Update … and Restart" when one is ready; updates download, are signature-checked and install by themselves), Quit Roamies.`);
 // Tools that take long enough to need a spoken beat first (a web search runs on the provider's side).
 const SLOW_TOOLS = new Set(['fetch_url', 'take_screenshot', 'read_window', 'act_in_app', 'run_command', 'search_files', 'list_windows']);
@@ -377,7 +377,7 @@ Your voice carries feeling: start a sentence with a cue in square brackets when 
 Before anything slow (searching the web, fetching or reading a page or file, looking at the screen, acting in an app, running a command), first say one short beat of 2 to 6 words that shows you heard them ("On it, checking Paris."), then call the tool in the same reply, so they're never left in silence. No beat when you answer straight away; never describe your steps; don't repeat the beat after the tool, go straight to the answer. In longer work, one short line before each new stage, not before every call.
 `;
 // The Roamies panel (tray or menu bar icon, left click): its pages, for questions about the app.
-const panelGuide = () => `Clicking the ${MAC ? 'menu bar' : 'tray'} icon opens the Roamies panel; right-clicking it shows the menu. The panel has a sidebar of pages. Home: what you're doing right now, a list of what you did recently (questions, files read, searches, reminders), today's usage, an update notice when one is ready, and buttons for Ask, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight)${process.platform === 'darwin' ? ', Ask About an Area' : ''}, Stop and New Conversation. Memory: everything you remember about them (each with Forget, plus Forget Everything), their open commitments (Done or Drop), and Get to Know Me (a four-question chat so you learn who they are and what they're going for). Then the settings pages: Model (pick the AI provider and model, and sign in to providers), Appearance (Look: ${LOOKS.map(([, label]) => label).join(', ').replace(/, ([^,]*)$/, ' or $1')}, each with its own voice; Size: Default, Small or Cursor, a little arrow pointer), Voice (Replies: Text Only, or Voice and Text, which speaks replies out loud with Fish Audio and needs their own Fish Audio API key, added right there; Voice Model: Drama 3, the most expressive (acts out feelings, slower, pricier) or S2.1 Pro (a natural, quicker pace with less emotion, cheaper), billed to their own Fish Audio account${VOICE_OK ? '; Voice Control, hold the talk keys to talk' : ''}), Behavior (Sound Effects, Allow File Edits & Commands, Open at Login), and About (the version, Check for Updates, which becomes Install and Restart when one is ready; updates download, are signature-checked and install by themselves; Setup Guide, Show Logs, Quit).`;
+const panelGuide = () => COMPACT_TRAY ? '' : `Clicking the ${MAC ? 'menu bar' : 'tray'} icon opens the Roamies panel; right-clicking it shows the menu. The panel has a sidebar of pages. Home: what you're doing right now, a list of what you did recently (questions, files read, searches, reminders), today's usage, an update notice when one is ready, and buttons for Ask, Show List (reminders and commitments on screen: Today and Later; tick them off there; finished ones clear at midnight)${process.platform === 'darwin' ? ', Ask About an Area' : ''}, Stop and New Conversation. Memory: everything you remember about them (each with Forget, plus Forget Everything), their open commitments (Done or Drop), and Get to Know Me (a four-question chat so you learn who they are and what they're going for). Then the settings pages: Model (pick the AI provider and model, and sign in to providers), Appearance (Look: ${LOOKS.map(([, label]) => label).join(', ').replace(/, ([^,]*)$/, ' or $1')}, each with its own voice; Size: Default, Small or Cursor, a little arrow pointer), Voice (Replies: Text Only, or Voice and Text, which speaks replies out loud with Fish Audio and needs their own Fish Audio API key, added right there; Voice Model: Drama 3, the most expressive (acts out feelings, slower, pricier) or S2.1 Pro (a natural, quicker pace with less emotion, cheaper), billed to their own Fish Audio account${VOICE_OK ? '; Voice Control, hold the talk keys to talk' : ''}), Behavior (Sound Effects, Allow File Edits & Commands, Open at Login), and About (the version, Check for Updates, which becomes Install and Restart when one is ready; updates download, are signature-checked and install by themselves; Setup Guide, Show Logs, Quit).`;
 const stablePrompt = () => `You are ${lookName()}, ${LOOK_BODY[config.look] ?? LOOK_BODY.classic} who lives on ${userName}'s screen as a desktop companion. You live in Roamies, a desktop app by Ken Kai (Mac and Windows) that puts little companions on your screen; this is Roamies ${VERSION}. Your look (the Appearance page) is also your name and your voice: Roamie, JARVIS, Anime Girl, Sarah or Adrian. If they switch, you're the new one; never call yourself Sidekick.
 About Roamies, for when ${userName} asks about you or the app: ${MAC ? 'it lives in the menu bar at the top of the screen (no Dock icon)' : 'it lives in the system tray at the bottom right of the taskbar (no taskbar button); Windows may tuck the icon behind the ^ arrow next to the clock, and dragging it onto the taskbar keeps it in view'}. ${panelGuide()} ${menuGuide()} Sign-in is shared with GG Coder. Downloads and source: github.com/KenKaiii/Roamies. Don't invent features or settings that aren't listed here.
 ${replyStyle()}Your body does the acting: to act out a feeling, start your reply with one tag, which is never shown: ${EMOTES.map((e) => `[${e}]`).join(' ')}. hype celebrates a win, upset is for when they're dodging work, remind nudges about something they said they'd do, motivate is a push to start, wave is hello or goodbye. Most replies need no tag.
@@ -868,7 +868,7 @@ function setLook(l) {
   ui({ kind: 'look', look: l }); menu();
 }
 
-async function setReplies(mode) {
+async function setReplies(mode, { quiet = false } = {}) {
   await fishKeyLoaded;
   if (mode === 'voice' && !speech.on) return fishKeyLogin({ thenVoice: true });
   if (config.replies === mode) return;
@@ -877,7 +877,7 @@ async function setReplies(mode) {
   if (mode === 'text') speech.stop();
   menu();
   if (mode === 'voice') speakLine('Voice is on. This is how I sound.');
-  else say('Text only from now on.', 'happy');
+  else if (!quiet) say('Text only from now on.', 'happy');
 }
 
 // A line from the app itself (not the model), shown and spoken.
@@ -887,7 +887,9 @@ function speakLine(text, mood = 'happy') {
   if (v) { v.say(text); v.end(); }
 }
 
-async function removeFishKey() {
+async function removeFishKey({ note = null } = {}) {
+  // From Settings: the result shows there too, not only in the bubble.
+  const say = note ? (text, mood, err) => { sayOut(text, mood, err); note(text, mood === 'concerned'); } : sayOut;
   try { await secrets.delete('fish-audio'); } catch { return say(`I couldn't remove the key${MAC ? ' from your Keychain' : ''}. Try again in a moment.`, 'concerned', { code: 'fish_key_remove_failed' }); }
   speech.setKey(null); speech.stop();
   if (config.replies === 'voice') { config.replies = 'text'; saveConfig(); agentStale = true; }
@@ -895,9 +897,9 @@ async function removeFishKey() {
   say('Fish Audio key removed. Replies are text only.', 'happy');
 }
 
-async function fishKeyLogin({ thenVoice = false, given = null } = {}) {
-  // From the panel: what goes wrong shows there too, next to the field.
-  const say = given == null ? sayOut : (text, mood, err) => { sayOut(text, mood, err); panelNote(text, mood === 'concerned'); };
+async function fishKeyLogin({ thenVoice = false, given = null, note = panelNote } = {}) {
+  // From the panel or Settings: what goes wrong shows there too, next to the field.
+  const say = given == null ? sayOut : (text, mood, err) => { sayOut(text, mood, err); note(text, mood === 'concerned'); };
   const key = (given ?? (await ask({ prompt: 'Paste your Fish Audio API key', placeholder: 'Fish Audio API key', mask: true })))?.trim();
   if (!key) return;
   if (!/^[\x21-\x7e]{8,512}$/.test(key)) return say("That doesn't look like a Fish Audio key. Copy it again from fish.audio.", 'concerned', { code: 'fish_key_invalid' });
@@ -916,7 +918,7 @@ async function fishKeyLogin({ thenVoice = false, given = null } = {}) {
   }
   if (thenVoice || config.replies !== 'voice') { config.replies = 'voice'; saveConfig(); agentStale = true; }
   menu();
-  if (given != null) panelNote('Fish Audio key saved. Voice is on.');
+  if (given != null) note('Fish Audio key saved. Voice is on.');
   speakLine(speech.model.endsWith('-free') ? "Voice is on, on Fish Audio's free model since the account has no credit." : 'Voice is on. This is how I sound.');
 }
 
@@ -1034,14 +1036,24 @@ function snapshot() {
     sound: config.sound, login: { supported: login.supported, on: login.on }, allowActions: config.allowActions,
     facts: listFacts().slice().reverse().map((f) => ({ id: f.id, text: f.text })),
     commitments: openCommitments().map((c) => ({ id: c.id, text: c.text, when: c.due ? fmtWhen(c.due) : '', overdue: !!(c.due && c.due < now) })),
+    look: config.look ?? 'classic', looks: LOOKS.map(([id, label]) => [id, label]), size: config.size ?? 'default', sizes: SIZES,
+    replies: config.replies === 'voice' ? 'voice' : 'text', fishKey: speech.on, fishFree: speech.on && speech.model.endsWith('-free'),
+    fishModel: speech.pick, fishModels: FISH_CHOICES,
+    intro: !!intro, recent: activity.recent,
   };
 }
 function menu() {
   const v = snapshot();
   send({ type: 'menu', items: trayMenu(v, { compact: COMPACT_TRAY }) });
   send({ type: 'tray_tooltip', text: trayTooltip(v) });
-  if (settingsOpen) st(settingsView(v));
   panel();
+}
+// The Settings window's state, at most once per tick: from menu() and from activity changes (which only call panel()).
+let settingsQueued = false;
+function settingsSoon() {
+  if (!settingsOpen || settingsQueued) return;
+  settingsQueued = true;
+  setImmediate(() => { settingsQueued = false; if (settingsOpen) st(settingsView(snapshot())); });
 }
 
 // With no model ready the helper still runs: a press reports `unavailable`, which starts the download.
@@ -1057,6 +1069,7 @@ const voiceConfig = () => {
 // state when it opens and gets it again after each change, at most once per tick, only while it's open.
 let panelOpen = false, panelQueued = false, panelAt = 0;
 function panel() {
+  settingsSoon();
   if (!panelOpen || panelQueued) return;
   panelQueued = true;
   setImmediate(() => { panelQueued = false; if (panelOpen) send({ type: 'panel', msg: { kind: 'state', state: panelState() } }); });
@@ -1288,6 +1301,11 @@ function applySetting(key, value, { quiet = false } = {}) {
     if (voiceModels[e.id].status !== 'ready') return quiet ? getVoiceModel(e.id) : startVoiceDownload(e.id);
     tell(`Switched to ${e.label}${e.streaming ? '' : ". I'll write out what you say when you stop talking"}.`);
   } else if (key === 'voiceShadow') { config.voiceShadow = value; saveConfig(); voiceConfig(); menu(); }
+  else if (key === 'look') setLook(value);
+  else if (key === 'size') { config.size = value; saveConfig(); ui({ kind: 'size', size: config.size }); menu(); }
+  // Turning voice on still speaks a line, even from Settings: that's how they hear the voice they picked.
+  else if (key === 'replies') setReplies(value, { quiet });
+  else if (key === 'fishModel') { config.fishModel = value; saveConfig(); speech.setModel(config.fishModel); menu(); }
   else if (key === 'voice') {
     config.voice = value; saveConfig(); voiceConfig(); menu();
     if (config.voice && !voiceReady()) return quiet ? getVoiceModel() : startVoiceDownload();
@@ -1304,6 +1322,9 @@ async function onSettings(m) {
     if (!AUTH_PROVIDERS.some((p) => p.value === provider && p.methods?.includes('apikey'))) return st({ kind: 'login', provider, phase: 'error', error: 'Unknown provider.' });
     if (!String(m.key ?? '').trim()) return st({ kind: 'login', provider, phase: 'error', error: 'Paste a key first.' });
     await apiKeyLogin(provider, String(m.key), { to: st }).catch((e) => st({ kind: 'login', provider, phase: 'error', error: String(e?.message ?? e).slice(0, 120) }));
+  } else if (m.type === 'st_fishkey') {
+    if (typeof m.key !== 'string' || !m.key.trim()) return st({ kind: 'fishkey', ok: false, text: 'Paste a key first.' });
+    await fishKeyLogin({ given: m.key.slice(0, 1000), note: (text, bad) => st({ kind: 'fishkey', ok: !bad, text }) });
   } else if (m.type === 'settings_set') {
     const r = validateSetting(m.key, m.value, snapshot());
     if (!r.ok) { st({ kind: 'error', key: String(m.key), error: r.error }); return menu(); }
@@ -1312,6 +1333,7 @@ async function onSettings(m) {
     const id = String(m.id ?? '');
     if (!validateAction(id, snapshot())) return menu(); // stale button: re-send the current state
     if (id === 'forgetall_confirmed') { await clearFacts(); menu(); } // confirmed in the window's dialog
+    else if (id === 'fishkey_remove') await removeFishKey({ note: (text, bad) => st({ kind: 'fishkey', ok: !bad, text, removed: true }) });
     else if (id === 'setup_keys') {
       config.onboardStep = 3; saveConfig(); send({ type: 'onboarding' });
       // An open guide only reads step from its first state, so move it explicitly.

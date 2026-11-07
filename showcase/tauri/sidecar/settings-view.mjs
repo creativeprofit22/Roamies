@@ -18,7 +18,8 @@ export function settingsView(v) {
   return {
     kind: 'state',
     platform: v.platform,
-    sections: ['ai', ...(voice ? ['voice'] : []), 'general', 'memory', 'privacy', 'about'],
+    // Voice is always listed: spoken replies (Fish Audio) work everywhere, voice control only where voiceOk.
+    sections: ['ai', 'appearance', 'voice', 'general', 'memory', 'privacy', 'about'],
     ai: {
       connected: v.current && v.providers.some((p) => p.id === v.provider && p.signedIn) ? { provider: v.providerLabels[v.provider] ?? v.provider, model: v.current.name } : null,
       loggingIn: v.loggingIn,
@@ -26,13 +27,25 @@ export function settingsView(v) {
       apikey: v.apikey,
       models: v.providers.filter((p) => p.signedIn).map((p) => ({ provider: p.id, label: p.label, models: p.models.map((m) => ({ id: m.id, name: m.name, selected: v.provider === p.id && v.model === m.id })) })),
     },
+    appearance: {
+      look: v.look, size: v.size,
+      looks: v.looks.map(([id, name]) => ({ id, name })),
+      sizes: v.sizes.map(([id, name]) => ({ id, name })),
+    },
     voice,
+    replies: {
+      mode: v.replies, key: v.fishKey, free: v.fishFree, model: v.fishModel,
+      models: v.fishModels.map((c) => ({ id: c.id, name: c.name, perM: c.perM, promo: c.promo ?? null })),
+      keyWhere: v.platform === 'darwin' ? 'your Keychain' : v.platform === 'win32' ? 'Windows, encrypted for your account' : 'this computer',
+    },
     general: { sound: v.sound, login: v.login.supported ? v.login.on : null, actions: v.allowActions },
     memory: {
       busy: v.busy,
       hasSession: v.hasSession,
       commitments: v.commitments.map((c) => ({ id: c.id, text: c.text, when: c.when ?? '', overdue: !!c.overdue })),
       facts: v.facts.map((f) => ({ id: f.id, text: f.text })),
+      recent: v.recent.map((r) => ({ at: r.at, kind: r.kind, text: r.text })),
+      intro: v.intro,
     },
     privacy: { telemetry: v.telemetry.on, text: v.telemetry.text, locked: v.telemetry.locked },
     about: { version: v.version, usage: v.usage, update: { available: v.update.available, installing: v.update.installing }, licenses: v.licenses },
@@ -52,6 +65,10 @@ export const SETTINGS_KEYS = {
   telemetry: 'boolean',
   telemetryText: 'boolean',
   model: 'model',
+  look: 'look',
+  size: 'size',
+  replies: 'replies',
+  fishModel: 'fishModel',
 };
 
 const no = (error) => ({ ok: false, error });
@@ -68,6 +85,11 @@ export function validateSetting(key, value, v) {
   if (key === 'telemetryText' && !v.telemetry.on) return no('turn on telemetry first');
   if (type === 'voiceMode' && value !== 'agent' && value !== 'dictation') return no('expected agent or dictation');
   if (type === 'engine' && !(v.needsModel && typeof value === 'string' && v.engines.some((e) => e.id === value))) return no('unknown voice engine');
+  if (type === 'look' && !v.looks.some(([id]) => id === value)) return no('unknown look');
+  if (type === 'size' && !v.sizes.some(([id]) => id === value)) return no('unknown size');
+  if (type === 'replies' && value !== 'text' && value !== 'voice') return no('expected text or voice');
+  if (type === 'replies' && value === 'voice' && !v.fishKey) return no('add a Fish Audio key first');
+  if (type === 'fishModel' && !v.fishModels.some((c) => c.id === value)) return no('unknown voice model');
   if (type === 'model') {
     if (!value || typeof value !== 'object' || typeof value.provider !== 'string' || typeof value.id !== 'string') return no('expected a provider and a model');
     const p = v.providers.find((x) => x.id === value.provider);
@@ -79,13 +101,15 @@ export function validateSetting(key, value, v) {
 }
 
 // Buttons in the window, mapped to the tray actions they share. Ids with a target carry it after the colon.
-const SIMPLE_ACTIONS = new Set(['new', 'forgetall_confirmed', 'telemetryfolder', 'logs', 'update', 'install_update', 'setup', 'setup_keys', 'licenses', 'list']);
+const SIMPLE_ACTIONS = new Set(['new', 'forgetall_confirmed', 'telemetryfolder', 'logs', 'update', 'install_update', 'setup', 'setup_keys', 'licenses', 'list', 'intro', 'fishkey_remove']);
 export function validateAction(id, v) {
   if (typeof id !== 'string') return false;
   if (SIMPLE_ACTIONS.has(id)) {
     if (id === 'install_update') return !!v.update.available && !v.update.installing;
     if (id === 'licenses') return v.licenses;
     if (id === 'new') return !v.busy && v.hasSession;
+    if (id === 'intro') return !v.intro;
+    if (id === 'fishkey_remove') return v.fishKey;
     return true;
   }
   const [kind, ...rest] = id.split(':'), arg = rest.join(':');

@@ -5,12 +5,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createSecrets } from '../secrets.mjs';
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'roamies-st-'));
 const env = { ...process.env, HOME: tmp, USERPROFILE: tmp, ROAMIES_DATA_DIR: tmp, ROAMIES_TELEMETRY: 'off', ROAMIES_FAKE_OAUTH: '1' };
 delete env.ROAMIES_USAGE;
 fs.mkdirSync(path.join(tmp, '.gg')); // the auth store (API-key sign-in) lives here
+// A saved Fish Audio key, so Settings can remove it.
+const keyStore = createSecrets({ hands: '', dataDir: path.join(tmp, 'sidekick') });
+await keyStore.set('fish-audio', 'test-fish-key-123');
+const keyFile = path.join(tmp, 'sidekick', process.platform === 'win32' ? 'secrets.json' : 'test-secrets.json');
 
 const child = spawn(process.execPath, [path.join(dir, 'sidekick.mjs')], { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 const killer = setTimeout(() => child.kill(), 15_000);
@@ -47,6 +52,36 @@ try {
   assert.equal(states().at(-1).msg.general.sound, false, 'window change shows in the window');
   assert.ok(seen.slice(mark).some((m) => m.type === 'ui' && m.msg?.kind === 'sound' && m.msg.on === false), 'and reaches the mascot');
   assert.ok(!seen.slice(mark).some((m) => m.type === 'ui' && m.msg?.kind === 'say'), 'quietly');
+
+  // Look and size (once only in the panel) change from Settings and reach the mascot.
+  const lookMark = seen.length;
+  send({ type: 'settings_set', key: 'look', value: 'jarvis' });
+  send({ type: 'settings_set', key: 'size', value: 'small' });
+  await until('state with the new look and size', () => seen.slice(lookMark).find((m) => m.type === 'settings' && m.msg?.kind === 'state' && m.msg.appearance.look === 'jarvis' && m.msg.appearance.size === 'small'));
+  assert.ok(seen.slice(lookMark).some((m) => m.type === 'ui' && m.msg?.kind === 'look' && m.msg.look === 'jarvis'));
+  assert.ok(seen.slice(lookMark).some((m) => m.type === 'ui' && m.msg?.kind === 'size' && m.msg.size === 'small'));
+  send({ type: 'settings_set', key: 'replies', value: 'voice' });
+  await until('no-key error', () => seen.slice(lookMark).find((m) => m.type === 'settings' && m.msg?.kind === 'error' && m.msg.key === 'replies'));
+  send({ type: 'st_fishkey', key: '  ' });
+  await until('empty-key note', () => seen.slice(lookMark).find((m) => m.type === 'settings' && m.msg?.kind === 'fishkey' && m.msg.ok === false));
+
+  // Removing the Fish Audio key from Settings reports back to Settings, failure included.
+  await until('state with the key loaded', () => states().at(-1)?.msg.replies?.key);
+  const blocker = `${keyFile}.${child.pid}.tmp`; // a folder where the store writes its temp file, so the delete fails
+  fs.mkdirSync(blocker);
+  let fishFrom = seen.length;
+  const fishNote = (from) => seen.slice(from).find((m) => m.type === 'settings' && m.msg?.kind === 'fishkey');
+  send({ type: 'settings_action', id: 'fishkey_remove' });
+  const failed = await until('remove failure in Settings', () => fishNote(fishFrom));
+  assert.equal(failed.msg.ok, false);
+  assert.equal(failed.msg.removed, true);
+  assert.match(failed.msg.text, /couldn't remove/);
+  fs.rmdirSync(blocker);
+  fishFrom = seen.length;
+  send({ type: 'settings_action', id: 'fishkey_remove' });
+  const removed = await until('remove success in Settings', () => fishNote(fishFrom));
+  assert.deepEqual(removed.msg, { kind: 'fishkey', ok: true, text: 'Fish Audio key removed. Replies are text only.', removed: true });
+  assert.equal(await keyStore.get('fish-audio'), null);
 
   send({ type: 'settings_set', key: 'sound', value: 'yes' });
   await until('error', () => seen.find((m) => m.type === 'settings' && m.msg?.kind === 'error' && m.msg.key === 'sound'));

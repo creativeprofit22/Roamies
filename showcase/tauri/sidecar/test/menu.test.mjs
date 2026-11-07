@@ -8,14 +8,14 @@ const ids = (items) => flat(items).filter((i) => i.id).map((i) => i.id);
 
 // Compact: short, plain rows; Stop and the update only when relevant; no greyed-out info rows.
 const idle = trayMenu(snap(), { compact: true });
-assert.deepEqual(ids(idle), ['panel', 'show', 'ask', 'snap', 'list', 'settings', 'quit']);
+assert.deepEqual(ids(idle), ['show', 'ask', 'snap', 'list', 'settings', 'quit']);
 assert.ok(idle.every((i) => !i.items), 'no submenus');
 assert.ok(idle.every((i) => i.sep || i.enabled !== false), 'no disabled rows while idle');
 assert.equal(idle.find((i) => i.id === 'show').accel, 'Ctrl+Shift+Space');
 assert.equal(idle.find((i) => i.id === 'list').accel, 'Ctrl+Shift+L');
 
 const busy = trayMenu(snap({ busy: true, update: { available: '2.0.0', installing: false } }), { compact: true });
-assert.deepEqual(ids(busy), ['panel', 'show', 'ask', 'snap', 'list', 'stop', 'install_update', 'settings', 'quit']);
+assert.deepEqual(ids(busy), ['show', 'ask', 'snap', 'list', 'stop', 'install_update', 'settings', 'quit']);
 assert.equal(busy.find((i) => i.id === 'ask').enabled, false);
 assert.equal(busy.find((i) => i.id === 'install_update').label, 'Install Update 2.0.0 and Restart');
 assert.ok(busy.length <= 10); // 9, plus Ask About an Area… where the snap works
@@ -53,5 +53,6 @@ console.log('menu snap tests passed');
 const named = trayMenu(snap({ name: 'Pixel' }), { compact: true });
 assert.ok(named.some((i) => i.label === 'Show Pixel') && named.some((i) => i.label === 'Ask Pixel…'));
 
-// Both menu shapes open the panel (sidekick.mjs sends panel_show), so it's reachable without a left click.
-for (const m of [idle, busy, full]) assert.ok(ids(m).includes('panel'), 'menu has Open Panel…');
+// The panel is macOS only: there the menu opens it; on Windows and Linux everything is in Settings.
+assert.ok(ids(full).includes('panel'), 'macOS menu has Open Panel…');
+for (const m of [idle, busy]) assert.ok(!ids(m).includes('panel'), 'compact menu has no panel');

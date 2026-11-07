@@ -9,7 +9,16 @@ window.RoamiesSettingsPreview = () => {
   const MB = 1e6;
   const s = {
     kind: 'state', platform,
-    sections: ['ai', 'voice', 'general', 'memory', 'privacy', 'about'],
+    sections: ['ai', 'appearance', 'voice', 'general', 'memory', 'privacy', 'about'],
+    appearance: {
+      look: 'classic', size: 'default',
+      looks: [['classic', 'Roamie'], ['jarvis', 'JARVIS'], ['anime', 'Anime Girl'], ['sarah', 'Sarah'], ['adrian', 'Adrian']].map(([id, name]) => ({ id, name })),
+      sizes: [['default', 'Default'], ['small', 'Small'], ['cursor', 'Cursor']].map(([id, name]) => ({ id, name })),
+    },
+    replies: {
+      mode: 'text', key: q.get('fish') === '1', free: false, model: 'drama-3', keyWhere: mac ? 'your Keychain' : 'Windows, encrypted for your account',
+      models: [{ id: 'drama-3', name: 'Drama 3', perM: 50, promo: { perM: 10, until: '2026-12-01T08:00:00Z' } }, { id: 's2.1-pro', name: 'S2.1 Pro', perM: 15, promo: null }],
+    },
     ai: {
       connected: empty ? null : { provider: 'Anthropic', model: 'Claude Sonnet 4.5' },
       loggingIn: null,
@@ -33,6 +42,8 @@ window.RoamiesSettingsPreview = () => {
       busy: false, hasSession: !empty,
       commitments: empty ? [] : [{ id: 'c1', text: 'Send the invoice to Sam', when: 'yesterday 5pm', overdue: true }, { id: 'c2', text: 'Book the dentist', when: 'Friday', overdue: false }],
       facts: empty ? [] : [{ id: 'f1', text: 'Prefers short answers' }, { id: 'f2', text: 'Works in Berlin time' }],
+      recent: empty ? [] : [{ at: Date.now() - 60e3, kind: 'ask', text: 'What is on my list for today?' }, { at: Date.now() - 50e3, kind: 'did', text: 'Read notes.md' }, { at: Date.now() - 40e3, kind: 'bad', text: "Couldn't finish: read example.com" }],
+      intro: false,
     },
     privacy: { telemetry: true, text: false, locked: false },
     about: { version: '0.9.0', usage: { requests: empty ? 0 : 12, tokens: 48200 }, update: { available: null, installing: false }, licenses: true },
@@ -40,6 +51,9 @@ window.RoamiesSettingsPreview = () => {
   const out = (m, ms = 30) => setTimeout(() => window.__settings?.(structuredClone(m)), ms);
   const state = (ms) => out(s, ms);
   const setters = {
+    look: (v) => { s.appearance.look = v; }, size: (v) => { s.appearance.size = v; },
+    replies: (v) => { if (v === 'voice' && !s.replies.key) { out({ kind: 'error', key: 'replies', error: 'add a Fish Audio key first' }); return; } s.replies.mode = v; },
+    fishModel: (v) => { s.replies.model = v; },
     sound: (v) => { s.general.sound = v; }, login: (v) => { s.general.login = v; }, actions: (v) => { s.general.actions = v; },
     voice: (v) => { s.voice.on = v; }, voiceMode: (v) => { s.voice.mode = v; }, muteWhileTalking: (v) => { s.voice.mute = v; },
     voiceEngine: (v) => { for (const e of s.voice.engines ?? []) e.selected = e.id === v; }, voiceShadow: (v) => { if (s.voice.shadow) s.voice.shadow.on = v; },
@@ -70,6 +84,8 @@ window.RoamiesSettingsPreview = () => {
       else if (kind === 'forgetall_confirmed') s.memory.facts = [];
       else if (kind === 'voicedl') download(id);
       else if (kind === 'new') s.memory.hasSession = false;
+      else if (kind === 'fishkey_remove') { s.replies.key = false; s.replies.mode = 'text'; }
+      else if (kind === 'intro') s.memory.intro = true;
       else if (kind === 'login') {
         s.ai.loggingIn = id; state();
         out({ kind: 'login', provider: id, phase: 'browser' }, 300);
@@ -83,6 +99,10 @@ window.RoamiesSettingsPreview = () => {
       const id = s.ai.loggingIn;
       if (m.text == null) { s.ai.loggingIn = null; out({ kind: 'login', provider: id, phase: 'error', error: 'Sign-in cancelled.' }); state(); }
       else setTimeout(() => finishLogin(id), 500);
+    } else if (m.type === 'st_fishkey') {
+      const ok = m.key !== 'bad';
+      if (ok) { s.replies.key = true; s.replies.mode = 'voice'; }
+      out({ kind: 'fishkey', ok, text: ok ? 'Fish Audio key saved. Voice is on.' : "That key didn't work. Copy it again from fish.audio and retry." }, 500); state(520);
     } else if (m.type === 'st_apikey') {
       if (failKey) { failKey = false; return out({ kind: 'login', provider: m.provider, phase: 'error', error: '401 invalid x-api-key' }, 500); }
       const p = s.ai.apikey.find((x) => x.id === m.provider); p.connected = true;

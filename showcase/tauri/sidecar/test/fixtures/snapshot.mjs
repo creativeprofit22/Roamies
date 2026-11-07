@@ -26,6 +26,9 @@ export function snap(over = {}) {
     sound: true, login: { supported: true, on: false }, allowActions: false,
     facts: [{ id: 'f1', text: 'Likes tea' }],
     commitments: [{ id: 'c1', text: 'Ship it', when: 'today', overdue: true }],
+    look: 'classic', looks: [['classic', 'Roamie'], ['jarvis', 'JARVIS']], size: 'default', sizes: [['default', 'Default'], ['small', 'Small'], ['cursor', 'Cursor']],
+    replies: 'text', fishKey: false, fishFree: false, fishModel: 'drama-3', fishModels: [{ id: 'drama-3', name: 'Drama 3', perM: 50 }, { id: 's2.1-pro', name: 'S2.1 Pro', perM: 15 }],
+    intro: false, recent: [{ at: 1, kind: 'ask', text: 'What is up?' }],
     ...over,
   };
 }

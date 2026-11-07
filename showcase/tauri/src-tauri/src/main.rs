@@ -1262,14 +1262,19 @@ fn main() {
             let starting = MenuItem::with_id(app, "status", "Starting Roamies…", false, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Roamies", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&starting, &quit])?;
-            // Left click opens the panel; right click shows the short menu.
+            // Left click opens the panel on macOS and Settings elsewhere (the panel is a menu-bar design);
+            // right click shows the short menu.
             let mut tray = TrayIconBuilder::with_id("roamies")
                 .tooltip("Roamies")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, e| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = e {
-                        show_panel(tray.app_handle(), Some(rect), true);
+                        if cfg!(target_os = "macos") {
+                            show_panel(tray.app_handle(), Some(rect), true);
+                        } else {
+                            open_settings_window(tray.app_handle());
+                        }
                     }
                 });
             #[cfg(target_os = "macos")]

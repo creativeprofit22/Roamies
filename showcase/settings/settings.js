@@ -9,7 +9,7 @@
   let state = null, current = null, invoke = async () => {};
 
   // Transient window-only state: sign-in progress, the code prompt and inline errors.
-  const ui = { ask: null, login: { error: null }, key: { open: false, busy: null, error: null }, errors: {} };
+  const ui = { ask: null, login: { error: null }, key: { open: false, busy: null, error: null }, fish: { open: false, busy: false, msg: null, bad: false, forKey: null }, errors: {} };
   const send = (msg) => invoke('sidecar_send', { msg }).catch(() => {});
   const announce = (text) => { const a = $('announce'); a.textContent = ''; setTimeout(() => { a.textContent = text; }, 40); };
   const focusOn = (id) => requestAnimationFrame(() => document.querySelector(`[data-focus="${id}"]`)?.focus());
@@ -164,6 +164,15 @@
         break;
       case 'cancel_ask':
         if (ui.ask?.id === msg.id) { ui.ask = null; render(); }
+        break;
+      case 'fishkey':
+        // Saved: the form closes and the note stays. Not saved: the form stays open with why.
+        // Removed (or not): the form stays closed and the note shows why.
+        // forKey: whether a key exists once this note is true, so a stale "saved" note hides after a remove.
+        Object.assign(ui.fish, { busy: false, msg: msg.text, bad: !msg.ok, open: !msg.ok && !msg.removed, forKey: msg.ok ? !msg.removed : null });
+        announce(msg.text);
+        render();
+        if (!msg.ok && !msg.removed) focusOn('fish-input');
         break;
       case 'voice_model':
         if (state?.voice && msg.engines?.length) { state.voice.engines = msg.engines; if (current === 'voice') render(); }

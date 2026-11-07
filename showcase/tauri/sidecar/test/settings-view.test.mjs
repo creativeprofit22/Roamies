@@ -6,14 +6,14 @@ import { snap } from './fixtures/snapshot.mjs';
 // Sections per platform; voice hidden without VOICE_OK.
 const win = settingsView(snap());
 assert.equal(win.kind, 'state');
-assert.deepEqual(win.sections, ['ai', 'voice', 'general', 'memory', 'privacy', 'about']);
+assert.deepEqual(win.sections, ['ai', 'appearance', 'voice', 'general', 'memory', 'privacy', 'about']);
 assert.equal(win.voice.mute, null, 'mute-while-talking is macOS only');
 assert.equal(win.voice.engines.length, 2);
 assert.equal(win.voice.engines.find((e) => e.id === 'moonshine').selected, true);
 assert.equal(settingsView(snap({ platform: 'darwin', needsModel: false })).voice.mute, true);
 assert.equal(settingsView(snap({ platform: 'darwin', needsModel: false })).voice.engines, null);
 const noVoice = settingsView(snap({ voiceOk: false }));
-assert.deepEqual(noVoice.sections, ['ai', 'general', 'memory', 'privacy', 'about']);
+assert.deepEqual(noVoice.sections, ['ai', 'appearance', 'voice', 'general', 'memory', 'privacy', 'about'], 'voice stays for spoken replies');
 assert.equal(noVoice.voice, null);
 assert.equal(settingsView(snap({ platform: 'win32', canSnap: true })).voice.canSnap, true, 'snap shortcut listed on Windows');
 assert.equal(settingsView(snap({ platform: 'win32', canSnap: false })).voice.canSnap, false);
@@ -74,5 +74,31 @@ assert.equal(validateAction('install_update', snap({ update: { available: '2.0.0
 assert.equal(validateAction('new', snap({ busy: true })), false);
 assert.equal(validateAction('licenses', snap({ licenses: false })), false);
 assert.equal(validateAction(42, v), false);
+
+// Panel features folded into Settings: looks, size, spoken replies, recent activity, Get to know me.
+assert.deepEqual(win.appearance, { look: 'classic', size: 'default', looks: [{ id: 'classic', name: 'Roamie' }, { id: 'jarvis', name: 'JARVIS' }], sizes: [{ id: 'default', name: 'Default' }, { id: 'small', name: 'Small' }, { id: 'cursor', name: 'Cursor' }] });
+assert.equal(win.replies.mode, 'text');
+assert.equal(win.replies.key, false);
+assert.deepEqual(win.replies.models.map((m) => m.id), ['drama-3', 's2.1-pro']);
+assert.equal(win.replies.keyWhere, 'Windows, encrypted for your account');
+assert.equal(settingsView(snap({ platform: 'darwin' })).replies.keyWhere, 'your Keychain');
+assert.deepEqual(win.memory.recent, [{ at: 1, kind: 'ask', text: 'What is up?' }]);
+assert.equal(win.memory.intro, false);
+assert.deepEqual(validateSetting('look', 'jarvis', v), { ok: true, value: 'jarvis' });
+assert.equal(validateSetting('look', 'ken', v).ok, false, 'only real looks');
+assert.equal(validateSetting('look', 1, v).ok, false);
+assert.deepEqual(validateSetting('size', 'cursor', v), { ok: true, value: 'cursor' });
+assert.equal(validateSetting('size', 'huge', v).ok, false);
+assert.deepEqual(validateSetting('replies', 'text', v), { ok: true, value: 'text' });
+assert.equal(validateSetting('replies', 'voice', v).ok, false, 'voice needs a Fish Audio key');
+assert.equal(validateSetting('replies', 'voice', snap({ fishKey: true })).ok, true);
+assert.equal(validateSetting('replies', 'shout', snap({ fishKey: true })).ok, false);
+assert.equal(validateSetting('fishModel', 's2.1-pro', v).ok, true);
+assert.equal(validateSetting('fishModel', 'free', v).ok, false);
+assert.equal(validateAction('intro', v), true);
+assert.equal(validateAction('intro', snap({ intro: true })), false, 'already chatting');
+assert.equal(validateAction('fishkey_remove', v), false, 'no key to remove');
+assert.equal(validateAction('fishkey_remove', snap({ fishKey: true })), true);
+assert.equal(validateAction('fishkey', v), false, 'the window sends the key itself (st_fishkey)');
 
 console.log('settings view tests passed');

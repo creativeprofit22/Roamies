@@ -20,7 +20,6 @@ function updateItem(v) {
 
 function compactMenu(v) {
   return [
-    { id: 'panel', label: 'Open Panel…' },
     { id: 'show', label: `Show ${v.name ?? 'Sidekick'}`, accel: v.keys.summon },
     { id: 'ask', label: `Ask ${v.name ?? 'Sidekick'}…`, enabled: !v.busy },
     ...(v.canSnap ? [{ id: 'snap', label: 'Ask About an Area…', accel: v.keys.snap }] : []),

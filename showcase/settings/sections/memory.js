@@ -1,4 +1,4 @@
-// Lists & memory: open commitments, remembered facts, and forgetting.
+// Lists & memory: open commitments, what Sidekick did recently, remembered facts, forgetting, and Get to know me.
 RoamiesSettings.section('memory', {
   title: 'Lists & memory',
   render(root, s, api, k) {
@@ -15,12 +15,24 @@ RoamiesSettings.section('memory', {
       : k.empty('Nothing on your list. Ask Sidekick to remind you of something.');
     root.append(k.group('Your list', list, el('div', { className: 'actions spaced' }, k.btn('Show list', () => api.act('list'), { focus: 'show-list' }))));
 
+    // Recent: questions asked and what Sidekick did, newest first. Names files, apps and sites, never full paths.
+    const time = (at) => new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    const recent = m.recent.length
+      ? el('ul', { className: 'px recent' }, ...m.recent.map((r) => el('li', { className: r.kind },
+        el('span', { className: 'text', title: r.text, textContent: r.kind === 'ask' ? `“${r.text}”` : r.text }),
+        el('time', { dateTime: new Date(r.at).toISOString(), textContent: time(r.at) }))))
+      : k.empty('Nothing yet today. Ask Sidekick something.');
+    root.append(k.group('Recent', recent));
+
     const facts = m.facts.length
       ? el('ul', { className: 'facts' }, ...m.facts.map((f) => el('li', {}, k.row(f.text, null,
         k.btn('Forget', () => api.act(`forget:${f.id}`), { kind: 'text', focus: `forget-${f.id}`, aria: `Forget: ${f.text}` })))))
       : k.empty('Nothing remembered yet. Tell Sidekick about yourself and it keeps it here.');
     const memory = k.group('What Sidekick remembers', facts);
-    if (m.facts.length) memory.append(el('div', { className: 'actions spaced' }, k.btn('Forget everything…', () => api.confirmForget('forget-all'), { focus: 'forget-all' })));
+    memory.append(el('div', { className: 'actions spaced' },
+      k.btn(m.intro ? 'Getting to know you…' : 'Get to know me', () => api.act('intro'), { focus: 'intro', disabled: m.intro, aria: 'Get to know me: a short chat so Sidekick learns about you' }),
+      m.facts.length ? k.btn('Forget everything…', () => api.confirmForget('forget-all'), { focus: 'forget-all' }) : null));
+    memory.append(el('p', { className: 'note', textContent: 'Get to know me is four quick questions about you and what you are going for.' }));
     root.append(memory);
 
     root.append(k.group('Conversation', el('div', { className: 'actions' },

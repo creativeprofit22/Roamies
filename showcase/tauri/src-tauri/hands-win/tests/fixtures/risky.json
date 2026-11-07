@@ -1,0 +1,17 @@
+{
+  "_comment": "Click labels that need the user's yes (risky) and ones that don't (safe). Checked against RISKY in hands-win/src/risky.rs and RISKY_CLICK in sidecar/safety.mjs (test/safety.test.mjs), which mirror RISKY in hands/main.swift.",
+  "risky": [
+    "Delete account", "Remove", "Pay now", "Buy", "Place order", "Checkout", "Send", "Send message", "Transfer", "Unsubscribe",
+    "Cancel subscription", "Cancel my plan", "Sign out", "Log out", "Empty Trash", "Discard changes", "Reset settings", "Deactivate", "Publish", "Uninstall",
+    "Supprimer le compte", "Eliminar cuenta", "Konto löschen", "Jetzt kaufen", "Pagar ahora", "Envoyer", "Abmelden", "Cerrar sesión",
+    "Excluir conta", "Acquista ora", "Verwijderen", "Padam akaun", "Bayar sekarang", "Log keluar", "Hapus", "Kirim pesan",
+    "删除账户", "立即付款", "退出登录", "アカウントを削除", "購入する", "ログアウト", "계정 삭제", "결제하기", "로그아웃",
+    "DELETE", "Close your account", "Place the order", "Confirm payment", "Se déconnecter", "Terminar sessão", "(Send)", "Cancel the order"
+  ],
+  "safe": [
+    "Settings", "Save comment", "Billing", "Notifications", "Projects", "Help", "Next", "Open", "Cancel", "OK", "Reload",
+    "Address and search bar", "Weekly digest", "Sending tips", "Payment history", "Buyer guide",
+    "Einstellungen", "Paramètres", "Configuración", "Tetapan", "Profil", "Weiter", "Suivant", "设置", "設定", "설정",
+    "Pagination", "Sender name", "Kopenhagen", "Esciolto", "Bayaran balik policy page", "", "Undeleted", "Close tab"
+  ]
+}

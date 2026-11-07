@@ -1,0 +1,26 @@
+# One prompt per line for `roamies-voice --record <dir>`; blank lines and # comments are skipped.
+Open my downloads folder and sort the files by date.
+Remind me to call the dentist tomorrow at nine thirty.
+What's the weather going to be like in Lisbon this weekend?
+Summarise the last three emails from Sarah.
+Move this window to the left half of the screen.
+Search the web for cheap flights from Madrid to Berlin in March.
+Rename the file report final two to quarterly report.
+Turn the volume down a little, it's too loud.
+Write a short reply saying I'll be ten minutes late.
+Close every Chrome tab except the one with the calendar.
+Can you explain what this error message means?
+Create a new note called groceries with milk, eggs and bread.
+Play some quiet piano music while I work.
+Take a screenshot of the selected area and copy it.
+How many days are left until the twenty fourth of December?
+Add a meeting with the design team on Thursday afternoon.
+Translate this paragraph into Spanish and keep the formatting.
+Scroll down to the section about pricing.
+Zip the photos folder and put it on the desktop.
+Read me the first paragraph of the article out loud.
+Undo that, I didn't mean to delete the whole line.
+Find the spreadsheet I edited yesterday evening.
+Set a timer for twenty five minutes and tell me when it's done.
+Draft a commit message describing the bug fix in the login page.
+Never mind, stop listening and go back to sleep.

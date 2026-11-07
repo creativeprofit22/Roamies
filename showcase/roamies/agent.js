@@ -114,7 +114,14 @@
     const C = {
       k, PAL, L, th, put, disc: k.disc, sq: k.sq, face, spawn: k.spawn, S: k.S, css,
       get P() { return k.P; }, get R() { return k.R; }, get now() { return now; }, get W() { return W; }, get H() { return H; },
-      get bx() { return m.x + (lastPose?.ox ?? 0); }, get by() { return m.y + (lastPose?.oy ?? 0); },
+      // Props shrink with the body (z: 1 at the default size, about half small or as the cursor). Held in front they'd
+      // hide a small body or the pointer, so those forms hold them just beside it (side: which way, 0 = in front).
+      get z() { return clamp(k.R / k.P / 16, 0.45, 1); },
+      get jv() { return k.look === 'jarvis'; },
+      get mx() { return m.x; },
+      get side() { return k.form === 'default' ? 0 : m.x > W - 140 ? -1 : 1; },
+      get bx() { return m.x + (lastPose?.ox ?? 0) + C.side * (k.R + k.P * 2); },
+      get by() { return m.y + (lastPose?.oy ?? 0); },
       look: (x, y) => { lookAt = [x, y]; },
       spawnGlyph: (g, x, y) => glyphParts.push({ g, x, y, vy: -60, life: 1 }),
     };
@@ -122,14 +129,16 @@
     // Presence: in auto mode the sidekick hides when idle and comes back for anything it has to do.
     const ORDER = ['materialize', 'crt', 'drop'];
     const forcedVariant = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('enter') : null;
-    const presence = { auto: false, idle: 3, summonIdle: 9, lastActive: 0, summoned: false, cursor: null, n: 0 };
+    // ptr: the real cursor whenever it's on this screen (even when it hasn't moved for a while), else null.
+    const presence = { auto: false, idle: 3, summonIdle: 9, lastActive: 0, summoned: false, cursor: null, ptr: null, n: 0 };
     let SAFE = R.safe;
     // The visible screen: overlay minus menu bar / Dock / taskbar.
     const bounds = () => ({ l: SAFE.left, t: SAFE.top, r: W - SAFE.right, b: H - SAFE.bottom });
 
     // Station: the sidekick keeps a home spot and idles around it. When the cursor works nearby it
     // scoots to the closest spot that's clear of the cursor; dropping it somewhere makes that home.
-    const station = { x: null, y: null, flee: 0, moving: false, quietUntil: 0, held: false };
+    // byCursor: the cursor position it popped up beside, while it's still there for that request.
+    const station = { x: null, y: null, flee: 0, moving: false, quietUntil: 0, held: false, byCursor: null };
     // Teach mode: fly next to a control, point at it, light it up, say the step. One at a time.
     let guide = null;
     const AVOID = () => k.R * 5;
@@ -150,13 +159,142 @@
       if (usable.length && cx != null) return usable.sort((p, q) => Math.hypot(q[0] - cx, q[1] - cy) - Math.hypot(p[0] - cx, p[1] - cy))[0];
       return [(S.l + S.r) / 2, (S.t + S.b) / 2];
     };
-    const setStation = (x, y) => { station.x = x; station.y = y; m.anchor = { x, y, r: k.R * 0.35 }; };
+    const setStation = (x, y, byCursor = null) => { station.x = x; station.y = y; station.byCursor = byCursor; m.anchor = { x, y, r: k.R * 0.35 }; };
+    // Pop up right beside the cursor, like a buddy at your elbow: to its right and a little below the tip
+    // (the arrow's body points down-right), else its left, else above or below. Bubbles then open on the
+    // side away from the cursor, so whatever it's pointing at stays visible.
+    const besideCursor = (side = 'right', at = presence.ptr) => {
+      const p = at;
+      if (!p) return null;
+      const [cx, cy] = p, rad = m.radius, gx = rad + 22;
+      const R0 = [[cx + gx, cy + rad * 0.45], [cx + gx, cy - rad * 0.9]], L0 = [[cx - gx, cy + rad * 0.45], [cx - gx, cy - rad * 0.9]];
+      const c = [...(side === 'left' ? [L0[0], R0[0], L0[1], R0[1]] : [R0[0], L0[0], R0[1], L0[1]]), [cx + 10, cy + rad + 34], [cx, cy - rad - 18]];
+      const ok = c.find(([x, y]) => spotOK(x, y));
+      if (ok) return ok;
+      const S = bounds(), r = k.R;
+      return [clamp(c[0][0], S.l + r * 1.6, S.r - r * 1.6), clamp(c[0][1], S.t + r * 1.8, S.b - r * 1.5)];
+    };
+    // Following the cursor (after popping up beside it): every display frame it
+    // aims at the cursor plus an offset and gets there through a stiff, critically damped spring, which rounds off
+    // sudden flicks without wobbling. A slow, deliberate move onto it (or its bubble) holds it still.
+    // side: which side of the cursor it keeps (1 right, -1 left): chosen when it
+    // appears, kept through pauses (reaching for its bubble) and only swapped at a screen edge. keep: it's been
+    // chosen for this appearance.
+    const fol = { on: false, ox: 0, oy: 0, side: 1, keep: false, high: false, hold: 0, reach: 0, rest: 0, x: 0, y: 0, vx: 0, vy: 0 };
+    const FOLLOW_W = 90;
+    // The follow rules, shared with the native follower (buddy.swift) so a handover lands in the same place.
+    const folRules = () => {
+      const rr = m.radius, r = k.R;
+      return { gx: rr + 22, room: r * 1.6, low: rr * 0.45, highY: -rr * 0.9, bot: r * 1.5, pad: rr * 0.6 };
+    };
+    const followHold = (p) => {
+      const sp = Math.hypot(env0.mouse.vx ?? 0, env0.mouse.vy ?? 0);
+      // Only the bubble counts, not the body: it sits right beside the cursor, so heading its way is just moving
+      // the cursor, and holding still for that let the cursor slide past it (it then seemed to swap sides).
+      const open = b && !b.closing;
+      const x0 = open ? b.x.x : 0, x1 = open ? b.x.x + b.w.x : 0, y0 = open ? b.y.x : 0, y1 = open ? b.y.x + b.h.x : 0;
+      const nx = open ? clamp(p[0], x0, x1) - p[0] : 1e4, ny = open ? clamp(p[1], y0, y1) - p[1] : 0, dz = Math.hypot(nx, ny);
+      const typing = b?.input && !b.input.listen;
+      // Reaching for a reply bubble or list: a slow, steady move towards it for a moment, or resting on it.
+      // Thinking bubbles have nothing to click, so they never hold it.
+      const toward = dz > 0 ? ((env0.mouse.vx ?? 0) * nx + (env0.mouse.vy ?? 0) * ny) / dz : 0;
+      const something = (b && !b.closing && b.kind !== 'thought' && !b.input?.listen) || (list.open && !list.closing);
+      fol.reach = something && dz < 100 && toward > 40 && sp < 320 ? fol.reach + env0.dt : Math.max(0, fol.reach - env0.dt * 2);
+      // Resting on it for a moment (not just passing over it after a fast flick).
+      fol.rest = something && dz === 0 && sp < 200 ? fol.rest + env0.dt : 0;
+      const onIt = fol.rest > 0.2;
+      return fol.reach > 0.15 || onIt || typing || R.panelHit?.(p[0], p[1]);
+    };
+    const env0 = { mouse: {}, dt: 0 };
+    const drive = (dt, env) => {
+      const p = [env.mouse.x, env.mouse.y], S = bounds(), F = folRules();
+      if (!fol.on) {
+        fol.on = true; fol.ox = m.x - p[0]; fol.oy = m.y - p[1];
+        // Starting again after a pause: back to the side it had, not whichever side the cursor left it on.
+        if (!fol.keep) { fol.side = fol.ox < 0 ? -1 : 1; fol.keep = true; }
+        fol.x = m.x; fol.y = m.y; fol.vx = fol.vy = 0;
+      }
+      // Side: stays put until that side runs out of screen, so fast moves never flip it back and forth.
+      if (fol.side > 0 && p[0] + F.gx > S.r - F.room) fol.side = -1;
+      else if (fol.side < 0 && p[0] - F.gx < S.l + F.room) fol.side = 1;
+      if (!fol.high && p[1] + F.low > S.b - F.bot) fol.high = true;
+      else if (fol.high && p[1] + F.low < S.b - F.bot - 40) fol.high = false;
+      const tx = fol.side * F.gx, ty = fol.high ? F.highY : F.low;
+      const k1 = 1 - Math.exp(-dt / 0.07);
+      fol.ox += (tx - fol.ox) * k1; fol.oy += (ty - fol.oy) * k1;
+      const gx2 = clamp(p[0] + fol.ox, S.l + F.pad, S.r - F.pad), gy2 = clamp(p[1] + fol.oy, S.t + F.pad, S.b - F.pad);
+      // Exact critically damped step, so it's stable at any frame time.
+      const e = Math.exp(-FOLLOW_W * dt);
+      const sx = fol.x - gx2, tvx = (fol.vx + FOLLOW_W * sx) * dt;
+      fol.vx = (fol.vx - FOLLOW_W * tvx) * e; fol.x = gx2 + (sx + tvx) * e;
+      const sy = fol.y - gy2, tvy = (fol.vy + FOLLOW_W * sy) * dt;
+      fol.vy = (fol.vy - FOLLOW_W * tvy) * e; fol.y = gy2 + (sy + tvy) * e;
+      m.vx = fol.vx; m.vy = fol.vy;
+      m.x = fol.x; m.y = fol.y; m.tx = gx2; m.ty = gy2; m.mode = 'rest'; m.rest = 1;
+    };
+    // macOS: while it only follows the cursor in its cursor form (nothing open, nothing playing), the voice helper
+    // draws it on the display's clock (buddy.swift) and this page stops repainting. Anything else takes it back at once;
+    // until the helper says it's drawing, the page keeps drawing too, so there's never a gap.
+    const nat = { on: false, ask: 0, askAt: 0, ok: 0, back: 0, n: 0 };
+    const onBuddy = (e) => {
+      if (e.state === 'shown' && nat.ask && e.id === nat.ask) { nat.on = true; nat.ask = 0; m.native = true; }
+      else if (e.state === 'gone') { nat.on = false; nat.ask = 0; m.native = false; nat.back = now + 5; }
+      // Hidden without being asked (the page always lets go first when it asks): draw it here again.
+      else if (e.state === 'hidden' && nat.on) { nat.on = false; m.native = false; nat.back = now + 1; }
+    };
+    const nativeStep = (dt, self) => {
+      const B = R.buddy;
+      if (!B) return;
+      if (B.onEvent !== onBuddy) B.onEvent = onBuddy;
+      const ok = B.available() && k.form === 'cursor' && k.presence === 'shown' && !!m.drive && !guide && !station.moving
+        && !!self.quiet?.() && !!k.calmBody?.();
+      nat.ok = ok ? nat.ok + dt : 0;
+      if (!ok) {
+        if (nat.on || nat.ask) { B.hide(); nat.on = false; nat.ask = 0; m.native = false; }
+        return;
+      }
+      if (nat.on) return;
+      if (nat.ask) {
+        // No word back: draw it here, and leave the helper alone for a while.
+        if (now - nat.askAt > 0.8) { B.hide(); nat.ask = 0; nat.back = now + 10; }
+        return;
+      }
+      if (nat.ok < 0.15 || now < nat.back) return;
+      const img = k.sprite?.();
+      if (!img) return;
+      nat.ask = ++nat.n; nat.askAt = now;
+      B.show({ id: nat.ask, x: m.x, y: m.y, vx: m.vx, vy: m.vy, ox: fol.ox, oy: fol.oy, side: fol.side, high: fol.high, ...folRules(), ...bounds(), img });
+    };
+    const follow = (env, dt) => {
+      const p = presence.ptr;
+      env0.mouse = env.mouse; env0.dt = dt;
+      if (followHold(p)) fol.hold = now + 0.2;
+      if (now < fol.hold) { fol.on = false; m.drive = null; return; }
+      m.drive = drive;
+      setStation(m.x, m.y, p.slice());
+      station.moving = station.rush = false;
+    };
+
+    // A new request (talking, typing, summoning): come over to the cursor if it's somewhere else now.
+    const comeToCursor = () => {
+      const p = presence.ptr;
+      if (!p || !visible() || guide || m.dragging || m.flung) return;
+      if (station.byCursor && Math.hypot(p[0] - station.byCursor[0], p[1] - station.byCursor[1]) < k.R * 2.5) return;
+      const [x, y] = besideCursor(fol.keep && fol.side < 0 ? 'left' : 'right');
+      setStation(x, y, p.slice()); m.goTo(x, y);
+      station.moving = true; station.rush = true; station.flee = 0; station.quietUntil = now + 4;
+    };
     const nextVariant = () => (ORDER.includes(forcedVariant) ? forcedVariant : ORDER[presence.n++ % ORDER.length]);
+    // Popping up at the cursor: in place (materialize or crt), never dropping in from the top of the screen.
+    const entrance = () => { let v = nextVariant(); if (v === 'drop' && station.byCursor && !forcedVariant) v = nextVariant(); return v; };
     const visible = () => k.presence === 'shown' || k.presence === 'in';
     // Bubbles and tools wait until the body has (nearly) arrived.
     const stage = () => k.presence === 'shown' || (k.presence === 'in' && k.presU > 0.72);
-    // Appear at home, unless the cursor is there now: then at the nearest spot that's clear of it.
+    // Appear beside the cursor. With the cursor on another screen: at home, unless the cursor is there
+    // now, then at the nearest spot that's clear of it.
     const spot = () => {
+      const near = besideCursor();
+      if (near) { setStation(near[0], near[1], presence.ptr.slice()); station.quietUntil = now + 4; return near; }
       const [cx, cy] = presence.cursor ?? [null, null];
       const clearOf = (x, y) => cx == null || Math.hypot(x - cx, y - cy) >= AVOID();
       if (station.x != null && spotOK(station.x, station.y) && clearOf(station.x, station.y)) return [station.x, station.y];
@@ -167,10 +305,15 @@
     const ensureShown = () => {
       presence.lastActive = now;
       if (visible()) return;
+      fol.keep = false; // a new appearance picks its side afresh
       const [x, y] = spot();
-      k.appear(nextVariant(), x, y);
+      k.appear(entrance(), x, y);
     };
-    const MAX_COLS = 36, MAX_LINES = 6, THINK_COLS = 28, THINK_LINES = 2, METER = 7;
+    const MAX_COLS = 38, MAX_LINES = 7, THINK_COLS = 28, THINK_LINES = 2, METER = 7;
+    // Bubble text: Martian Mono (0.7 em per letter), sized to the bubble's line grid.
+    const fontPx = (t) => Math.round(CH * t * 0.64 * 2) / 2;
+    const colW = (t) => fontPx(t) * 0.7 + 0.35;
+    const TEXT_INK = '#dcfff6', TEXT_ACCENT = '#78ffe2';
     const T = () => clamp(k.P * 0.42, 1.4, 2.4);
 
     const make = (kind) => ({
@@ -181,7 +324,15 @@
     });
 
     const handle = (bb) => ({
-      append(s) { if (!bb.ended) { bb.text += s; bb.lines = wrap(bb.text, bb.kind === 'thought' ? THINK_COLS : MAX_COLS); } return this; },
+      append(s) {
+        if (bb.ended) return this;
+        // Markdown: the bubble shows the text without its markers, each letter carrying its style.
+        bb.raw = (bb.raw ?? '') + s;
+        const f = R.md ? R.md.flat(bb.raw) : { s: bb.raw, sty: null };
+        bb.text = f.s; bb.sty = f.sty;
+        bb.lines = wrap(bb.text, bb.kind === 'thought' ? THINK_COLS : MAX_COLS);
+        return this;
+      },
       end() { bb.ended = true; return this; },
       get closed() { return bb.closed; },
       get revealed() { return bb.revealed; },
@@ -190,7 +341,7 @@
     const open = (kind, text, opts = {}) => {
       if (b && kind === 'speech' && b.kind === 'thought' && !b.closing) {
         // Morph the thought cloud straight into the speech bubble.
-        b.kind = 'speech'; b.text = ''; b.lines = [{ start: 0, s: '' }]; b.shown = 0; b.at = []; b.ended = false;
+        b.kind = 'speech'; b.text = ''; b.raw = ''; b.sty = null; b.lines = [{ start: 0, s: '' }]; b.shown = 0; b.at = []; b.ended = false;
         b.speed = 38; b.scroll = sp(0); b.follow = true; b.dwell = 0; b.wait = 0.12;
         const old = b.closed; b.closed = deferred(); b.revealed = deferred(); old.resolve();
         b.pop.v += 4;
@@ -226,8 +377,8 @@
     // ---- layout targets ----
     const innerSize = (bb) => {
       const t = T();
-      if (bb.kind === 'thought' && !bb.text) return { cols: 7, rows: 1, w: 7 * CW * t, h: CH * t };
-      const maxCols = bb.kind === 'thought' ? THINK_COLS : bb.expanded ? Math.min(64, Math.floor((W - 80) / (CW * t))) : MAX_COLS;
+      if (bb.kind === 'thought' && !bb.text) return { cols: 7, rows: 1, w: 7 * colW(t), h: CH * t };
+      const maxCols = bb.kind === 'thought' ? THINK_COLS : bb.expanded ? Math.min(72, Math.floor((W - 80) / colW(t))) : MAX_COLS;
       const maxRows = bb.kind === 'thought' ? THINK_LINES : bb.expanded ? Math.max(MAX_LINES, Math.floor((H * 0.62) / (CH * t))) : MAX_LINES;
       if (bb.input) {
         const src = bb.text ? bb.lines : wrap(bb.input.placeholder || ' ', MAX_COLS);
@@ -236,14 +387,14 @@
         for (const l of src) cols = Math.max(cols, Math.min(l.s.length + 1, MAX_COLS));
         const rows = clamp(src.length, 1, MAX_LINES);
         const meter = bb.input.listen ? (METER + 1) * k.P : 0;
-        return { cols, rows, maxRows: MAX_LINES, w: cols * CW * t, h: rows * CH * t + meter };
+        return { cols, rows, maxRows: MAX_LINES, w: cols * colW(t), h: rows * CH * t + meter };
       }
       const shownLines = bb.lines.filter((l) => l.start < Math.max(1, bb.shown) || l === bb.lines[0]);
       let cols = 4;
       for (const l of (bb.expanded ? bb.lines : shownLines)) cols = Math.max(cols, Math.min(l.s.length, maxCols));
       if (bb.lines.length > 1) cols = Math.max(cols, Math.min(maxCols, 18));
       const rows = clamp(bb.expanded ? bb.lines.length : shownLines.length, 1, maxRows);
-      return { cols, rows, maxRows, w: cols * CW * t, h: rows * CH * t };
+      return { cols, rows, maxRows, w: cols * colW(t), h: rows * CH * t };
     };
 
     const pad = () => k.P * 3;
@@ -276,8 +427,9 @@
       const done = bb.ended && bb.shown >= bb.text.length;
       const inner = innerSize(bb);
       const tw = Math.ceil((inner.w + pad() * 2) / P) * P, thh = Math.ceil((inner.h + pad() * 2) / P) * P;
-      // Input bubbles track their text tightly (near-critical damping) so new lines never outrun the frame.
-      const [sk, sc] = bb.input ? [460, 42] : [190, 15];
+      // Input bubbles track their text tightly (near-critical damping) so new lines never outrun the frame. Speech
+      // grows critically damped too: an overshoot as each line arrives bobbed the text up and down mid-read.
+      const [sk, sc] = bb.input ? [460, 42] : [190, 28];
       spring(bb.w, tw, sk, sc, dt); spring(bb.h, thh, sk, sc, dt);
       spring(bb.pop, bb.closing ? 0 : 1, 240, 15, dt);
       spring(bb.cloud, bb.kind === 'thought' ? 1 : 0, 120, 13, dt);
@@ -294,26 +446,48 @@
       const gap = (k.R * 0.5 + P * 2) * (bb.cloud.x > 0.5 ? 1.9 : 1);
       const lift = bb.kind === 'speech' && tool?.def.head ? tool.def.head * k.R : 0; // room for props above the head
       const w = bb.w.x, h = bb.h.x, L0 = S.l + edge, T0 = S.t + edge, R0 = S.r - edge, B0 = S.b - edge;
-      const skew = clamp((m.x - W / 2) * -0.15, -w * 0.3, w * 0.3);
+      // The text holds still to be read: the body's small drifts while it idles and talks don't move the bubble
+      // (each one jumped the text a whole cell). It moves once the body really has, or rides with it while it's
+      // carried along with the cursor.
+      if (bb.ax == null || m.drive || Math.hypot(m.x - bb.ax, m.y - bb.ay) > k.R * 0.6) { bb.ax = m.x; bb.ay = m.y; }
+      const ax = bb.ax, ay = bb.ay;
+      const skew = clamp((ax - W / 2) * -0.15, -w * 0.3, w * 0.3);
       const place = {
-        above: { x: m.x - w / 2 + skew, y: m.y - k.R * 1.1 - gap - lift - h },
-        below: { x: m.x - w / 2 + skew, y: m.y + k.R * 1.1 + gap },
-        right: { x: m.x + k.R * 1.2 + gap, y: m.y - k.R * 0.35 - h / 2 },
-        left: { x: m.x - k.R * 1.2 - gap - w, y: m.y - k.R * 0.35 - h / 2 },
+        above: { x: ax - w / 2 + skew, y: ay - k.R * 1.1 - gap - lift - h },
+        below: { x: ax - w / 2 + skew, y: ay + k.R * 1.1 + gap },
+        // Beside it, the top stays put level with its head and the bubble grows down: centred on it, every new
+        // line pushed the whole bubble (and what you're reading) up by half a line.
+        right: { x: ax + k.R * 1.2 + gap, y: ay - k.R * 0.95 },
+        left: { x: ax - k.R * 1.2 - gap - w, y: ay - k.R * 0.95 },
       };
       const fits = (sd, slack = 0) => {
         const c = place[sd];
         return sd === 'above' || sd === 'below' ? c.y >= T0 - slack && c.y + h <= B0 + slack : c.x >= L0 - slack && c.x + w <= R0 + slack;
       };
       const roomRight = m.x < (S.l + S.r) / 2;
-      // Keep the current side while it still fits, so the bubble doesn't flicker between sides.
-      if (!bb.side || !fits(bb.side, P * 2)) {
-        bb.side = ['above', 'below', roomRight ? 'right' : 'left', roomRight ? 'left' : 'right'].find((sd) => fits(sd))
-          ?? (m.y - T0 > B0 - m.y ? 'above' : 'below');
-      }
+      // Beside the cursor: open away from it first, so the bubble never covers what the cursor is on. Following,
+      // that's the side it keeps (fol.side), not where it is this instant: a fast flick can carry the cursor past
+      // it for a moment, which used to swing the bubble across and back.
+      const away = station.byCursor ? (m.drive && fol.keep ? (fol.side > 0 ? 'right' : 'left') : m.x >= station.byCursor[0] ? 'right' : 'left') : null;
+      const order = away ? [away, 'above', 'below', away === 'right' ? 'left' : 'right'] : ['above', 'below', roomRight ? 'right' : 'left', roomRight ? 'left' : 'right'];
+      // Keep the current side while it still fits, so the bubble doesn't flicker between sides; it changes only
+      // when it would run off the screen. Pushed off its first choice by an edge, it goes back once there's clear
+      // room again (not the moment it just fits, which flickered at the edge).
+      if (!bb.side || bb.order !== order[0] || !fits(bb.side, P * 2)) {
+        bb.order = order[0];
+        bb.side = order.find((sd) => fits(sd)) ?? (m.y - T0 > B0 - m.y ? 'above' : 'below');
+      } else if (bb.side !== order[0] && fits(order[0], -P * 6)) bb.side = order[0];
       bb.below = bb.side === 'below';
       const tgt = place[bb.side], maxX = Math.max(L0, R0 - w), maxY = Math.max(T0, B0 - h);
-      spring(bb.x, clamp(tgt.x, L0, maxX), 70, 11, dt); spring(bb.y, clamp(tgt.y, T0, maxY), 70, 11, dt);
+      // Following the cursor: carry the bubble along with the body exactly, so it can't trail or wobble.
+      if (m.drive && bb.mx != null) {
+        const ddx = m.x - bb.mx, ddy = m.y - bb.my;
+        bb.x.x += ddx; bb.y.x += ddy; bb.tail.x.x += ddx; bb.tail.y.x += ddy;
+      }
+      bb.mx = m.x; bb.my = m.y;
+      // It opens where it belongs (its pop-in is the entrance), rather than sliding there and overshooting.
+      if (!bb.placed) { bb.placed = true; bb.x.x = clamp(tgt.x, L0, maxX); bb.y.x = clamp(tgt.y, T0, maxY); bb.x.v = bb.y.v = 0; }
+      spring(bb.x, clamp(tgt.x, L0, maxX), 70, 17, dt); spring(bb.y, clamp(tgt.y, T0, maxY), 70, 17, dt);
       // Hard clamp after the spring: lag or overshoot must never push it past the edge.
       bb.x.x = clamp(bb.x.x, L0, maxX); bb.y.x = clamp(bb.y.x, T0, maxY);
       const beside = bb.side === 'left' || bb.side === 'right';
@@ -325,7 +499,7 @@
       // lifetime
       if (bb.closing) { bb.closing += dt; return; }
       if (done) {
-        if (!bb.hover && !bb.expanded) bb.dwell += dt;
+        if (!bb.hover && !bb.expanded && !R.voiceOut?.playing()) bb.dwell += dt;
         const linger = clamp(2.2 + bb.text.length * 0.03, 2.6, bb.overflow ? 16 : 9);
         if (bb.kind === 'speech' && bb.dwell > linger) close(bb);
         if (bb.kind === 'thought' && bb.dwell > 0.4) close(bb);
@@ -464,69 +638,71 @@
     const drawText = (ctx, env, bb) => {
       const ph = bb.input && !bb.text;
       if (!bb.grid || (!bb.text && !bb.input)) return;
-      const P = k.P, t = T(), dpr = env.dpr || 1;
+      const P = k.P, t = T(), dpr = env.dpr || 1, cw = colW(t), lh = CH * t;
       const fade = bb.closing ? clamp(1 - bb.closing / 0.25, 0, 1) : clamp((bb.age - 0.08) / 0.2, 0, 1);
       if (fade <= 0 || bb.pop.x < 0.6) return;
       const ix = bb.grid.x0 * P + pad() - P * 0.5, iy = bb.grid.y0 * P + pad() - P * 0.5;
-      const iw = bb.cols * CW * t, ih = bb.rows * CH * t;
-      const cw = Math.ceil(iw * dpr) + 2, chh = Math.ceil(ih * dpr) + 2;
-      if (tcan.width !== cw || tcan.height !== chh) { tcan.width = cw; tcan.height = chh; }
+      const iw = bb.cols * cw, ih = bb.rows * lh;
+      const pw = Math.ceil(iw * dpr) + 2, phh = Math.ceil(ih * dpr) + 2;
+      if (tcan.width !== pw || tcan.height !== phh) { tcan.width = pw; tcan.height = phh; }
       tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       tctx.clearRect(0, 0, iw + 2, ih + 2);
       const dim = bb.kind === 'thought' || ph;
-      const paths = [new Path2D(), new Path2D(), new Path2D()];
       const lines = ph ? wrap(bb.input.placeholder || '', MAX_COLS) : bb.lines;
-      const emojiDots = [];
       const s0 = ph ? 0 : bb.scroll.x, first = Math.max(0, Math.floor(s0)), last = Math.min(lines.length - 1, first + bb.rows);
-      const dot = t * 0.82, shown = ph ? 1e9 : Math.floor(bb.shown);
+      const shown = ph ? 1e9 : Math.floor(bb.shown);
       const shownLines = lines.filter((l) => l.start < shown).length;
       const fadeTop = s0 > 0.02, fadeBot = s0 + bb.rows < shownLines - 0.02;
+      // Real type, not LED dots: crisp at any size, so a long answer stays easy to read.
+      const fpx = fontPx(t), base = bb.kind === 'thought' ? 400 : 500, md = R.md;
+      const fonts = new Map();
+      const fontFor = (st) => {
+        let f = fonts.get(st);
+        if (!f) {
+          const w = st & (md?.BOLD ?? 0) ? 700 : base, it = st & (md?.ITAL ?? 0) ? 'italic ' : '';
+          f = `${it}${w} ${fpx}px "Martian Mono", Menlo, ui-monospace, monospace`; fonts.set(st, f);
+        }
+        return f;
+      };
+      let curFont = '';
+      tctx.textBaseline = 'middle'; tctx.textAlign = 'left';
+      const ink = dim ? css(PAL[L - 2], 0.9) : TEXT_INK, accent = dim ? ink : TEXT_ACCENT;
       for (let li = first; li <= last; li++) {
-        const line = lines[li], ly = (li - s0) * CH;
+        const line = lines[li], cy = (li - s0 + 0.5) * lh;
+        // Lines scrolling past the top or bottom fade out instead of being cut in half.
+        const edge = Math.min(1, fadeTop ? (cy / lh) * 1.2 : 1, fadeBot ? ((ih - cy) / lh) * 1.2 : 1);
+        if (edge <= 0.02) continue;
+        tctx.globalAlpha = clamp(edge, 0, 1);
         for (let j = 0; j < line.s.length; j++) {
           const idx = line.start + j;
           if (idx >= shown) break;
-          const ch = line.s[j];
-          if (ch === ' ') continue;
-          const em = emojiAt(line.s, j);
-          if (em) {
-            const eg = idx + em.n <= shown || ph ? emojiGlyph(em.cluster) : null;
-            if (eg) for (let q = 0; q < eg.length; q += 5) {
-              const py = ly + eg[q + 1];
-              if (py < -0.5 || py > bb.rows * CH - 0.5) continue;
-              emojiDots.push(j * CW + eg[q], py, eg[q + 2], eg[q + 3], eg[q + 4]);
-            }
-            j += em.n - 1;
+          if (line.s[j] === ' ') {
+            // A link's underline runs on under the spaces between its words.
+            if (R.md && (bb.sty?.[idx] ?? 0) & R.md.LINK && (bb.sty?.[idx + 1] ?? 0) & R.md.LINK) { tctx.fillStyle = TEXT_ACCENT; tctx.fillRect(j * cw, cy + lh * 0.36, cw, Math.max(1, t * 0.4)); }
             continue;
           }
-          const g = glyph(ch), age = ph ? 9 : now - (bb.at[idx] ?? 0);
-          const fresh = age < 0.08, drop = fresh ? -0.6 : 0;
-          for (let q = 0; q < g.length; q += 3) {
-            const py = ly + g[q + 1] + drop;
-            if (py < -0.5 || py > bb.rows * CH - 0.5) continue;
-            const edgeA = Math.min(1, fadeTop ? ((py + 1) / CH) * 1.6 : 1, fadeBot ? ((bb.rows * CH - py) / CH) * 1.6 : 1);
-            const gx = j * CW + g[q];
-            if (edgeA < 1 && th(gx, Math.round(py)) > edgeA) continue;
-            if (fade < 1 && th(gx + 7, Math.round(py) + 3) > fade) continue;
-            const lvl = fresh ? 0 : dim ? 2 : g[q + 2] === 2 ? 1 : 2;
-            paths[lvl].rect(gx * t, py * t, dot, dot);
-          }
+          const em = emojiAt(line.s, j);
+          const ch = em ? em.cluster : line.s[j];
+          // Each new letter lands white, then settles to the text colour (code and links in the accent). It lands
+          // in place: a little hop per letter made the line being read shake while it streamed in.
+          const st = ph ? 0 : bb.sty?.[idx] ?? 0, f = fontFor(st);
+          if (f !== curFont) { tctx.font = f; curFont = f; }
+          const age = ph ? 9 : now - (bb.at[idx] ?? 0), x = j * cw + (em ? cw * 0.15 : 0), y = cy;
+          const marked = md && st & (md.CODE | md.LINK);
+          tctx.fillStyle = age < 0.12 ? '#ffffff' : marked ? accent : ink;
+          tctx.fillText(ch, x, y);
+          if (md && st & md.LINK) tctx.fillRect(x, cy + lh * 0.36, cw, Math.max(1, t * 0.4));
+          if (em) j += em.n - 1;
         }
       }
+      tctx.globalAlpha = 1;
       if (bb.input?.focused && !bb.input.listen && Math.floor((now - bb.input.caretAt) * 2.2) % 2 === 0) {
         // caret after the last typed character (or at the start, over the placeholder)
         let li = 0, col = 0;
         if (bb.text) { li = bb.lines.length - 1; col = Math.min(bb.lines[li].s.length, bb.text.length - bb.lines[li].start); }
         if (col >= bb.cols) col = bb.cols - 1;
-        const cy = (li - s0) * CH;
-        if (cy > -1 && cy < bb.rows * CH) paths[1].rect((col * CW + 0.5) * t, (cy + 0.5) * t, dot * 1.1, (CH - 1.5) * t);
-      }
-      tctx.fillStyle = '#ffffff'; tctx.fill(paths[0]);
-      tctx.fillStyle = css(dim ? PAL[L - 2] : HOT); tctx.fill(paths[1]);
-      tctx.fillStyle = css(dim ? PAL[L - 2] : RIM, dim ? 0.85 : 0.75); tctx.fill(paths[2]);
-      for (let q = 0; q < emojiDots.length; q += 5) {
-        tctx.fillStyle = `rgba(${emojiDots[q + 2]},${emojiDots[q + 3]},${emojiDots[q + 4]},${dim ? 0.6 : 1})`;
-        tctx.fillRect(emojiDots[q] * t, emojiDots[q + 1] * t, dot, dot);
+        const cy = (li - s0) * lh;
+        if (cy > -1 && cy < ih) { tctx.fillStyle = css(HOT); tctx.fillRect(col * cw + 0.5, cy + lh * 0.15, Math.max(1.5, t * 0.8), lh * 0.7); }
       }
       // Clip to the frame as it is this instant: it may still be growing, or shrinking away on close.
       const ip = Math.round(pad() / P), meterCells = bb.input?.listen ? METER + 1 : 0;
@@ -535,8 +711,8 @@
       if (cwid <= t || chgt <= t) return;
       ctx.save();
       ctx.beginPath(); ctx.rect(ix, iy, cwid, chgt); ctx.clip();
-      ctx.shadowColor = css(RIM, 0.7); ctx.shadowBlur = t * 3;
-      ctx.drawImage(tcan, 0, 0, cw, chh, ix, iy, cw / dpr, chh / dpr);
+      ctx.globalAlpha = fade;
+      ctx.drawImage(tcan, 0, 0, pw, phh, ix, iy, pw / dpr, phh / dpr);
       ctx.restore();
     };
 
@@ -595,6 +771,163 @@
       ctx.restore();
     };
 
+    // ---- the list: Today / Later, an LED card beside the sidekick ----
+    // Rows are item lines and section heads. Items tick off with a click; a tick strikes the words through.
+    const LIST_TEXT = 34, LIST_WHEN = 12;
+    const list = {
+      data: { today: [], later: [] }, open: false, until: 0, age: 0, closing: 0, hover: -1, over: false,
+      x: sp(0), y: sp(0), scroll: 0, known: null, added: new Map(), ticked: new Map(), onToggle: null, geo: null,
+    };
+    const listRows = () => {
+      const { today, later } = list.data, rows = [];
+      rows.push({ head: 'TODAY', n: today.filter((i) => !i.done).length });
+      if (today.length) for (const i of today) rows.push({ item: i });
+      else rows.push({ note: later.length ? 'Nothing due today' : 'Nothing on your list yet' });
+      if (later.length) { rows.push({ head: 'LATER', n: later.length, gap: true }); for (const i of later) rows.push({ item: i }); }
+      return rows;
+    };
+    const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+    const whenText = (i) => (i.done ? 'done' : i.overdue ? `late ${i.when}` : i.when);
+    const listGeom = () => {
+      const t = T(), P = k.P, ip = Math.round(pad() / P), rows = listRows();
+      const rowC = Math.ceil((CH * t + P * 1.6) / P), box = clamp(Math.round((CH * t * 0.85) / P), 5, 8);
+      const items = rows.filter((r) => r.item).map((r) => r.item);
+      const textCols = clamp(Math.max(16, ...items.map((i) => i.text.length), ...rows.filter((r) => r.note).map((r) => r.note.length)), 16, LIST_TEXT);
+      const whenCols = clamp(Math.max(4, ...items.map((i) => whenText(i).length)), 4, LIST_WHEN);
+      const textX = ip + box + 2, whenX = textX + Math.ceil((textCols * CW * t) / P) + 3;
+      const w = whenX + Math.ceil((whenCols * CW * t) / P) + ip;
+      const S = bounds(), maxRows = Math.max(4, Math.floor((S.b - S.t - P * 24) / (rowC * P)) - 1);
+      const vis = Math.min(rows.length, maxRows), h = ip * 2 + vis * rowC;
+      return { t, P, ip, rows, rowC, box, textCols, whenCols, textX, whenX, w, h, vis };
+    };
+    const listOpen = (secs) => {
+      if (!list.open || list.closing) { list.open = true; list.closing = 0; list.age = 0; list.placed = false; k.S('page'); }
+      list.until = Math.max(list.until, now + secs);
+    };
+    const listClose = () => { if (list.open && !list.closing) { list.closing = 0.0001; k.S('poof'); } };
+    const listUpdate = (dt, env) => {
+      if (!list.open) return;
+      const g = listGeom(), P = k.P, S = bounds(), wpx = g.w * P, hpx = g.h * P;
+      // Beside the sidekick on the roomier side (away from a speech bubble that's beside it), centred on it.
+      const bubbleSide = b && !b.closing ? b.side : null;
+      let side = m.x < (S.l + S.r) / 2 ? 'right' : 'left';
+      if (bubbleSide === side) side = side === 'right' ? 'left' : 'right';
+      const gap = k.R * 1.35 + P * 3;
+      let tx = side === 'right' ? m.x + gap : m.x - gap - wpx, ty = m.y - hpx / 2;
+      if (tx < S.l + P * 2 || tx + wpx > S.r - P * 2) { tx = m.x - wpx / 2; ty = m.y - k.R * 1.3 - hpx - P * 4; if (ty < S.t + P * 2) ty = m.y + k.R * 1.3 + P * 4; }
+      tx = clamp(tx, S.l + P * 2, Math.max(S.l + P * 2, S.r - wpx - P * 2)); ty = clamp(ty, S.t + P * 2, Math.max(S.t + P * 2, S.b - hpx - P * 2));
+      if (!list.placed) { list.x.x = tx; list.y.x = ty; list.placed = true; }
+      spring(list.x, tx, 70, 11, dt); spring(list.y, ty, 70, 11, dt);
+      list.geo = { ...g, px: list.x.x, py: list.y.x };
+      list.scroll = clamp(list.scroll, 0, Math.max(0, g.rows.length - g.vis));
+      const mx = env.mouse?.x, my = env.mouse?.y;
+      list.over = !!env.mouse?.active && mx >= list.x.x && mx <= list.x.x + wpx && my >= list.y.x && my <= list.y.x + hpx;
+      list.hover = -1;
+      if (list.over) {
+        const r = Math.floor((my - list.y.x - g.ip * P) / (g.rowC * P)) + Math.round(list.scroll);
+        if (g.rows[r]?.item) list.hover = r;
+        list.until = Math.max(list.until, now + 2.5);
+      }
+      if (list.closing) { list.closing += dt; if (list.closing > 0.35) { list.open = false; list.closing = 0; } return; }
+      list.age += dt;
+      if (now > list.until) listClose();
+    };
+    const drawListGrid = () => {
+      if (!list.open || !list.geo) return;
+      const g = list.geo, P = k.P;
+      const fade = list.closing ? clamp(1 - list.closing / 0.3, 0, 1) : clamp(list.age / 0.22, 0, 1);
+      if (fade <= 0) return;
+      const x0 = Math.round(g.px / P), y0 = Math.round(g.py / P), x1 = x0 + g.w - 1, y1 = y0 + g.h - 1;
+      const on = (gx, gy) => th(gx, gy) < fade;
+      // Same chrome as the speech bubble: rounded LED frame, dark glass, a glint on the top edge.
+      const cr = 2, inside = (x, y, grow) => {
+        const dx = Math.max(x0 + cr - x, 0, x - (x1 - cr)), dy = Math.max(y0 + cr - y, 0, y - (y1 - cr));
+        return dx * dx + dy * dy <= (cr + grow) * (cr + grow);
+      };
+      for (let gy = y0 - 2; gy <= y1 + 2; gy++) for (let gx = x0 - 2; gx <= x1 + 2; gx++) {
+        if (!on(gx, gy)) continue;
+        if (inside(gx, gy, 0)) setPx(gx, gy, gy - y0 < 1 && gx - x0 > 2 && gx - x0 < 6 ? RIM : DARK, 235, true);
+        else if (inside(gx, gy, 1)) setPx(gx, gy, EDGE, 255);
+      }
+      const first = Math.round(list.scroll);
+      for (let r = 0; r < g.vis; r++) {
+        const row = g.rows[first + r];
+        if (!row) break;
+        const ry = y0 + g.ip + r * g.rowC, mid = ry + Math.floor(g.rowC / 2);
+        if (row.head && row.gap) for (let gx = x0 + g.ip; gx <= x1 - g.ip; gx += 2) put(gx, ry, 1);
+        if (!row.item) continue;
+        const it = row.item, bx = x0 + g.ip, by = mid - Math.floor(g.box / 2), n = g.box;
+        if (first + r === list.hover) for (let gx = x0 + 1; gx < x1; gx++) for (let gy = ry; gy < ry + g.rowC; gy++) if (on(gx, gy)) setPx(gx, gy, PAL[1], 140, true);
+        // Tick box: a ring; ticked = lit with a check; late = the ring pulses.
+        const tk = list.ticked.get(it.id), flash = tk != null ? clamp(1 - (now - tk) / 0.5, 0, 1) : 0;
+        const ring = it.done ? L - 2 : it.overdue ? (Math.sin(now * 5) > 0 ? L : L - 1) : L - 1;
+        for (let i = 0; i < n; i++) { put(bx + i, by, ring); put(bx + i, by + n - 1, ring); put(bx, by + i, ring); put(bx + n - 1, by + i, ring); }
+        if (it.done || flash > 0) {
+          const lv = flash > 0.3 ? L : L - 1, bot = by + n - 2, pivot = bx + Math.floor((n - 1) / 2);
+          for (let x = bx + 1; x <= pivot; x++) put(x, bot - (pivot - x), lv);
+          for (let x = pivot + 1; x <= bx + n - 2; x++) put(x, bot - (x - pivot), lv);
+        }
+      }
+      // Scrollbar when the list is longer than the screen allows.
+      if (g.rows.length > g.vis) {
+        const top = y0 + g.ip, bot = y1 - g.ip, len = bot - top, tl = Math.max(2, Math.round((len * g.vis) / g.rows.length));
+        const t0 = top + Math.round((len - tl) * (list.scroll / Math.max(1, g.rows.length - g.vis)));
+        for (let gy = top; gy <= bot; gy++) put(x1 - 1, gy, gy >= t0 && gy < t0 + tl ? L - 1 : 1);
+      }
+      list.grid = { x0, y0, x1, y1 };
+    };
+    const dotText = (path, dim, s, x, y, t, upto = Infinity) => {
+      for (let j = 0; j < s.length && j < upto; j++) {
+        if (s[j] === ' ') continue;
+        const em = emojiAt(s, j);
+        if (em) { j += em.n - 1; continue; }
+        const gl = glyph(s[j]);
+        for (let q = 0; q < gl.length; q += 3) (gl[q + 2] === 2 ? path : dim).rect(x + (j * CW + gl[q]) * t, y + gl[q + 1] * t, t * 0.82, t * 0.82);
+      }
+    };
+    const drawListText = (ctx) => {
+      if (!list.open || !list.grid) return;
+      const g = list.geo, P = k.P, t = g.t, { x0, y0 } = list.grid;
+      const fade = list.closing ? clamp(1 - list.closing / 0.25, 0, 1) : clamp((list.age - 0.08) / 0.2, 0, 1);
+      if (fade <= 0) return;
+      const hot = [new Path2D(), new Path2D()], dim = [new Path2D(), new Path2D()], strike = new Path2D();
+      const first = Math.round(list.scroll);
+      for (let r = 0; r < g.vis; r++) {
+        const row = g.rows[first + r];
+        if (!row) break;
+        const ty = (y0 + g.ip + r * g.rowC) * P + (g.rowC * P - CH * t) / 2;
+        if (row.head) { dotText(dim[0], dim[1], `${row.head}${row.n ? `  ${row.n}` : ''}`, (x0 + g.ip) * P, ty, t); continue; }
+        if (row.note) { dotText(dim[0], dim[1], row.note, (x0 + g.textX) * P, ty, t); continue; }
+        const it = row.item, text = clip(it.text, g.textCols), when = clip(whenText(it), g.whenCols);
+        // New lines type themselves in; a tick strikes the words through from left to right.
+        const added = list.added.get(it.id), upto = added != null ? Math.floor((now - added) * 60) : Infinity;
+        const [p0, p1] = it.done ? dim : hot;
+        dotText(p0, p1, text, (x0 + g.textX) * P, ty, t, upto);
+        const wx = (x0 + g.whenX) * P + (g.whenCols - when.length) * CW * t;
+        dotText(it.overdue ? hot[0] : dim[0], it.overdue ? hot[1] : dim[1], when, wx, ty, t);
+        if (it.done) {
+          const tk = list.ticked.get(it.id), u = tk != null ? clamp((now - tk) / 0.35, 0, 1) : 1;
+          strike.rect((x0 + g.textX) * P, ty + CH * t * 0.42, text.length * CW * t * u, t * 0.9);
+        }
+      }
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.beginPath(); ctx.rect(x0 * P, (y0 + g.ip) * P - 1, g.w * P, g.vis * g.rowC * P + 2); ctx.clip();
+      ctx.shadowColor = css(RIM, 0.7); ctx.shadowBlur = t * 3;
+      ctx.fillStyle = css(HOT); ctx.fill(hot[0]);
+      ctx.fillStyle = css(RIM, 0.75); ctx.fill(hot[1]);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = css(PAL[L - 2], 0.95); ctx.fill(dim[0]);
+      ctx.fillStyle = css(PAL[L - 2], 0.6); ctx.fill(dim[1]); ctx.fill(strike);
+      ctx.restore();
+    };
+    const hitList = (x, y) => list.open && !list.closing && list.geo && x >= list.geo.px && x <= list.geo.px + list.geo.w * k.P && y >= list.geo.py && y <= list.geo.py + list.geo.h * k.P;
+    const listPress = (x, y) => {
+      const g = list.geo, r = Math.floor((y - g.py - g.ip * k.P) / (g.rowC * k.P)) + Math.round(list.scroll), row = g.rows[r];
+      if (row?.item) { list.until = Math.max(list.until, now + 4); list.onToggle?.(row.item.id); k.S(row.item.done ? 'tick' : 'pip'); }
+      else listClose();
+    };
+
     const hitBubble = (bb, x, y) => bb && !bb.closing && x >= bb.x.x && x <= bb.x.x + bb.w.x && y >= bb.y.x && y <= bb.y.x + bb.h.x;
 
     const api = {
@@ -611,12 +944,13 @@
       act: (name) => { if (tool) return false; ensureShown(); actUntil = now + (k.presence === 'in' ? 4.2 : 3.3); k.startAct(name); return true; },
       show: ({ summoned = false, variant } = {}) => {
         presence.lastActive = now; presence.summoned = summoned;
-        if (visible()) return false;
+        if (visible()) { if (summoned) comeToCursor(); return false; }
         const [x, y] = spot();
-        return k.appear(variant ?? nextVariant(), x, y);
+        return k.appear(variant ?? entrance(), x, y);
       },
       hide: ({ instant = false, variant } = {}) => {
         if (b) close(b);
+        if (list.open) { list.open = false; list.closing = 0; }
         if (tool) tool.finish(true);
         presence.summoned = false;
         return k.vanish(instant ? null : variant ?? nextVariant(), instant);
@@ -670,9 +1004,12 @@
       setAuto: (on, idle) => { presence.auto = !!on; if (idle) presence.idle = idle; presence.lastActive = now; },
       get visible() { return visible(); },
       get station() { return { ...station }; },
+      // Where it is, or where it's arriving (an entrance can start off to the side).
+      get pos() { return k.presence === 'in' && station.x != null ? { x: station.x, y: station.y, r: m.radius } : { x: m.x, y: m.y, r: m.radius }; },
       get presence() { return k.presence; },
       // A listening bubble: live transcript plus a voice meter. set() takes the latest transcript.
       listen: (opts = {}) => {
+        comeToCursor();
         ensureShown();
         const h = open('speech', '', { stream: true });
         const bb = b;
@@ -684,11 +1021,13 @@
             let i = 0;
             while (i < text.length && i < bb.text.length && text[i] === bb.text[i]) i++;
             for (let j = i; j < text.length; j++) bb.at[j] = now;
-            bb.text = text; bb.lines = wrap(text, MAX_COLS); bb.shown = text.length;
+            bb.text = text; bb.sty = null; bb.lines = wrap(text, MAX_COLS); bb.shown = text.length;
             return this;
           },
           level(v) { bb.input.target = clamp(v, 0, 1); return this; },
           processing() { bb.input.processing = true; return this; },
+          // New placeholder text, shown while nothing has been transcribed yet.
+          hint(text) { bb.input.placeholder = text; return this; },
           close() { if (b === bb) close(bb); },
           get open() { return b === bb && !bb.closing; },
           get closed() { return h.closed; },
@@ -696,6 +1035,7 @@
       },
       // An input bubble: the host feeds it keystrokes with set(); it never times out.
       prompt: (opts = {}) => {
+        comeToCursor();
         ensureShown();
         const h = open('speech', '', { stream: true });
         const bb = b;
@@ -707,13 +1047,30 @@
             const prev = bb.text.length;
             if (v.length > prev) { k.S('key', 0.9 + Math.random() * 0.25); k.sq.kick(1.2); typedAt = now; }
             else if (v.length < prev) k.S('tick');
-            bb.text = v; bb.lines = wrap(v, MAX_COLS); bb.shown = v.length;
+            bb.text = v; bb.sty = null; bb.lines = wrap(v, MAX_COLS); bb.shown = v.length;
             for (let i = prev; i < v.length; i++) bb.at[i] = now;
             bb.input.caretAt = now;
             return this;
           },
           focus(on) { bb.input.focused = on; bb.input.caretAt = now; return this; },
           close() { if (b === bb) close(bb); },
+          get closed() { return h.closed; },
+        };
+      },
+      // A status bubble (e.g. download progress): set() replaces the text in place; it stays up until close().
+      status: (text) => {
+        ensureShown();
+        const h = open('speech', text, { stream: true });
+        const bb = b;
+        return {
+          set(t) {
+            if (bb.closing || t === bb.text) return this;
+            bb.text = t; bb.lines = wrap(t, MAX_COLS); bb.shown = t.length;
+            for (let i = 0; i < t.length; i++) bb.at[i] ??= now;
+            return this;
+          },
+          close() { if (b === bb) close(bb); },
+          get open() { return b === bb && !bb.closing; },
           get closed() { return h.closed; },
         };
       },
@@ -752,21 +1109,47 @@
       },
       get busy() { return !!(b || tool); },
       get bubble() { return b; },
+      // The list: { today, later, seconds, flash, toggle }. seconds > 0 opens it for that long; 0 only updates it.
+      list: (msg) => {
+        const all = [...(msg.today ?? []), ...(msg.later ?? [])], ids = new Set(all.map((i) => i.id));
+        const before = new Map([...list.data.today, ...list.data.later].map((i) => [i.id, i]));
+        list.data = { today: msg.today ?? [], later: msg.later ?? [] };
+        for (const i of all) {
+          if (list.known && !before.has(i.id)) list.added.set(i.id, now);
+          if (before.get(i.id) && before.get(i.id).done !== i.done) {
+            if (i.done) { list.ticked.set(i.id, now); k.S('done'); k.sq.kick(3); } else list.ticked.delete(i.id);
+          }
+        }
+        for (const id of [...list.added.keys()]) if (!ids.has(id)) list.added.delete(id);
+        if (list.known && all.some((i) => !before.has(i.id))) k.S('scribble');
+        list.known = true;
+        if (msg.toggle && list.open && !list.closing) return listClose();
+        if (msg.seconds > 0) {
+          ensureShown(); listOpen(msg.seconds);
+          // Scroll the item that changed into view.
+          const r = listRows().findIndex((row) => row.item?.id === msg.flash);
+          if (r >= 0) { const g = listGeom(); if (r < list.scroll || r >= list.scroll + g.vis) list.scroll = Math.max(0, r - Math.floor(g.vis / 2)); }
+        }
+      },
+      set onListToggle(fn) { list.onToggle = fn; },
+      get listOpen() { return list.open && !list.closing; },
     };
 
     const plugin = {
       api,
-      busy: () => !!(b || tool),
+      busy: () => !!(b || tool || (list.open && !list.closing)),
       // A bubble is up: emotes keep their gestures but drop icons and particles, so the text stays readable.
-      calm: () => !!(b && !b.closing),
-      hit: (x, y) => hitBubble(b, x, y),
-      press: () => {
+      calm: () => !!(b && !b.closing) || (list.open && !list.closing),
+      hit: (x, y) => hitBubble(b, x, y) || hitList(x, y),
+      press: (x, y) => {
+        if (hitList(x, y)) return listPress(x, y);
         if (!b) return;
         if (b.input) { b.input.onPress?.(); return; }
         if (b.overflow || b.expanded) { b.expanded = !b.expanded; b.follow = false; b.dwell = 0; k.S('expand'); if (!b.expanded) b.scrollTarget = 0; }
         else close(b);
       },
       wheel: (dy) => {
+        if (list.over) { list.scroll = clamp(list.scroll + dy / 40, 0, Math.max(0, listRows().length - listGeom().vis)); list.until = Math.max(list.until, now + 4); return; }
         if (!b) return;
         b.follow = false; b.dwell = 0;
         b.scrollTarget = (b.scrollTarget ?? 0) + dy / 40;
@@ -792,7 +1175,7 @@
           const lv = b.input.level, wig = Math.sin(t * 7) * 0.04 * lv;
           return {
             arms: 1, tr: [0.98 + wig, -0.42 - lv * 0.08], tl: [-0.62, 0.88 + Math.sin(t * 2) * 0.03],
-            ox: k.R * 0.05, oy: -lv * k.R * 0.06, mouth: b.input.processing ? 'o' : 'flat', brow: 'raised',
+            ox: k.R * 0.05, oy: -lv * k.R * 0.06, mouth: b.input.processing ? 'o' : 'flat', brow: 'raised', mode: 'listen', heard: lv,
           };
         }
         if (b.input) {
@@ -802,29 +1185,33 @@
         if (b.kind === 'thought') {
           return {
             arms: 1, tl: [-0.08, 0.5 + Math.sin(t * 2) * 0.03], tr: [0.98, 0.34], ox: Math.sin(t * 1.3) * k.R * 0.04,
-            mouth: Math.sin(t * 0.9) > 0.6 ? 'o' : 'flat', brow: 'raised',
+            mouth: Math.sin(t * 0.9) > 0.6 ? 'o' : 'flat', brow: 'raised', mode: 'think',
           };
         }
-        const talking = b.shown < b.text.length;
+        const talking = b.shown < b.text.length || !!R.voiceOut?.playing();
         gestT += dt * (talking ? 1 : 0.3);
         const g = Math.sin(gestT * 3.1), g2 = Math.sin(gestT * 1.7 + 1);
         const brow = b.mood === 'annoyed' ? 'angry' : b.mood === 'concerned' ? 'raised' : b.mood === 'determined' ? 'determined' : null;
         if (b.point) {
           const bob = Math.sin(t * 5) * 0.06;
-          return { arms: 1, tr: [b.point[0], b.point[1] + bob], tl: [-0.9, 0.45], mouth: mouthT > 0 ? mouthMode : 'grin', brow: 'raised' };
+          return { arms: 1, tr: [b.point[0], b.point[1] + bob], tl: [-0.9, 0.45], mouth: mouthT > 0 ? mouthMode : 'grin', brow: 'raised', mode: talking ? 'talk' : null };
         }
         return {
           arms: talking ? 1 : 0.4,
           tr: [0.95 + g * 0.08, 0.05 - Math.max(0, g) * 0.35], tl: [-0.98 - g2 * 0.06, 0.25 - Math.max(0, g2) * 0.18],
           oy: talking ? -Math.abs(Math.sin(gestT * 9)) * k.R * 0.03 : 0,
-          mouth: mouthT > 0 ? mouthMode : b.mood === 'annoyed' ? 'frown' : null, brow,
+          mouth: mouthT > 0 ? mouthMode : b.mood === 'annoyed' ? 'frown' : null, brow, mode: talking ? 'talk' : null,
         };
       }
     }
-    return {
+    const self = {
       ...plugin,
       update: (dt, env) => {
         now += dt; W = env.w; H = env.h; SAFE = env.safe ?? R.safe;
+        // Popping up beside the cursor keeps up with it too, so it never sits still while appearing.
+        const popping = k.presence === 'in' && station.byCursor && !guide && !m.dragging;
+        if (k.presence !== 'shown' && !popping && m.drive) { m.drive = null; fol.on = false; }
+        if (k.presence !== 'shown' && (nat.on || nat.ask)) { R.buddy?.hide(); nat.on = false; nat.ask = 0; m.native = false; }
         if (guide) {
           presence.lastActive = now;
           const g = guide, d = Math.hypot(m.x - g.px, m.y - g.py);
@@ -838,10 +1225,13 @@
           if (g.arrived && now - g.arrivedAt > 45) api.endGuide();
         }
         if (env.mouse?.active || presence.cursor == null) presence.cursor = [env.mouse?.x ?? W / 2, env.mouse?.y ?? H / 2];
+        const mx = env.mouse?.x, my = env.mouse?.y;
+        presence.ptr = mx != null && mx >= 0 && my >= 0 && mx <= W && my <= H ? [mx, my] : null;
+        if (popping) { if (presence.ptr) follow(env, dt); else { m.drive = null; fol.on = false; } }
         const onStage = stage();
         if (presence.auto) {
           const hover = env.mouse?.active && Math.hypot(env.mouse.x - m.x, env.mouse.y - m.y) < k.R * 1.5;
-          const busyNow = b || dying.length || tool || now < actUntil || m.dragging || m.flung || hover || k.presence === 'in';
+          const busyNow = b || dying.length || tool || (list.open && !list.closing) || now < actUntil || m.dragging || m.flung || hover || k.presence === 'in' || R.panel?.working;
           if (busyNow) presence.lastActive = now;
           const idleFor = presence.summoned ? presence.summonIdle : presence.idle;
           if (k.presence === 'shown' && now - presence.lastActive > idleFor) { presence.summoned = false; k.vanish(nextVariant()); }
@@ -862,30 +1252,43 @@
             setStation(m.x, m.y); station.quietUntil = now + 2.5; station.moving = false;
           }
           station.held = held;
+          // Popped up beside the cursor: it goes where the cursor goes (until it's dragged somewhere).
+          if (!held && !guide && station.byCursor && presence.ptr) { follow(env, dt); station.flee = 0; }
+          else { fol.on = false; m.drive = null; }
+          nativeStep(dt, self);
           // While pointing at a step, stay put: the user's cursor is supposed to come over here.
-          if (!held && env.mouse && !guide) {
+          if (!held && env.mouse && !guide && !station.byCursor) {
             const cx = env.mouse.x, cy = env.mouse.y, dBody = Math.hypot(cx - m.x, cy - m.y);
             // Pointing right at it or its bubble means "I want this"; hovering around it means "you're in my way".
             const onIt = dBody < m.radius * 1.1 || (b && hitBubble(b, cx, cy));
             const pad = k.R * 0.7;
             const nearBubble = b && !b.closing && cx > b.x.x - pad && cx < b.x.x + b.w.x + pad && cy > b.y.x - pad && cy < b.y.x + b.h.x + pad;
             const near = dBody < k.R * 3 || nearBubble;
-            station.flee = near && !onIt && now > station.quietUntil ? station.flee + dt : Math.max(0, station.flee - dt * 2);
+            // Popped up beside the cursor for a request: stay there while it's talking, listening or working.
+            const engaged = station.byCursor && ((b && !b.closing) || tool || (list.open && !list.closing));
+            station.flee = near && !onIt && !engaged && now > station.quietUntil ? station.flee + dt : Math.max(0, station.flee - dt * 2);
             if (station.flee > 0.45 && !station.moving) {
               const [x, y] = pickSpot(cx, cy, m.x, m.y);
               k.stopAct?.(); setStation(x, y); m.goTo(x, y);
               station.moving = true; station.flee = 0; k.S('hop'); k.sq.kick(4);
             }
           }
-          if (station.moving && Math.hypot(m.x - station.x, m.y - station.y) < k.R * 0.4) { station.moving = false; m.mode = 'rest'; m.rest = 0.6; }
+          if (station.moving && Math.hypot(m.x - station.x, m.y - station.y) < k.R * 0.4) { station.moving = station.rush = false; m.mode = 'rest'; m.rest = 0.6; }
         }
-        m.speedMul = station.moving ? 2.6 : b ? (b.kind === 'thought' ? 0.15 : 0.35) : 1;
+        // Called over to the cursor: get there in well under a second, even from across the screen.
+        m.speedMul = station.rush ? 7 : station.moving ? 2.6 : b ? (b.kind === 'thought' ? 0.15 : 0.35) : 1;
         if (b?.input?.listen) {
           const inp = b.input;
           inp.level = R.damp(inp.level, inp.target, inp.target > inp.level ? 30 : 8, dt);
           inp.target *= Math.exp(-dt * 3);
           inp.acc = (inp.acc ?? 0) + dt;
           if (inp.acc > 0.045) { inp.acc = 0; inp.levels.push(inp.level); }
+        }
+        // The research card is filling up: glance over at it now and then while following the cursor.
+        const card = !b && !tool ? R.panel?.center : null;
+        if (card && R.panel.working && Math.sin(now * 0.9) > 0.2) {
+          const dx = card.x - m.x, dy = card.y - m.y, dd = Math.hypot(dx, dy) || 1;
+          face.lookX = R.damp(face.lookX, (dx / dd) * 0.9, 6, dt); face.lookY = R.damp(face.lookY, (dy / dd) * 0.9, 6, dt);
         }
         if (b) {
           b.hover = env.mouse.active && hitBubble(b, env.mouse.x, env.mouse.y);
@@ -902,6 +1305,7 @@
           const dx = lookAt[0] - m.x, dy = lookAt[1] - m.y, dd = Math.hypot(dx, dy) || 1, s = Math.min(1, dd / 120);
           face.lookX = R.damp(face.lookX, (dx / dd) * s, 9, dt); face.lookY = R.damp(face.lookY, (dy / dd) * s, 9, dt);
         }
+        listUpdate(dt, env);
         for (let i = glyphParts.length - 1; i >= 0; i--) { const g = glyphParts[i]; g.y += g.vy * dt; g.vy *= 0.97; g.life -= dt * 1.2; if (g.life <= 0) glyphParts.splice(i, 1); }
         for (let i = dying.length - 1; i >= 0; i--) {
           step(dying[i], dt, env);
@@ -917,9 +1321,23 @@
           put(gx - 1, gy, lv); put(gx, gy, lv); put(gx + 1, gy, lv);
           if (g.g === '+') { put(gx, gy - 1, lv); put(gx, gy + 1, lv); }
         }
+        drawListGrid();
         for (const bb of dying) drawBubbleGrid(bb);
         if (b) drawBubbleGrid(b);
       },
+      // Drawing beyond the LED grid (a tool's screen effects, the guide's frame) needs the whole screen.
+      wide: () => !!tool || !!guide,
+      // The body is drawn snapped to its grid cell while it follows (10-dither.js): bubbles riding with it move too.
+      shift: (dx, dy) => {
+        for (const bb of [b, ...dying]) {
+          if (!bb) continue;
+          bb.x.x += dx; bb.y.x += dy; bb.tail.x.x += dx; bb.tail.y.x += dy;
+          if (bb.mx != null) { bb.mx += dx; bb.my += dy; }
+          if (bb.ax != null) { bb.ax += dx; bb.ay += dy; }
+        }
+      },
+      // Nothing drawn outside the LED grid this frame, so the grid alone decides whether the picture changed.
+      quiet: () => !b && !dying.length && !tool && !guide && !list.open && !glyphParts.length,
       over: (ctx, env) => {
         if (!stage()) return;
         if (guide?.arrived) {
@@ -973,9 +1391,11 @@
           tool.def.over?.(tool, C, ctx); drawChipText(ctx, env, tool);
           ctx.restore();
         }
+        drawListText(ctx);
         for (const bb of dying) drawText(ctx, env, bb);
         if (b) drawText(ctx, env, b);
       },
     };
+    return self;
   };
 })();

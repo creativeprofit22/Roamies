@@ -48,6 +48,9 @@
     }
     get speed() { return Math.hypot(this.vx, this.vy); }
     goTo(x, y) { this.tx = x; this.ty = y; this.mode = 'go'; this.flung = false; }
+    // drive(dt, env): set x, y, vx, vy for this frame from outside (following the cursor), before the body,
+    // face and tail are laid out, so they all agree on where it is.
+    drive = null;
     pick(env) {
       // Anchored: idle shuffles around a home spot instead of roaming the screen.
       if (this.anchor) {
@@ -65,7 +68,9 @@
     update(dt, env) {
       const o = this.o;
       const sp = o.speed * (this.speedMul ?? 1) * (env.reduced ? 0.45 : 1) * (1 - 0.85 * (env.sleepy || 0));
-      if (this.dragging) {
+      if (this.drive && !this.dragging) {
+        this.drive(dt, env);
+      } else if (this.dragging) {
         const nx = env.mouse.x - this.grabX, ny = env.mouse.y - this.grabY;
         this.vx = lerp(this.vx, (nx - this.x) / Math.max(dt, 1e-3), 0.35);
         this.vy = lerp(this.vy, (ny - this.y) / Math.max(dt, 1e-3), 0.35);
@@ -91,7 +96,7 @@
         this.vy = damp(this.vy, dvy, o.accel, dt);
         this.x += this.vx * dt; this.y += this.vy * dt;
       }
-      if (!this.dragging) this.walls(env);
+      if (!this.dragging && !this.drive) this.walls(env);
       const s = this.speed;
       this.stretch = damp(this.stretch, clamp(s / 1100, 0, 0.5), 9, dt);
       if (s > 8) this.ang = angDamp(this.ang, Math.atan2(this.vy, this.vx), 8, dt);
@@ -467,7 +472,7 @@
   document.addEventListener('pointerleave', () => { pointer.active = false; });
   addEventListener('blur', () => { pointer.active = false; });
 
-  // Desktop overlay: every roamie shares one transparent full-screen canvas. The host app calls
+  // Desktop overlay: every roamie shares one transparent canvas, cut down to (and moved with) what's drawn. The host app calls
   // Roamie.ptr(x, y) each frame with the real cursor and makes the window click-through unless it returns true.
   R.bootDesktop = (canvas) => {
     const qs = new URLSearchParams(location.search);
@@ -487,9 +492,38 @@
       c.mover.onBonk = (s) => { c.face?.set('dizzy', 1.8); c.bonk?.(s); };
       return { def, env, c };
     });
+    // The canvas covers only what's drawn this frame (plus slack) and moves with it, so the page uploads
+    // and composites a small patch instead of the whole screen at 120 Hz. Drawing stays in screen coordinates.
+    Object.assign(canvas.style, { inset: 'auto', left: '0px', top: '0px', transformOrigin: '0 0', willChange: 'transform' });
+    let cw = 0, ch = 0, vx = 0, vy = 0, roomy = 0;
+    const place = (U, dt) => {
+      const x0 = U && clamp(Math.floor(U.x0), 0, W), y0 = U && clamp(Math.floor(U.y0), 0, H);
+      const x1 = U && clamp(Math.ceil(U.x1), 0, W), y1 = U && clamp(Math.ceil(U.y1), 0, H);
+      if (!U || x1 <= x0 || y1 <= y0) {
+        // Nothing to show: hide it and let go of its pixels.
+        if (canvas.style.visibility !== 'hidden') { canvas.style.visibility = 'hidden'; canvas.width = canvas.height = 1; cw = ch = 0; }
+        return false;
+      }
+      if (canvas.style.visibility) canvas.style.visibility = '';
+      const w = x1 - x0, h = y1 - y0, fits = w <= cw && h <= ch;
+      // Grow at once; shrink after a second with lots of room to spare (a bubble closing, say).
+      roomy = fits && (cw - w > 320 || ch - h > 320) ? roomy + dt : 0;
+      let moved = false;
+      if (!fits || roomy > 1) {
+        cw = Math.min(W, Math.ceil((w + 96) / 64) * 64); ch = Math.min(H, Math.ceil((h + 96) / 64) * 64);
+        canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
+        canvas.style.width = `${cw}px`; canvas.style.height = `${ch}px`;
+        roomy = 0; moved = true;
+      }
+      if (moved || x0 < vx || y0 < vy || x1 > vx + cw || y1 > vy + ch) {
+        vx = clamp(Math.round((x0 + x1 - cw) / 2), 0, W - cw); vy = clamp(Math.round((y0 + y1 - ch) / 2), 0, H - ch);
+        canvas.style.transform = `translate(${vx}px,${vy}px)`;
+      }
+      return true;
+    };
     const resize = () => {
       W = innerWidth; H = innerHeight; dpr = Math.min(2, devicePixelRatio || 1);
-      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      cw = ch = 0;
       for (const o of list) { o.env.w = W; o.env.h = H; o.env.dpr = dpr; o.c.resize?.(o.env); }
     };
     addEventListener('resize', resize);
@@ -504,15 +538,32 @@
       }
       return null;
     };
-    R.ptr = (x, y) => {
-      if (x !== pointer.x || y !== pointer.y) setPointer(x, y);
-      return !!down || list.some((o) => o.c.mover.dragging || o.c.hit?.(x, y)) || !!hitAt(x, y);
+    // The host's cursor samples (with the time each was read) are replayed a little behind real time, so every
+    // frame sees where the cursor was at that frame's instant: even motion however unevenly they arrive.
+    const trail = [], LAG = 14;
+    let clockOff = Infinity;
+    R.ptr = (x, y, t) => {
+      if (t != null) {
+        const nowMs = performance.now();
+        // Host clock → page clock: the smallest delay seen (the fastest delivery), creeping up slowly.
+        clockOff = Math.min(clockOff + 0.02, nowMs - t);
+        trail.push({ x, y, t: t + clockOff });
+        if (trail.length > 48) trail.splice(0, trail.length - 48);
+        if (!pointer.active || nowMs - pointer.last > 250) setPointer(x, y);
+        pointer.active = true; pointer.last = nowMs;
+      } else if (x !== pointer.x || y !== pointer.y) setPointer(x, y);
+      return !!down || list.some((o) => o.c.mover.dragging || o.c.hit?.(x, y)) || !!hitAt(x, y) || !!R.panelHit?.(x, y);
     };
-    canvas.addEventListener('wheel', (e) => {
+    // On the window, not the canvas: the canvas is only as big as what's drawn, and hit areas can reach past it.
+    // Clicks on other page elements (the research card) are theirs.
+    const ours = (e) => e.target === canvas || e.target === document.body || e.target === document.documentElement;
+    addEventListener('wheel', (e) => {
+      if (!ours(e)) return;
       const o = list.find((q) => q.c.hit?.(e.clientX, e.clientY));
       if (o) { e.preventDefault(); o.c.wheel?.(e.deltaY); }
     }, { passive: false });
-    canvas.addEventListener('pointerdown', (e) => {
+    addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || !ours(e)) return; // right-click opens settings instead of grabbing
       const b = list.find((q) => q.c.hit?.(e.clientX, e.clientY));
       if (b) { b.c.press?.(e.clientX, e.clientY); return; }
       const o = hitAt(e.clientX, e.clientY);
@@ -535,21 +586,57 @@
     };
     canvas.addEventListener('pointerup', release);
     canvas.addEventListener('pointercancel', () => { if (down) down.o.c.mover.dragging = false; down = null; });
+    canvas.addEventListener('contextmenu', (e) => {
+      const o = list.find((q) => q.c.hit?.(e.clientX, e.clientY)) || hitAt(e.clientX, e.clientY);
+      if (!o) return;
+      e.preventDefault();
+      R.onContext?.(o.def.id);
+    });
 
-    let last = performance.now();
+    let last = performance.now(), skip = false, blank = false, nap = 0, lastSig = '';
+    R.wake = () => { if (nap) { clearTimeout(nap); nap = 0; requestAnimationFrame(frame); } };
+    const replay = (now, dt) => {
+      if (!trail.length) return;
+      const at = now - LAG;
+      let x, y;
+      const z = trail[trail.length - 1], z0 = trail[trail.length - 2];
+      if (at >= z.t) {
+        // A late sample: carry on along the last stretch for a moment rather than stopping dead.
+        const u = z0 && z.t - z0.t > 0.5 && z.t - z0.t < 40 ? Math.min(at - z.t, 16) / (z.t - z0.t) : 0;
+        x = z.x + (z.x - (z0?.x ?? z.x)) * u; y = z.y + (z.y - (z0?.y ?? z.y)) * u;
+      }
+      else if (at <= trail[0].t) ({ x, y } = trail[0]);
+      else {
+        let i = trail.length - 1;
+        while (i > 0 && trail[i - 1].t > at) i--;
+        const a = trail[i - 1], b = trail[i], u = (at - a.t) / Math.max(0.001, b.t - a.t);
+        x = a.x + (b.x - a.x) * u; y = a.y + (b.y - a.y) * u;
+      }
+      if (dt > 0) { pointer.vx = (x - pointer.x) / dt; pointer.vy = (y - pointer.y) / dt; }
+      pointer.x = x; pointer.y = y;
+    };
     const frame = (now) => {
-      const dt = Math.min(1 / 30, (now - last) / 1000);
+      // Everyone gone: nothing to draw, so the canvas is cleared once and only the bookkeeping (timers,
+      // closing bubbles) ticks, ten times a second, off the display clock. A host message wakes it at once.
+      const gone = list.length > 0 && list.every((o) => o.c.gone && !o.c.mover.dragging);
+      if (gone && blank && now - last < 100) { nap = setTimeout(() => { nap = 0; requestAnimationFrame(frame); }, 100 - (now - last)); return; }
+      // On a 120 Hz screen only a moving cursor being followed (or a drag) needs every frame; the rest runs at 60.
+      const fast = list.some((o) => o.c.mover.dragging || (o.c.mover.drive && now - pointer.last < 150));
+      skip = !gone && !skip && now - last < 12 && !fast;
+      if (skip) { requestAnimationFrame(frame); return; }
+      const dt = Math.min(gone ? 0.25 : 1 / 30, (now - last) / 1000);
       last = now;
+      replay(now, dt);
       const idle = (now - pointer.last) / 1000;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (gone && !blank) place(null, dt);
+      blank = gone;
       for (const o of list) {
         const { env, c } = o, m = c.mover;
         env.t += dt; env.reduced = reducedMQ.matches; env.sleepy = idle > 12 ? 1 : 0;
         env.mouse.active = pointer.active && idle < 6;
-        env.mouse.x = pointer.x; env.mouse.y = pointer.y;
+        env.mouse.x = pointer.x; env.mouse.y = pointer.y; env.mouse.vx = pointer.vx; env.mouse.vy = pointer.vy;
         env.mouse.inside = env.mouse.active && pointer.x >= 0 && pointer.y >= 0 && pointer.x <= W && pointer.y <= H;
-        if (env.mouse.inside && !m.dragging && idle < 0.05 && Math.hypot(pointer.vx, pointer.vy) > 2600 && Math.hypot(pointer.x - m.x, pointer.y - m.y) < m.radius * 2.2) {
+        if (env.mouse.inside && !m.dragging && !m.drive && idle < 0.05 && Math.hypot(pointer.vx, pointer.vy) > 2600 && Math.hypot(pointer.x - m.x, pointer.y - m.y) < m.radius * 2.2) {
           c.face?.set('surprised', 0.7);
           // Anchored roamies (the sidekick) only flinch: a shove would dodge the click you were aiming.
           if (!m.anchor) {
@@ -559,13 +646,31 @@
         }
         c.update(dt, env);
       }
+      if (gone) { nap = setTimeout(() => { nap = 0; requestAnimationFrame(frame); }, 100); return; }
       const order = [...list].sort((a, b) => a.c.mover.y - b.c.mover.y);
+      let U = null, sig = '';
       for (const o of order) {
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.save();
-        o.c.draw(ctx, o.env);
-        ctx.restore();
+        const r = o.c.prepare ? o.c.prepare(o.env) : { x0: 0, y0: 0, x1: W, y1: H, sig: NaN };
+        sig += `${r ? r.sig : 'x'},`;
+        if (r) U = U ? { x0: Math.min(U.x0, r.x0), y0: Math.min(U.y0, r.y0), x1: Math.max(U.x1, r.x1), y1: Math.max(U.y1, r.y1) } : r;
       }
+      const at = `${vx},${vy},${cw},${ch}`, shown = place(U, dt);
+      // Same picture in the same place as last frame (resting, nothing moving): leave the canvas alone, so the
+      // page has nothing to repaint. NaN never matches, so anything unfingerprinted always redraws.
+      const same = shown && !sig.includes('NaN') && sig === lastSig && at === `${vx},${vy},${cw},${ch}`;
+      lastSig = shown ? sig : '';
+      if (shown && !same) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (const o of order) {
+          ctx.setTransform(dpr, 0, 0, dpr, -vx * dpr, -vy * dpr);
+          ctx.save();
+          o.c.draw(ctx, o.env);
+          ctx.restore();
+        }
+      }
+      // Nothing on screen (drawn natively, or off it): just the bookkeeping, 30 times a second, off the display clock.
+      if (!shown && !list.some((o) => o.c.mover.dragging)) { nap = setTimeout(() => { nap = 0; requestAnimationFrame(frame); }, 33); return; }
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);

@@ -1,0 +1,170 @@
+{
+ "controls": [
+  {
+   "bounds": [
+    158,
+    405,
+    165,
+    26
+   ],
+   "id": 1,
+   "label": "Caracteres para copiar:",
+   "role": "text field"
+  },
+  {
+   "bounds": [
+    329,
+    405,
+    75,
+    23
+   ],
+   "id": 2,
+   "label": "Seleccionar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    34,
+    432,
+    96,
+    20
+   ],
+   "id": 3,
+   "label": "Vista avanzada",
+   "role": "checkbox"
+  },
+  {
+   "bounds": [
+    86,
+    106,
+    321,
+    19
+   ],
+   "id": 4,
+   "label": "Fuente:",
+   "role": "combo box",
+   "value": "Arial"
+  },
+  {
+   "bounds": [
+    391,
+    107,
+    15,
+    17
+   ],
+   "id": 5,
+   "label": "Abrir",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    413,
+    106,
+    75,
+    23
+   ],
+   "id": 6,
+   "label": "Ayuda",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    470,
+    139,
+    21,
+    17
+   ],
+   "id": 7,
+   "label": "Línea arriba",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    470,
+    173,
+    21,
+    200
+   ],
+   "id": 8,
+   "label": "Av Pág",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    470,
+    373,
+    21,
+    17
+   ],
+   "id": 9,
+   "label": "Línea abajo",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    23,
+    73,
+    22,
+    22
+   ],
+   "id": 10,
+   "label": "Sistema",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    358,
+    66,
+    47,
+    30
+   ],
+   "id": 11,
+   "label": "Minimizar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    451,
+    66,
+    47,
+    30
+   ],
+   "id": 12,
+   "label": "Cerrar",
+   "role": "button"
+  }
+ ],
+ "elsewhere": [],
+ "note": "",
+ "ok": true,
+ "source": "uia",
+ "texts": [
+  "Fuente:",
+  "Caracteres para copiar:"
+ ],
+ "unit": "px",
+ "window": {
+  "app": "Mapa de caracteres",
+  "bounds": [
+   22,
+   65,
+   476,
+   413
+  ],
+  "id": 11012028,
+  "scale": 1,
+  "title": "Mapa de caracteres"
+ },
+ "shot": {
+  "bounds": [
+   22,
+   65,
+   476,
+   413
+  ],
+  "native": [
+   476,
+   413
+  ]
+ }
+}

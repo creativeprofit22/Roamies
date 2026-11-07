@@ -1,0 +1,138 @@
+{
+ "controls": [
+  {
+   "bounds": [
+    1218,
+    321,
+    22,
+    22
+   ],
+   "id": 1,
+   "label": "Sistema",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    2069,
+    314,
+    47,
+    30
+   ],
+   "id": 2,
+   "label": "Minimizar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2116,
+    314,
+    46,
+    30
+   ],
+   "id": 3,
+   "label": "Maximizar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2162,
+    314,
+    47,
+    30
+   ],
+   "id": 4,
+   "label": "Cerrar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1218,
+    344,
+    55,
+    19
+   ],
+   "id": 5,
+   "label": "Archivo",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    1273,
+    344,
+    53,
+    19
+   ],
+   "id": 6,
+   "label": "Edición",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    1326,
+    344,
+    59,
+    19
+   ],
+   "id": 7,
+   "label": "Formato",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    1385,
+    344,
+    30,
+    19
+   ],
+   "id": 8,
+   "label": "Ver",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    1415,
+    344,
+    48,
+    19
+   ],
+   "id": 9,
+   "label": "Ayuda",
+   "role": "menu item"
+  }
+ ],
+ "elsewhere": [],
+ "note": "",
+ "ok": true,
+ "source": "uia",
+ "texts": [
+  "Línea 1, columna 1",
+  "100%",
+  "Windows (CRLF)",
+  "UTF-8"
+ ],
+ "unit": "px",
+ "window": {
+  "app": "Bloc de notas",
+  "bounds": [
+   1217,
+   313,
+   992,
+   698
+  ],
+  "id": 5376498,
+  "scale": 1,
+  "title": "Sin título: Bloc de notas"
+ },
+ "shot": {
+  "bounds": [
+   1217,
+   313,
+   992,
+   698
+  ],
+  "native": [
+   992,
+   698
+  ]
+ }
+}

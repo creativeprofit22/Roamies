@@ -1,0 +1,466 @@
+{
+ "controls": [
+  {
+   "bounds": [
+    628,
+    400,
+    35,
+    21
+   ],
+   "id": 1,
+   "label": "Todas las ubicaciones",
+   "role": "menu button"
+  },
+  {
+   "bounds": [
+    663,
+    400,
+    94,
+    21
+   ],
+   "id": 2,
+   "label": "Panel de control",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    1407,
+    400,
+    20,
+    22
+   ],
+   "id": 3,
+   "label": "Ubicaciones anteriores",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1427,
+    400,
+    20,
+    22
+   ],
+   "id": 4,
+   "label": "Actualizar \"Panel de control\" (F5)",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1466,
+    403,
+    164,
+    15
+   ],
+   "id": 5,
+   "label": "Cuadro de búsqueda",
+   "role": "text field"
+  },
+  {
+   "bounds": [
+    1634,
+    399,
+    16,
+    24
+   ],
+   "id": 6,
+   "label": "Buscar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1368,
+    448,
+    87,
+    25
+   ],
+   "id": 7,
+   "label": "Categoría",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    755,
+    499,
+    52,
+    54
+   ],
+   "id": 8,
+   "label": "Icono",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    816,
+    499,
+    144,
+    21
+   ],
+   "id": 9,
+   "label": "Sistema y seguridad",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    816,
+    521,
+    150,
+    15
+   ],
+   "id": 10,
+   "label": "Revisar el estado del equipo",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    816,
+    538,
+    262,
+    30
+   ],
+   "id": 11,
+   "label": "Guardar copias de seguridad de tus archivos con Historial de archivos",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    816,
+    570,
+    257,
+    15
+   ],
+   "id": 12,
+   "label": "Copias de seguridad y restauración (Windows 7)",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    755,
+    594,
+    52,
+    54
+   ],
+   "id": 13,
+   "label": "Icono",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    816,
+    598,
+    116,
+    21
+   ],
+   "id": 14,
+   "label": "Redes e Internet",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    816,
+    624,
+    166,
+    15
+   ],
+   "id": 15,
+   "label": "Ver el estado y las tareas de red",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    755,
+    648,
+    52,
+    54
+   ],
+   "id": 16,
+   "label": "Icono",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    816,
+    648,
+    135,
+    21
+   ],
+   "id": 17,
+   "label": "Hardware y sonido",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    816,
+    670,
+    155,
+    15
+   ],
+   "id": 18,
+   "label": "Ver dispositivos e impresoras",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    816,
+    687,
+    123,
+    15
+   ],
+   "id": 19,
+   "label": "Agregar un dispositivo",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    755,
+    711,
+    52,
+    54
+   ],
+   "id": 20,
+   "label": "Icono",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    816,
+    715,
+    80,
+    21
+   ],
+   "id": 21,
+   "label": "Programas",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    816,
+    741,
+    133,
+    15
+   ],
+   "id": 22,
+   "label": "Desinstalar un programa",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1105,
+    499,
+    52,
+    54
+   ],
+   "id": 23,
+   "label": "Icono",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1166,
+    502,
+    137,
+    21
+   ],
+   "id": 24,
+   "label": "Cuentas de usuario",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1166,
+    528,
+    16,
+    16
+   ],
+   "id": 25,
+   "label": "Icono",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1182,
+    528,
+    140,
+    15
+   ],
+   "id": 26,
+   "label": "Cambiar el tipo de cuenta",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1105,
+    553,
+    52,
+    54
+   ],
+   "id": 27,
+   "label": "Icono",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1166,
+    564,
+    201,
+    21
+   ],
+   "id": 28,
+   "label": "Apariencia y personalización",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1105,
+    607,
+    52,
+    54
+   ],
+   "id": 29,
+   "label": "Icono",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1166,
+    611,
+    100,
+    21
+   ],
+   "id": 30,
+   "label": "Reloj y región",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1166,
+    637,
+    233,
+    15
+   ],
+   "id": 31,
+   "label": "Cambiar formatos de fecha, hora o número",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1105,
+    661,
+    52,
+    54
+   ],
+   "id": 32,
+   "label": "Icono",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1166,
+    661,
+    94,
+    21
+   ],
+   "id": 33,
+   "label": "Accesibilidad",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1166,
+    683,
+    244,
+    30
+   ],
+   "id": 34,
+   "label": "Permitir que Windows sugiera parámetros de configuración",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    1166,
+    715,
+    172,
+    15
+   ],
+   "id": 35,
+   "label": "Optimizar la presentación visual",
+   "role": "link"
+  },
+  {
+   "bounds": [
+    545,
+    371,
+    22,
+    22
+   ],
+   "id": 36,
+   "label": "Sistema",
+   "role": "menu item"
+  },
+  {
+   "bounds": [
+    1529,
+    364,
+    47,
+    30
+   ],
+   "id": 37,
+   "label": "Minimizar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1576,
+    364,
+    46,
+    30
+   ],
+   "id": 38,
+   "label": "Maximizar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1622,
+    364,
+    47,
+    30
+   ],
+   "id": 39,
+   "label": "Cerrar",
+   "role": "button"
+  }
+ ],
+ "elsewhere": [],
+ "note": "",
+ "ok": true,
+ "source": "uia",
+ "texts": [
+  "Ajustar la configuración del equipo",
+  "Ver por:"
+ ],
+ "unit": "px",
+ "window": {
+  "app": "Explorador de Windows",
+  "bounds": [
+   544,
+   363,
+   1125,
+   634
+  ],
+  "id": 264782,
+  "scale": 1,
+  "title": "Panel de control"
+ },
+ "shot": {
+  "bounds": [
+   544,
+   363,
+   1125,
+   634
+  ],
+  "native": [
+   1125,
+   634
+  ]
+ }
+}

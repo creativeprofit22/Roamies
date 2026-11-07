@@ -1,0 +1,44 @@
+{
+  "_comment": "Windows apps Roamies may point at but never read, capture or type into. Exe names are lowercase. Every exe here is also in DICTATION_BLOCK in sidecar/safety.mjs (checked by test/safety.test.mjs).",
+  "exes": {
+    "keepass.exe": "KeePass",
+    "keepassxc.exe": "KeePassXC",
+    "1password.exe": "1Password",
+    "bitwarden.exe": "Bitwarden",
+    "dashlane.exe": "Dashlane",
+    "enpass.exe": "Enpass",
+    "nordpass.exe": "NordPass",
+    "roboform.exe": "RoboForm",
+    "keeperpasswordmanager.exe": "Keeper",
+    "lastpass.exe": "LastPass",
+    "sechealthui.exe": "Windows Security",
+    "consent.exe": "the admin prompt",
+    "credentialuibroker.exe": "a Windows sign-in prompt",
+    "lockapp.exe": "the lock screen",
+    "logonui.exe": "the sign-in screen"
+  },
+  "classes": {
+    "Credential Dialog Xaml Host": "a Windows sign-in prompt"
+  },
+  "_noInputComment": "Apps the helper may read and capture but never type or click in (act): typing into a terminal would run commands past sidecar/safety.mjs. Same rule as HANDS_OFF in hands/main.swift.",
+  "noInput": {
+    "cmd.exe": "Command Prompt",
+    "powershell.exe": "PowerShell",
+    "pwsh.exe": "PowerShell",
+    "windowsterminal.exe": "Windows Terminal",
+    "openconsole.exe": "Windows Terminal",
+    "conhost.exe": "the console",
+    "mintty.exe": "the Git Bash terminal",
+    "alacritty.exe": "Alacritty",
+    "wezterm-gui.exe": "WezTerm",
+    "regedit.exe": "Registry Editor",
+    "mmc.exe": "the Windows management console"
+  },
+  "_noInputClassesComment": "Console and terminal windows by class, whatever shell runs inside (bash, wsl, python, ssh).",
+  "noInputClasses": {
+    "ConsoleWindowClass": "the console",
+    "CASCADIA_HOSTING_WINDOW_CLASS": "Windows Terminal",
+    "PseudoConsoleWindow": "the console",
+    "mintty": "the Git Bash terminal"
+  }
+}

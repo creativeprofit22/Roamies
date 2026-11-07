@@ -1,0 +1,6 @@
+[
+ { "ask": "Where is the square root button?", "truth": [384, 420, 117, 63] },
+ { "ask": "Which button clears everything?", "truth": [384, 355, 117, 63] },
+ { "ask": "Where is the Memory tab?", "truth": [698, 143, 80, 48] },
+ { "ask": "Where is the button that keeps the calculator on top?", "truth": [280, 154, 32, 32] }
+]

@@ -1,0 +1,6 @@
+[
+ { "ask": "Where do I change the screen resolution?", "truth": [1632, 629, 280, 32] },
+ { "ask": "Where are the sound settings?", "truth": [1287, 249, 320, 48] },
+ { "ask": "Where are the storage settings?", "truth": [1287, 441, 320, 48] },
+ { "ask": "Where do I turn on night light?", "truth": [1632, 157, 148, 60] }
+]

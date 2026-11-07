@@ -1,0 +1,6 @@
+[
+ { "ask": "Where do I uninstall a program?", "truth": [816, 741, 133, 15] },
+ { "ask": "Where do I change the date format?", "truth": [1166, 637, 233, 15] },
+ { "ask": "Where is the search box?", "truth": [1466, 403, 164, 15] },
+ { "ask": "Where is the refresh button?", "truth": [1427, 400, 20, 22] }
+]

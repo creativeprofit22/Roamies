@@ -27,7 +27,10 @@
       const S = (n) => Roamie.sfx?.play(n);
       const PAL = o.pal, L = PAL.length - 1;
       const { n: PN, t: PT } = PATTERNS[o.pattern ?? 'bayer4'], PM = PN - 1;
-      const th = (gx, gy) => PT[(gy & PM) * PN + (gx & PM)];
+      // The dither pattern is pinned to the screen, or to the body while it follows the cursor (tox, toy: its cell),
+      // so the shading doesn't crawl across it as it moves.
+      let tox = 0, toy = 0;
+      const th = (gx, gy) => PT[((gy - toy) & PM) * PN + ((gx - tox) & PM)];
       const K = o.matrix ? 4 : 1;
       const GAP = PAL[0].map((c) => (c * 0.7) | 0);
       const SCAN = o.scan ?? 1;
@@ -41,6 +44,15 @@
       // Sidekick acts: little performances with pop-out hands, a pixel speech icon and particles.
       const ACTS = ['wave', 'hype', 'remind', 'upset', 'motivate'];
       const forced = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('act') : null;
+      // Size: 'default', 'small' (half the body) or 'cursor' (a pixel arrow pointer). Text keeps its size either way.
+      let form = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('form')) || 'default', lastEnv = null;
+      // Look: 'classic' (the goo blob, and the arrow at cursor size), 'jarvis' (roamies/jarvis.js: a globe of
+      // points with a lit heart, and a HUD reticle at cursor size) or a character from roamies/people.js
+      // ('anime', 'sarah', 'adrian'). Moves, sizes and everything else are shared.
+      const drawn = (l) => (l === 'jarvis' ? Roamie.jarvis : Roamie.people?.[l]);
+      const pickLook = (l) => (drawn(l) ? l : 'classic');
+      let look = pickLook(typeof location !== 'undefined' ? new URLSearchParams(location.search).get('look') : null);
+      const jst = { spin: 0, dt: 0.016 };
       const hands = [-1, 1].map((s) => ({ s, x: m.x, y: m.y, vx: 0, vy: 0 }));
       const parts = [];
       let act = null, pending = null, arms = 0, ox = 0, oy = 0, prevHop = 0;
@@ -63,13 +75,16 @@
       const octx = off.getContext('2d');
       const bloom = o.glow ? document.createElement('canvas') : null;
       const bctx = bloom?.getContext('2d');
-      let img = null, d = null, clear = false;
+      let img = null, d = null, clear = false, u32 = null;
+      // Cells written this frame (dx/dy), last frame's (pd, cleared before the next), and the patch to show (rect).
+      let dx0 = 0, dy0 = 0, dx1 = -1, dy1 = -1, pd = null, rect = null, ready = false;
       const spring = (p, tx, ty, k, c, dt) => { p.vx += ((tx - p.x) * k - p.vx * c) * dt; p.vy += ((ty - p.y) * k - p.vy * c) * dt; p.x += p.vx * dt; p.y += p.vy * dt; };
 
       // Writes one logical pixel; in matrix mode it becomes a 3x3 dot with a one-subpixel gap.
       const setPx = (gx, gy, c, a = 255, solid = false) => {
         if (gx < 0 || gy < 0 || gx >= gw || gy >= gh) return;
         if (mask) { const r = mask(gx, gy); if (!r) return; if (r === 2) c = PAL[L]; }
+        if (gx < dx0) dx0 = gx; if (gx > dx1) dx1 = gx; if (gy < dy0) dy0 = gy; if (gy > dy1) dy1 = gy;
         const f = SCAN !== 1 && gy & 1 ? SCAN : 1;
         const r = c[0] * f, g = c[1] * f, b = c[2] * f;
         if (K === 1) { const i = (gy * IW + gx) * 4; d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = a; return; }
@@ -81,6 +96,15 @@
         }
       };
       const put = (x, y, lvl = 0) => setPx(x, y, PAL[clamp(lvl, 0, L)]);
+      // JARVIS draws points that overlap; the brightest one in each cell wins, then they're written once.
+      const jbuf = new Map();
+      const jput = (x, y, l) => {
+        const gx = Math.round(x), gy = Math.round(y);
+        if (gx < 0 || gy < 0 || gx >= 8192) return;
+        const key = gy * 8192 + gx;
+        if ((jbuf.get(key) ?? -1) < l) jbuf.set(key, l);
+      };
+      const jflush = () => { for (const [key, l] of jbuf) put(key % 8192, Math.floor(key / 8192), l); jbuf.clear(); };
       const line = (x0, y0, x1, y1, lvl) => {
         const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / P));
         for (let i = 0; i <= n; i++) put(Math.round((x0 + ((x1 - x0) * i) / n) / P), Math.round((y0 + ((y1 - y0) * i) / n) / P), lvl);
@@ -91,7 +115,9 @@
       };
 
       const eyesPixel = (cx, cy) => {
-        const gap = Math.max(3, Math.round((R * 0.42) / P)), ew = Math.max(2, Math.round((R * 0.16) / P)), eh = Math.max(3, Math.round((R * 0.28) / P));
+        // Smaller minimums for the small form, so its face isn't all eyes.
+        const sm = form === 'small';
+        const gap = Math.max(3, Math.round((R * 0.42) / P)), ew = Math.max(sm ? 1 : 2, Math.round((R * 0.16) / P)), eh = Math.max(sm ? 2 : 3, Math.round((R * 0.28) / P));
         for (const s of [-1, 1]) {
           const ex = cx + s * gap;
           browAt.push({ x: ex, y: cy - eh - 2, w: ew + 1, s });
@@ -179,7 +205,7 @@
         flame: ['..#...', '..##..', '.###.#', '.#####', '######', '##.###', '#...##', '.####.'],
       };
       const bubble = (gx, gy, icon) => {
-        const rows = ICONS[icon], sc = P < 6 ? 2 : 1, h = rows.length * sc, w = rows[0].length * sc;
+        const rows = ICONS[icon], sc = P < 6 && form === 'default' ? 2 : 1, h = rows.length * sc, w = rows[0].length * sc;
         const x0 = gx - Math.ceil(w / 2) - 2, y0 = gy - h - 3, x1 = x0 + w + 3, y1 = gy;
         for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
           const corner = (x === x0 || x === x1) && (y === y0 || y === y1);
@@ -192,7 +218,7 @@
         rows.forEach((r, j) => { for (let i = 0; i < r.length; i++) if (r[i] === '#') for (let a = 0; a < sc; a++) for (let b = 0; b < sc; b++) put(x0 + 2 + i * sc + b, y0 + 2 + j * sc + a, ink); });
       };
       const drawHands = (bx, by) => {
-        if (arms < 0.12) return;
+        if (arms < 0.12 || form === 'cursor' || look === 'jarvis') return;
         // Floating mitts, no arms: they pop out of the body edge and stay readable over it.
         const hr = Math.max(2, Math.round(((R * 0.25) / P) * Math.min(1, arms * 1.25)));
         for (const h of hands) {
@@ -204,6 +230,56 @@
           put(gx - Math.ceil(hr / 2), gy - Math.ceil(hr / 2), L); put(gx - Math.ceil(hr / 2) + 1, gy - Math.ceil(hr / 2), L);
           put(gx + h.s * -1 * (hr - 1), gy - 1, 0);
         }
+      };
+
+      // Cursor form: a classic arrow pointer of LED dots (o = dark outline, # = lit) with a small face.
+      const ARROW = [
+        'o', 'oo', 'o#o', 'o##o', 'o###o', 'o####o', 'o#####o', 'o######o', 'o#######o',
+        'o#####ooo', 'o##o##o', 'o#oo##o', 'oo  o##o', '    o##o', '     oo',
+      ];
+      const AX = 4, AY = 7;
+      const cell = (c, r) => (r >= 0 && r < ARROW.length ? ARROW[r][c] : undefined);
+      const drawCursor = (bx, by, shX, shY, shK) => {
+        const gx0 = Math.round(bx / P) - AX, gy0 = Math.round(by / P) - AY;
+        // Dithered shadow on the floor, as under the blob.
+        const sy = shY + R * 1.45, sw = R * 0.9 * (0.4 + 0.6 * shK);
+        for (let gy = Math.floor((sy - R * 0.4) / P); gy <= Math.ceil((sy + R * 0.4) / P); gy++) {
+          for (let gx = Math.floor((shX - sw * 1.6) / P); gx <= Math.ceil((shX + sw * 1.6) / P); gx++) {
+            const x = (gx + 0.5) * P, y = (gy + 0.5) * P, k = cell(gx - gx0, gy - gy0);
+            if (k === '#' || k === 'o') continue;
+            const sh = shK * Math.exp(-((y - sy) ** 2) / (R * R * 0.05) - ((x - shX) ** 2) / (sw * sw));
+            if (sh * 0.85 > th(gx, gy)) setPx(gx, gy, PAL[0], 220);
+          }
+        }
+        // Trail: a few fading dots behind a fast move, like an old mouse trail.
+        if (m.speed > 160) tail.forEach((q, i) => put(Math.round(q.x / P) - AX, Math.round(q.y / P) - AY, Math.max(1, L - 1 - i)));
+        ARROW.forEach((row, r) => {
+          for (let c = 0; c < row.length; c++) {
+            if (row[c] === 'o') { put(gx0 + c, gy0 + r, 0); continue; }
+            if (row[c] !== '#') continue;
+            // Bright along the lit left and top edges, a touch of dither toward the bottom right.
+            const rim = row[c - 1] === 'o' || (r > 0 && cell(c, r - 1) === 'o');
+            const v = rim ? 1 : 0.78 - (r + c) * 0.018;
+            put(gx0 + c, gy0 + r, clamp(Math.floor(v * L + th(gx0 + c, gy0 + r) * 0.9), 2, L));
+          }
+        });
+        // Face: two dot eyes in the wide part of the arrow, and a one-dot mouth. Solid cells (no LED gap) so the
+        // glow can't wash them out at this size.
+        const ink = (x, y) => setPx(x, y, PAL[0], 255, true);
+        const lx = face.lookX > 0.5 ? 1 : 0, ly = face.lookY > 0.6 ? 1 : 0;
+        for (const ec of [2, 4]) {
+          const ex = gx0 + ec + lx, ey = gy0 + 6 + ly;
+          if (face.dizzy > 0.5) ink(ex, ey + ((Math.floor(t * 8) + ec) & 1));
+          else if (face.happy > 0.5) ink(ex, ey);
+          else if (face.open < 0.35) ink(ex, ey + 1);
+          else { ink(ex, ey); ink(ex, ey + 1); }
+        }
+        const mode = pose?.mouth ?? (act && { hype: 'shout', remind: 'o', upset: 'frown', motivate: 'grin' }[act.name]);
+        const mx = gx0 + 3 + lx, my = gy0 + 9;
+        if (mode === 'shout' || mode === 'talk2') { ink(mx, my); ink(mx + 1, my); }
+        else if (mode === 'talk1' || mode === 'o' || mode === 'flat') ink(mx, my);
+        else if (mode === 'frown') { ink(mx - 1, my); ink(mx, my - 1); ink(mx + 1, my); }
+        else if (mode === 'grin' || face.happy > 0.5) { ink(mx - 1, my - 1); ink(mx, my); ink(mx + 1, my - 1); }
       };
 
       // ---------- presence performances ----------
@@ -315,6 +391,60 @@
         const c = (u - 0.78) / 0.22; return { sx: 0, sy: 0.03, line: 0, flash: 0, dot: 1 - c };
       };
 
+      // A drawn look: JARVIS's globe (or reticle at cursor size), or a character, with what it's doing passed in
+      // for its motion and face.
+      const drawLook = (bx, by, env) => {
+        const J = drawn(look);
+        if (!J) return;
+        const A = act?.name;
+        Object.assign(jst, {
+          t, mode: pose?.mode ?? null, heard: pose?.heard, voice: window.Roamie.voiceOut?.playing() ? window.Roamie.voiceOut.level() : null, act: A ?? null, actA: act?.a ?? 0,
+          open: face.open, look: [face.lookX, face.lookY], speed: m.speed, vx: m.vx, sq: sq.x,
+          wide: face.wide, dizzy: face.dizzy, happy: face.happy, sleepy: Math.max(env.sleepy ?? 0, face.sleepy ?? 0),
+          mouth: pose?.mouth ?? (act && { wave: null, hype: 'shout', remind: 'o', upset: 'frown', motivate: 'grin' }[A]),
+          brow: pose ? pose.brow : A === 'upset' ? 'angry' : A === 'motivate' ? 'determined' : A === 'remind' ? 'raised' : null,
+        });
+        // The globe's points overlap (the brightest wins); a character is drawn in layers (the last one wins).
+        if (look !== 'jarvis') {
+          const k = { put, L, th };
+          if (form === 'cursor') J.cursor(k, Math.round(bx / P), Math.round(by / P), Math.round(bx / P) - AX, Math.round(by / P) - AY, jst);
+          else J.body(k, bx / P, by / P, R / P, jst);
+          return;
+        }
+        const k = { put: jput, L, th };
+        if (form === 'cursor') J.cursor(k, Math.round(bx / P), Math.round(by / P), Math.round(bx / P) - AX, Math.round(by / P) - AY, jst);
+        else {
+          // A faint projector glow on the floor under the hologram.
+          const fy = (by + R * 1.3) / P, fw = (R * 0.75) / P;
+          for (let y = -1; y <= 1; y++) for (let x = -Math.ceil(fw); x <= Math.ceil(fw); x++) {
+            const u = 1 - Math.hypot(x / fw, y / 1.4);
+            if (u > 0 && u * 0.9 > th(Math.round(bx / P) + x, Math.round(fy) + y)) jput(bx / P + x, fy + y, u > 0.5 ? 2 : 1);
+          }
+          J.body(k, bx / P, by / P, R / P, jst);
+        }
+        jflush();
+      };
+
+      // Following the cursor: how far the body is from its grid cell (dx, dy in CSS px) and that cell, or null.
+      // The cell comes from where it is, not its little gestures (ox, oy: a talking bounce): those moved the
+      // cell, and with it the speech bubble and its text, up and down with every bounce.
+      const glideSnap = () => {
+        if (!m.drive || (pres.state !== 'shown' && pres.state !== 'in') || P <= 0) return null;
+        const bx = m.x, by = m.y, cx = Math.round(bx / P), cy = Math.round(by / P);
+        return { dx: cx * P - bx, dy: cy * P - by, cx, cy };
+      };
+      // Moves the body and everything that rides with it (tail, hands, ears, antenna, drips, the agent's bubbles).
+      const shiftAll = (dx, dy) => {
+        if (!dx && !dy) return;
+        m.x += dx; m.y += dy;
+        for (const q of tail) { q.x += dx; q.y += dy; }
+        for (const q of hands) { q.x += dx; q.y += dy; }
+        for (const q of ears) { q.x += dx; q.y += dy; }
+        if (ant) for (const q of ant) { q.x += dx; q.y += dy; }
+        for (const q of drips) { q.x += dx; q.y += dy; }
+        plug?.shift?.(dx, dy);
+      };
+
       // Plugins (the agent layer) get the kit's drawing helpers and can drive the pose.
       const kit = {
         o, m, face, sq, hands, PAL, L, th, put, disc, line, setPx, spawn, S, startAct,
@@ -322,36 +452,71 @@
         get busy() { return !!act; },
         appear, vanish,
         stopAct: () => { if (act) { act = null; nextAct = rand(3, 6); } },
-        get presence() { return pres.state; }, get presU() { return pres.u; },
+        get presence() { return pres.state; }, get presU() { return pres.u; }, get form() { return form; },
+        get look() { return look; },
+      };
+      // Nothing moving on the body itself (no act, particles, squash or strong expression): a still picture of it
+      // is all of it, so something else can draw it (the native follower, buddy.swift).
+      kit.calmBody = () => pres.state === 'shown' && !act && !pending && !parts.length && !drips.length && Math.abs(sq.x) < 0.04
+        && face.happy < 0.3 && face.wide < 0.3 && face.dizzy < 0.3 && face.sleepy < 0.3 && !m.dragging && !m.flung;
+      // The body as drawn right now, eyes open and shut: PNG (base64) at the screen's scale, its size in CSS px and
+      // where the body point (m.x, m.y) is in it.
+      kit.sprite = () => {
+        if (!lastEnv || pres.state !== 'shown') return null;
+        const env = lastEnv, dpr = env.dpr || 1, keep = face.open, out = [];
+        let r = null;
+        for (const open of [1, 0]) {
+          face.open = open;
+          r = self.prepare(env);
+          if (!r) break;
+          const cv = document.createElement('canvas');
+          cv.width = Math.ceil((r.x1 - r.x0) * dpr); cv.height = Math.ceil((r.y1 - r.y0) * dpr);
+          const c2 = cv.getContext('2d');
+          c2.setTransform(dpr, 0, 0, dpr, -r.x0 * dpr, -r.y0 * dpr);
+          self.draw(c2, env);
+          out.push(cv.toDataURL('image/png').slice(22));
+        }
+        face.open = keep;
+        if (!r || out.length < 2) return null;
+        return { open: out[0], shut: out[1], w: r.x1 - r.x0, h: r.y1 - r.y0, ax: m.x - r.x0, ay: m.y - r.y0 };
       };
       const plug = o.plugin ? o.plugin(kit) : null;
       let pose = null;
 
-      return {
+      const self = {
         mover: m, face, agent: plug?.api, appear, vanish,
         get hidden() { return pres.state === 'hidden' || pres.state === 'out'; },
+        // Fully gone (not even leaving): nothing of it is drawn.
+        get gone() { return pres.state === 'hidden'; },
         hit: (x, y) => !!plug?.hit?.(x, y),
         press: (x, y) => plug?.press?.(x, y),
         wheel: (dy) => plug?.wheel?.(dy),
+        get form() { return form; },
+        setForm(f) { form = ['small', 'cursor'].includes(f) ? f : 'default'; if (lastEnv) this.resize(lastEnv); },
+        get look() { return look; },
+        setLook(l) { look = pickLook(l); jst.spin = 0; jst.tail = null; },
         resize(env) {
+          lastEnv = env;
           const S = Roamie.unit(env);
           const base = (S / 110) * (o.pixel ?? 1);
           P = K > 1 ? K * Math.max(1, Math.round(base / K)) : Math.max(o.pixel < 1 ? 2 : 3, Math.round(base));
           gw = Math.ceil(env.w / P); gh = Math.ceil(env.h / P);
           IW = gw * K; IH = gh * K;
-          off.width = IW; off.height = IH; img = octx.createImageData(IW, IH);
+          off.width = IW; off.height = IH; img = octx.createImageData(IW, IH); u32 = new Uint32Array(img.data.buffer); pd = null;
           if (bloom) { bloom.width = Math.ceil(gw / 4); bloom.height = Math.ceil(gh / 4); }
-          R = clamp(S * 0.15, 28, 140); m.radius = R * (o.ears || o.antenna ? 1.35 : 1.25);
+          R = form === 'cursor' ? 26 : clamp(S * 0.15, 28, 140) * (form === 'small' ? 0.5 : 1); m.radius = R * (o.ears || o.antenna ? 1.35 : 1.25);
         },
         boop() { sq.kick(11); S('boop'); if (ant) ant.forEach((p, i) => { p.vx += rand(-1, 1) * 260 * i; }); if (!forced) startAct('hype', true); },
         grab() { S('grab'); },
         tap() { S('pip'); },
         bonk() { sq.kick(16); S('bonk'); if (!forced) pending = 'upset'; for (let i = 0; i < 6; i++) drips.push({ x: m.x, y: m.y, vx: rand(-260, 260), vy: rand(-300, 60), r: R * rand(0.12, 0.22), rMax: 0, hold: 0, life: 1 }); },
         update(dt, env) {
-          t += dt;
+          t += dt; jst.dt = dt;
           EW = env.w; EH = env.h;
           if (pres.state === 'hidden') { plug?.update?.(dt, env); return; }
           const performing = pres.state === 'in' || pres.state === 'out';
+          // Popping up beside the cursor: the agent layer keeps it moving with the cursor during the entrance.
+          if (performing && pres.state === 'in' && pres.v !== 'drop' && m.drive) { m.drive(dt, env); pres.tx = m.x; pres.ty = m.y; }
           if (performing) presStep(dt); else m.update(dt, env);
           sq.update(dt);
           let px = m.x, py = m.y;
@@ -363,7 +528,7 @@
             act.a += dt;
             m.mode = 'rest'; m.rest = Math.max(m.rest, 0.3);
             if (act.a >= act.dur) { act = null; m.rest = rand(0.4, 1.2); nextAct = rand(2.5, 5); }
-          } else if (!performing && !plug?.busy?.() && env.sleepy < 0.5 && !m.dragging && !m.flung && (nextAct -= dt) <= 0) {
+          } else if (!performing && !m.native && !plug?.busy?.() && env.sleepy < 0.5 && !m.dragging && !m.flung && (nextAct -= dt) <= 0) {
             startAct(ACTS[actIdx++ % ACTS.length]);
           }
           const A = act?.name, a = act?.a ?? 0;
@@ -450,9 +615,26 @@
           face.update(dt, env, m.x, m.y, m);
           plug?.update?.(dt, env);
         },
-        draw(ctx, env) {
-          if (!img || pres.state === 'hidden') return;
+        // Paints the LED grid and returns the area it covers (CSS px), or null if nothing shows.
+        // While it follows the cursor the picture is drawn with the body snapped to its grid cell, so the same dots
+        // light up frame after frame, and draw() slides the finished layer the rest of the way. Drawing it at the
+        // exact spot instead re-picks the dots every frame, which reads as shimmer.
+        prepare(env) {
+          const sn = glideSnap();
+          if (!sn) { tox = toy = 0; return this.paint(env); }
+          tox = sn.cx; toy = sn.cy;
+          // Gestures move the body by whole cells here, so the same dots light up and it doesn't shimmer.
+          const gx = ox, gy = oy;
+          ox = Math.round(ox / P) * P; oy = Math.round(oy / P) * P;
+          shiftAll(sn.dx, sn.dy);
+          try { return this.paint(env); } finally { shiftAll(-sn.dx, -sn.dy); ox = gx; oy = gy; }
+        },
+        paint(env) {
+          ready = false; rect = null;
+          // Drawn natively while it follows (m.native): nothing here until the page takes it back.
+          if (!img || pres.state === 'hidden' || m.native) return null;
           d = img.data; clear = !!env.transparent;
+          dx0 = gw; dy0 = gh; dx1 = -1; dy1 = -1;
           const performing = pres.state === 'in' || pres.state === 'out';
           // During drop/jump the shadow stays on the floor and grows or shrinks with height.
           const dropping = performing && pres.v === 'drop';
@@ -470,7 +652,9 @@
           const lx = -0.5, ly = -0.65, lz = 0.57;
           let gx0 = 0, gx1 = gw, gy0 = 0, gy1 = gh;
           if (clear) {
-            d.fill(0);
+            // Only last frame's cells hold anything, so only they need wiping.
+            if (pd) for (let y = pd[1] * K; y < pd[3] * K; y++) u32.fill(0, y * IW + pd[0] * K, y * IW + pd[2] * K);
+            else d.fill(0);
             let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
             for (const b of balls) { const e = b.r * 1.8 + R * 0.3; x0 = Math.min(x0, b.x - e); y0 = Math.min(y0, b.y - e); x1 = Math.max(x1, b.x + e); y1 = Math.max(y1, b.y + e); }
             y1 = Math.max(y1, shY + R * 1.7);
@@ -485,7 +669,10 @@
               ? (gx, gy) => { const v = 0.55 * th(gx, gy) + 0.45 * clamp(Math.hypot((gx + 0.5) * P - bx, (gy + 0.5) * P - by) / R2, 0, 1); return v < e ? (v > e - 0.14 ? 2 : 1) : 0; }
               : (gx, gy) => { const v = 0.5 * th(gx, gy) + 0.5 * clamp(((gy + 0.5) * P - top) / H2, 0, 1); return v < e ? 0 : v < e + 0.12 ? 2 : 1; };
           }
-          for (let gy = gy0; gy < gy1; gy++) {
+          if ((form === 'cursor' || look !== 'classic') && !clear) for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) setPx(gx, gy, PAL[0]);
+          if (look !== 'classic') drawLook(bx, by, env);
+          else if (form === 'cursor') drawCursor(bx, by, shX, shY, shK);
+          else for (let gy = gy0; gy < gy1; gy++) {
             const y = (gy + 0.5) * P;
             for (let gx = gx0; gx < gx1; gx++) {
               const x = (gx + 0.5) * P;
@@ -533,10 +720,12 @@
           const eye = o.eye === 'cyclops' ? eyeCyclops : o.eye === 'visor' ? eyeVisor : eyesPixel;
           const A = act?.name;
           browAt = [];
-          const my = eye(cx, cy);
-          mouth(cx, my, pose?.mouth ?? (act && { wave: null, hype: 'shout', remind: 'o', upset: 'frown', motivate: 'grin' }[A]));
-          const brow = pose ? pose.brow : A === 'upset' ? 'angry' : A === 'motivate' ? 'determined' : A === 'remind' ? 'raised' : null;
-          if (brow) for (const b of browAt) drawBrow(b, brow);
+          if (form !== 'cursor' && look === 'classic') {
+            const my = eye(cx, cy);
+            mouth(cx, my, pose?.mouth ?? (act && { wave: null, hype: 'shout', remind: 'o', upset: 'frown', motivate: 'grin' }[A]));
+            const brow = pose ? pose.brow : A === 'upset' ? 'angry' : A === 'motivate' ? 'determined' : A === 'remind' ? 'raised' : null;
+            if (brow) for (const b of browAt) drawBrow(b, brow);
+          }
           plug?.gridUnder?.(env);
           drawHands(bx, by);
           mask = null;
@@ -552,32 +741,75 @@
             const sf = env.safe ?? {}, top = Math.ceil(((sf.top ?? 0) + R * 0.9) / P);
             const gx = clamp(Math.round((bx + side * R * 0.95) / P), Math.ceil(((sf.left ?? 0) + R * 0.4) / P), Math.floor((env.w - (sf.right ?? 0) - R * 0.4) / P));
             const gy = Math.max(top, Math.round((by - R * 1.3) / P) - Math.round(Math.abs(Math.sin(act.a * 6))));
-            bubble(gx, gy, icon);
+            if (look === 'jarvis') Roamie.jarvis?.readout({ put, L }, gx, gy, icon, act.a, act.dur, !(P < 6 && form === 'default'));
+            else bubble(gx, gy, icon);
           }
           plug?.gridOver?.(env);
-
-          octx.putImageData(img, 0, 0);
+          pd = dx1 >= dx0 ? [dx0, dy0, dx1 + 1, dy1 + 1] : null;
+          // Tools, guides and cards also draw outside the grid, so they get the whole screen.
+          if (!clear || plug?.wide?.()) rect = [0, 0, gw, gh];
+          else if (pd) {
+            // Four empty cells of margin for the glow, on a 4-cell lattice so the blur sits still as it moves;
+            // the CRT effect stretches the picture (up to 1.3x) and glows around the body, so it gets more.
+            const a = 4 + (crtXform() ? Math.ceil((R * 1.6 + P * 8) / P) : 0);
+            // The lattice starts at the body's cell while it follows, so the glow is worked out the same way each frame.
+            rect = [Math.max(0, Math.floor((dx0 - a - tox) / a) * a + tox), Math.max(0, Math.floor((dy0 - a - toy) / a) * a + toy),
+              Math.min(gw, Math.ceil((dx1 + 1 + a - tox) / a) * a + tox), Math.min(gh, Math.ceil((dy1 + 1 + a - toy) / a) * a + toy)];
+          }
+          ready = true;
+          if (!rect) return null;
+          // A fingerprint of the picture: the lit cells, where the patch sits and the glide offset. NaN (never equal)
+          // whenever something is also drawn outside the grid or the CRT effect is playing.
+          let sig = NaN;
+          if (clear && pd && !performing && !crtXform() && (!plug || plug.quiet?.())) {
+            let h = 2166136261 ^ (rect[0] * 73856093) ^ (rect[1] * 19349663) ^ (rect[2] * 83492791) ^ rect[3];
+            for (let y = pd[1] * K; y < pd[3] * K; y++) for (let i = y * IW + pd[0] * K, e = y * IW + pd[2] * K; i < e; i++) h = Math.imul(h ^ u32[i], 16777619);
+            const glide = !!m.drive && pres.state === 'shown';
+            const gx = glide ? Math.round((bx - Math.round(bx / P) * P) * 20) : 0, gy = glide ? Math.round((by - Math.round(by / P) * P) * 20) : 0;
+            sig = Math.imul(h ^ (gx * 31 + gy * 1009), 16777619);
+          }
+          // One cell extra each way: following slides the layer by up to half a cell.
+          return { x0: rect[0] * P - P, y0: rect[1] * P - P, x1: rect[2] * P + P, y1: rect[3] * P + P, sig };
+        },
+        draw(ctx, env) {
+          if (!ready) this.prepare(env);
+          // Reset even when there was nothing to show, or callers that only call draw() never paint again.
+          const had = ready; ready = false;
+          if (!had || !rect) return;
+          const bx = m.x + ox, by = m.y + oy;
+          const [cx0, cy0, cx1, cy1] = rect;
+          const sx = cx0 * K, sy = cy0 * K, sw = (cx1 - cx0) * K, sh = (cy1 - cy0) * K;
+          const X = cx0 * P, Y = cy0 * P, DW = (cx1 - cx0) * P, DH = (cy1 - cy0) * P;
+          octx.putImageData(img, 0, 0, sx, sy, sw, sh);
           ctx.imageSmoothingEnabled = false;
+          // Following the cursor: the whole LED layer (and the text drawn over it) slides by the part of a cell
+          // the body is past its grid cell, so it glides with the cursor instead of hopping a cell at a time.
+          const glide = !!m.drive && (pres.state === 'shown' || pres.state === 'in');
+          ctx.save();
+          // Snapped to whole screen pixels: a part-pixel shift resamples the dots unevenly, so they'd shimmer.
+          const dpr = env.dpr || 1;
+          if (glide) ctx.translate(Math.round((bx - Math.round(bx / P) * P) * dpr) / dpr, Math.round((by - Math.round(by / P) * P) * dpr) / dpr);
           const crt = crtXform();
           if (crt) {
             ctx.save();
             ctx.translate(bx, by); ctx.scale(Math.max(crt.sx, 0.0001), crt.sy); ctx.translate(-bx, -by);
           }
-          if (!crt || crt.sx > 0.01) ctx.drawImage(off, 0, 0, gw * P, gh * P);
+          if (!crt || crt.sx > 0.01) ctx.drawImage(off, sx, sy, sw, sh, X, Y, DW, DH);
           if (crt && crt.flash > 0.01 && crt.sx > 0.01) {
             // over-exposed tube warming up / cooling down
             ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = crt.flash * 0.85;
-            ctx.drawImage(off, 0, 0, gw * P, gh * P); ctx.restore();
+            ctx.drawImage(off, sx, sy, sw, sh, X, Y, DW, DH); ctx.restore();
           }
           if (bloom && (!crt || crt.sx > 0.01)) {
-            bctx.clearRect(0, 0, bloom.width, bloom.height);
+            const bw = (cx1 - cx0) / 4, bh = (cy1 - cy0) / 4;
+            bctx.clearRect(0, 0, Math.ceil(bw) + 1, Math.ceil(bh) + 1);
             bctx.imageSmoothingEnabled = true;
-            bctx.drawImage(off, 0, 0, bloom.width, bloom.height);
+            bctx.drawImage(off, sx, sy, sw, sh, 0, 0, bw, bh);
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
             ctx.globalAlpha = o.glow;
             ctx.imageSmoothingEnabled = true;
-            ctx.drawImage(bloom, 0, 0, gw * P, gh * P);
+            ctx.drawImage(bloom, 0, 0, bw, bh, X, Y, DW, DH);
             ctx.restore();
           }
           if (crt) {
@@ -596,7 +828,11 @@
             }
             ctx.restore();
           }
-          plug?.over?.(ctx, env);
+          // Text and anything else drawn over the grid sits where the grid had it (snapped), then slides with it.
+          const sn = glideSnap();
+          if (sn) shiftAll(sn.dx, sn.dy);
+          try { plug?.over?.(ctx, env); } finally { if (sn) shiftAll(-sn.dx, -sn.dy); }
+          ctx.restore();
           if (o.grid && !clear) {
             ctx.fillStyle = o.grid;
             for (let x = 0; x < env.w; x += P) ctx.fillRect(x, 0, 1, env.h);
@@ -604,6 +840,7 @@
           }
         },
       };
+      return self;
     },
   });
 

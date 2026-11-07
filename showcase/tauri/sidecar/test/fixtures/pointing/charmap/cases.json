@@ -1,0 +1,6 @@
+[
+ { "ask": "Where is the yen sign?", "truth": [447, 240, 21, 24] },
+ { "ask": "Where is the Copy button?", "truth": [411, 406, 73, 21] },
+ { "ask": "Where do I turn on the advanced view?", "truth": [34, 432, 96, 20] },
+ { "ask": "Where do I pick the font?", "truth": [86, 106, 321, 19] }
+]

@@ -6,16 +6,16 @@
   <key>LSUIElement</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Sidekick listens while you hold your talk shortcut.</string>
+  <string>Roamies listens while you hold your talk shortcut.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Sidekick turns what you say into text, on your Mac.</string>
+  <string>Roamies turns what you say into text, on your Mac.</string>
   <key>NSDesktopFolderUsageDescription</key>
-  <string>Sidekick reads files on your Desktop when you ask it to.</string>
+  <string>Roamies reads files on your Desktop when you ask it to.</string>
   <key>NSDocumentsFolderUsageDescription</key>
-  <string>Sidekick reads files in Documents when you ask it to.</string>
+  <string>Roamies reads files in Documents when you ask it to.</string>
   <key>NSDownloadsFolderUsageDescription</key>
-  <string>Sidekick reads files in Downloads when you ask it to.</string>
+  <string>Roamies reads files in Downloads when you ask it to.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>Sidekick looks at your screen when you ask it to.</string>
+  <string>Roamies looks at your screen when you ask it to.</string>
 </dict>
 </plist>

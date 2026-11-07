@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Roamies</title>
+<link rel="stylesheet" href="../onboarding/onboarding.css">
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<div class="frame shut" id="frame">
+<header class="head">
+  <!-- The Roamie itself, in its current look: it reacts to what's going on (decorative; the status line says it). -->
+  <canvas class="avatar" id="avatar" aria-hidden="true"></canvas>
+  <div class="head-text">
+    <div class="who">
+      <span class="led" id="led" aria-hidden="true"></span>
+      <h1 id="title">Roamies</h1>
+    </div>
+    <p class="now" id="now" role="status" aria-live="polite"></p>
+    <p class="saying" id="saying" aria-hidden="true"></p>
+  </div>
+</header>
+
+<div class="split">
+  <!-- One page per concern: what's going on, what it remembers, then a page for each group of settings. -->
+  <nav class="side" aria-label="Panel">
+    <ul class="nav">
+      <li><button class="px navi" type="button" id="nav-home" data-page="home" aria-controls="pane-home" aria-current="page">Home<span class="dot" aria-hidden="true"></span></button></li>
+      <li><button class="px navi" type="button" id="nav-memory" data-page="memory" aria-controls="pane-memory">Memory<span class="dot" aria-hidden="true"></span></button></li>
+    </ul>
+    <p class="side-label" id="side-settings">Settings</p>
+    <ul class="nav" aria-labelledby="side-settings">
+      <li><button class="px navi" type="button" id="nav-model" data-page="model" aria-controls="pane-model">Model<span class="dot" aria-hidden="true"></span></button></li>
+      <li><button class="px navi" type="button" id="nav-appearance" data-page="appearance" aria-controls="pane-appearance">Appearance<span class="dot" aria-hidden="true"></span></button></li>
+      <li><button class="px navi" type="button" id="nav-voice" data-page="voice" aria-controls="pane-voice">Voice<span class="dot" aria-hidden="true"></span></button></li>
+      <li><button class="px navi" type="button" id="nav-behavior" data-page="behavior" aria-controls="pane-behavior">Behavior<span class="dot" aria-hidden="true"></span></button></li>
+      <li><button class="px navi" type="button" id="nav-about" data-page="about" aria-controls="pane-about">About<span class="dot" aria-hidden="true"></span></button></li>
+    </ul>
+  </nav>
+  <main class="body">
+    <section class="pane" id="pane-home" aria-labelledby="nav-home"></section>
+    <section class="pane" id="pane-memory" aria-labelledby="nav-memory" hidden></section>
+    <section class="pane" id="pane-model" aria-labelledby="nav-model" hidden></section>
+    <section class="pane" id="pane-appearance" aria-labelledby="nav-appearance" hidden></section>
+    <section class="pane" id="pane-voice" aria-labelledby="nav-voice" hidden></section>
+    <section class="pane" id="pane-behavior" aria-labelledby="nav-behavior" hidden></section>
+    <section class="pane" id="pane-about" aria-labelledby="nav-about" hidden></section>
+  </main>
+</div>
+<p class="note" id="note" role="status" aria-live="polite" hidden></p>
+<!-- Tooltip: what a choice is for and what it costs. The same text is each option's description for screen readers. -->
+<div class="px tip" id="tip" aria-hidden="true" hidden></div>
+
+</div>
+<script src="../roamies/core.js"></script>
+<script src="../roamies/jarvis.js"></script>
+<script src="../roamies/people.js"></script>
+<script src="../roamies/10-dither.js"></script>
+<script src="panel.js"></script>
+</body>
+</html>

@@ -1,15 +1,31 @@
 # AGENTS.md
 
 Roamies: a Tauri 2 desktop app (Rust shell in `showcase/tauri/src-tauri`), a Node sidecar that runs the
-agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, and macOS Swift helpers built by
-`src-tauri/build.rs`.
+agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, macOS Swift helpers built by
+`src-tauri/build.rs`, and two Windows voice helpers, also built by `src-tauri/build.rs` for Windows targets:
+`src-tauri/voice-rs` (`roamies-voice-moonshine`, Rust + Moonshine, the default) and `src-tauri/voice-win`
+(`roamies-voice-parakeet`, Rust + Parakeet), picked at runtime from the registry `src-tauri/voice-engines.json`
+(see `docs/voice-engines.md`). They share
+`src-tauri/voice-core` (protocol, session and chord state machine). Both compile elsewhere too, to test speech
+without a Windows PC: `--wav <wav>` runs one clip, `--bench <dir>` scores wav+txt pairs (models come from each
+crate's `fetch-*.sh`). The Windows screen helper `src-tauri/hands-win` (`roamies-hands`, Rust + UI Automation) is
+the twin of `hands/main.swift`: same verbs and JSON, rects in physical pixels (see `docs/hands.md`). The host's
+dictation and hands-win's paste fallback share the clipboard save/paste/restore code in `src-tauri/paste-core`.
+
+Telemetry (one request id across host, voice helper, sidecar and webview; written only by the sidecar,
+local only): see `docs/telemetry.md`. Each layer has its own `telemetry` module with the same start/end/record API.
+
+UI, CSS, layout or visual work in `showcase/` (roamies/, onboarding/, desktop.html): first read `showcase/AGENTS.md` (its `## Polish` section).
 
 ## Commands
 
 ```sh
 cd showcase/tauri/sidecar && npm ci     # install sidecar deps
-npm test                                # sidecar tests (reply stream, storage, pointing)
+npm test                                # sidecar tests (reply stream, storage, pointing, safety, voice model download)
 npm run build                           # bundle the sidecar into dist/
+npm run bench:telemetry                 # telemetry overhead (p95, memory)
+npm run bench:pointing                  # pointing hit rates per path; needs sign-in, spends tokens (docs/pointing.md)
+npm run bench:context                   # history trim vs baseline, prompt-cache cost; free offline, --repeat 5 for a verdict, --live spends tokens
 cd .. && ./build.sh dev                 # web files + sidecar + debug `cargo build`
 ./build.sh                              # release bundle for this OS (signs on macOS if a Developer ID is in the keychain)
 ```
@@ -22,7 +38,8 @@ macOS DMG (Apple silicon and Intel) and an unsigned Windows installer into a dra
 ## Rules
 
 - Every tool that touches files, commands, URLs or other apps goes through `showcase/tauri/sidecar/safety.mjs`
-  (tested in `test/safety.test.mjs`); the macOS helper also refuses to type or click in the apps in `HANDS_OFF`.
+  (tested in `test/safety.test.mjs`); both screen helpers (macOS and Windows, which both work other apps through `act_in_app`) also refuse to
+  type or click in the apps in `HANDS_OFF`.
   Add a test case with every rule change.
 - In-app updates read `latest.json` from the newest published release, signed with the key in the
   `TAURI_SIGNING_PRIVATE_KEY` secret. Keep `plugins.updater.pubkey` in `tauri.conf.json` matching it.

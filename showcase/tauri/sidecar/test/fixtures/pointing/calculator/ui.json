@@ -1,0 +1,419 @@
+{
+ "controls": [
+  {
+   "bounds": [
+    805,
+    114,
+    46,
+    32
+   ],
+   "id": 1,
+   "label": "Minimizar Calculadora",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    851,
+    114,
+    46,
+    32
+   ],
+   "id": 2,
+   "label": "Maximizar Calculadora",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    897,
+    114,
+    46,
+    32
+   ],
+   "id": 3,
+   "label": "Cerrar Calculadora",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    147,
+    152,
+    40,
+    36
+   ],
+   "id": 4,
+   "label": "Abrir navegación",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    307,
+    314,
+    78,
+    39
+   ],
+   "id": 5,
+   "label": "Sumar memoria",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    387,
+    314,
+    78,
+    39
+   ],
+   "id": 6,
+   "label": "Restar la memoria",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    467,
+    314,
+    78,
+    39
+   ],
+   "id": 7,
+   "label": "Almacén de la memoria",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    147,
+    355,
+    117,
+    63
+   ],
+   "id": 8,
+   "label": "Por ciento",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    266,
+    355,
+    116,
+    63
+   ],
+   "id": 9,
+   "label": "Quitar entrada",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    384,
+    355,
+    117,
+    63
+   ],
+   "id": 10,
+   "label": "Borrar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    503,
+    355,
+    116,
+    63
+   ],
+   "id": 11,
+   "label": "Retroceso",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    147,
+    420,
+    117,
+    63
+   ],
+   "id": 12,
+   "label": "Recíproco",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    266,
+    420,
+    116,
+    63
+   ],
+   "id": 13,
+   "label": "Cuadrado",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    384,
+    420,
+    117,
+    63
+   ],
+   "id": 14,
+   "label": "Raíz cuadrada",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    503,
+    420,
+    116,
+    63
+   ],
+   "id": 15,
+   "label": "Dividido por",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    503,
+    485,
+    116,
+    63
+   ],
+   "id": 16,
+   "label": "Multiplicar por",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    503,
+    550,
+    116,
+    63
+   ],
+   "id": 17,
+   "label": "Menos",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    503,
+    615,
+    116,
+    63
+   ],
+   "id": 18,
+   "label": "Más",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    503,
+    680,
+    116,
+    62
+   ],
+   "id": 19,
+   "label": "Es igual a",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    266,
+    680,
+    117,
+    62
+   ],
+   "id": 20,
+   "label": "Cero",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    147,
+    615,
+    117,
+    63
+   ],
+   "id": 21,
+   "label": "Uno",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    266,
+    615,
+    117,
+    63
+   ],
+   "id": 22,
+   "label": "Dos",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    385,
+    615,
+    116,
+    63
+   ],
+   "id": 23,
+   "label": "Tres",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    147,
+    550,
+    117,
+    63
+   ],
+   "id": 24,
+   "label": "Cuatro",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    266,
+    550,
+    117,
+    63
+   ],
+   "id": 25,
+   "label": "Cinco",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    385,
+    550,
+    116,
+    63
+   ],
+   "id": 26,
+   "label": "Seis",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    147,
+    485,
+    117,
+    63
+   ],
+   "id": 27,
+   "label": "Siete",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    266,
+    485,
+    117,
+    63
+   ],
+   "id": 28,
+   "label": "Ocho",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    385,
+    485,
+    116,
+    63
+   ],
+   "id": 29,
+   "label": "Nueve",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    385,
+    680,
+    116,
+    62
+   ],
+   "id": 30,
+   "label": "Separador decimal",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    147,
+    680,
+    117,
+    62
+   ],
+   "id": 31,
+   "label": "Positivo negativo",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    623,
+    143,
+    75,
+    48
+   ],
+   "id": 32,
+   "label": "No hay historial todavía. Historial",
+   "role": "tab"
+  },
+  {
+   "bounds": [
+    698,
+    143,
+    80,
+    48
+   ],
+   "id": 33,
+   "label": "No hay nada guardado en la memoria. Memoria",
+   "role": "tab"
+  },
+  {
+   "bounds": [
+    280,
+    154,
+    32,
+    32
+   ],
+   "id": 34,
+   "label": "Mantener visible",
+   "role": "button"
+  }
+ ],
+ "elsewhere": [],
+ "note": "",
+ "ok": true,
+ "source": "uia",
+ "texts": [
+  "Calculadora",
+  "Listas e historial de la memoria",
+  "Modo de calculadora Estándar",
+  "No hay historial todavía.",
+  "Se muestra 0",
+  "Controles de la memoria",
+  "Control de pantalla",
+  "Funciones estándar",
+  "Operadores estándar",
+  "Teclado numérico"
+ ],
+ "unit": "px",
+ "window": {
+  "app": "Calculator",
+  "bounds": [
+   142,
+   113,
+   802,
+   634
+  ],
+  "id": 2032948,
+  "scale": 1,
+  "title": "Calculadora"
+ },
+ "shot": {
+  "bounds": [
+   142,
+   113,
+   802,
+   634
+  ],
+  "native": [
+   802,
+   634
+  ]
+ }
+}

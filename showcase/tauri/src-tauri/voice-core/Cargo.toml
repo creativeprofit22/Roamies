@@ -1,0 +1,16 @@
+# Shared by the Windows voice helpers (voice-rs: Moonshine, voice-win: Parakeet): the JSON-lines
+# protocol, the engine trait and the talk session, so both speak the same protocol by construction.
+[package]
+name = "roamies-voice-core"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Roamies voice helpers: shared protocol, engine trait and talk session"
+publish = false
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+# Standalone: not part of the Tauri app's build.
+[workspace]

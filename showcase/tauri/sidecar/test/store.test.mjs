@@ -170,7 +170,7 @@ console.log('store tests: all passed');
   const msgs = [...turn1, { role: 'user', content: 'q2' }, ...shot('s2'), ...shot('s3'), ...shot('s4')];
   const f = S5.fitContext(msgs, { budgetTokens: 1e6 });
   const datas = (JSON.stringify(f).match(/"data":"(\w+)"/g) ?? []).map((d) => d.slice(8, -1));
-  assert.deepEqual(datas, ['s3', 's4'], 'older requests lose their images; the current one keeps its newest two');
+  assert.deepEqual(datas, ['s2', 's3', 's4'], 'older requests lose their images; the current one drops none until a batch is due');
   const oldRead = f.find((m) => m.role === 'tool' && m.content[0].toolCallId === 'r1').content[0].content;
   assert.match(oldRead, /^Brave — Settings\n\[The full list of this window's controls was shown/, 'an old window read shrinks to its first line');
   // The older part renders the same however many calls the current request makes: the cache prefix holds.
@@ -179,5 +179,153 @@ console.log('store tests: all passed');
   assert.equal(upToQ2(later), upToQ2(f), 'earlier messages are byte-identical between calls');
   const cur = S5.fitContext([{ role: 'system', content: 'sys' }, { role: 'user', content: 'q' }, ...read('r9')], { budgetTokens: 1e6 });
   assert.match(cur.at(-1).content[0].content, /link "Billing"/, 'a read from the current request stays whole');
+  // Screenshots in the current request go in batches: kept count stays between KEEP_IMAGES and KEEP_IMAGES + IMAGE_BATCH - 1.
+  const live = (h) => (JSON.stringify(h).match(/"data":"(\w+)"/g) ?? []).map((d) => d.slice(8, -1));
+  let h = [{ role: 'system', content: 'sys' }, { role: 'user', content: 'q' }];
+  const kept = [], changed = [];
+  for (let i = 1; i <= 9; i++) {
+    const prev = JSON.stringify(h);
+    const stats = {};
+    h = S5.fitContext([...h, ...shot(`b${i}`)], { budgetTokens: 1e6, stats });
+    kept.push(live(h).length);
+    changed.push(!JSON.stringify(h).startsWith(prev.slice(0, -1)) ? stats.images_dropped : 0);
+  }
+  assert.deepEqual(kept, [1, 2, 3, 4, 2, 3, 4, 2, 3], 'drops three at a time, never below the newest two');
+  assert.equal(changed.filter(Boolean).length, 2, 'the earlier conversation changed only when a batch went (2 of 9 calls)');
+  assert.deepEqual(live(h), ['b7', 'b8', 'b9'], 'the newest screenshots are the ones kept');
   console.log('cache stability tests: passed');
+}
+
+// Quitting right after a reply: the sidecar exits on stdin close, which used to cut off the session save.
+{
+  const { spawnSync } = await import('node:child_process');
+  const fsx = await import('node:fs');
+  const os2 = await import('node:os');
+  const path2 = await import('node:path');
+  const dir = fsx.mkdtempSync(path2.join(os2.tmpdir(), 'roamies-flush-'));
+  const store = new URL('../store.mjs', import.meta.url).href;
+  // Queue a big save, then exit the way the sidecar does on close: after flushWrites.
+  const code = `const S = await import(${JSON.stringify(store)});
+    const s = S.newSession('p', 'm'); s.messages = Array.from({ length: 4000 }, (_, i) => ({ role: 'user', content: 'message ' + i }));
+    S.saveSession(s); S.writeJson(${JSON.stringify(path2.join(dir, 'x.json'))}, { ok: 1 });
+    await S.flushWrites(); process.exit(0);`;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, ROAMIES_DATA_DIR: dir } });
+  assert.equal(r.status, 0, String(r.stderr));
+  const saved = fsx.readdirSync(path2.join(dir, 'sidekick', 'sessions'));
+  assert.equal(saved.length, 1, 'session saved before exit');
+  assert.equal(JSON.parse(fsx.readFileSync(path2.join(dir, 'sidekick', 'sessions', saved[0]), 'utf8')).messages.length, 4000);
+  assert.ok(fsx.existsSync(path2.join(dir, 'x.json')), 'every queued write landed');
+  fsx.rmSync(dir, { recursive: true, force: true });
+  console.log('flush on exit tests: passed');
+}
+
+// A plain reminder is done once it has fired; a commitment stays open until the user finishes it.
+{
+  const S6 = await import('../store.mjs?kinds');
+  // Regression: the timer block's 'ping' (due in 5s) shares this memory.json and fired here whenever the
+  // slower Windows fsyncs pushed the run past 5s. Start clean and pin the clock.
+  for (const c of S6.openCommitments()) await S6.updateCommitment(c.id, { status: 'dropped' });
+  const now = Date.now();
+  const r = await S6.addCommitment('Call mom', now - 1000, 'reminder');
+  const k = await S6.addCommitment('Finish the slides', now - 1000);
+  const notYet = await S6.addCommitment('Not yet', now + 5_000, 'reminder');
+  const fired = await S6.takeDueReminders(now);
+  assert.deepEqual(fired.map((c) => c.id).sort(), [r.id, k.id].sort(), 'both fire');
+  assert.ok(S6.openCommitments().some((c) => c.id === notYet.id && !c.remindedAt), 'one due after now waits, however slow the run');
+  const open = S6.openCommitments().map((c) => c.id);
+  assert.ok(!open.includes(r.id), 'reminder cleared after firing');
+  assert.ok(open.includes(k.id), 'commitment still open after its nudge');
+  assert.notEqual(S6.nextDue(), r.due, 'the cleared reminder never fires again');
+  console.log('reminder kinds tests: passed');
+}
+
+// The on-screen list: Today / Later, finished ones struck through until midnight, then deleted.
+{
+  const S7 = await import('../store.mjs?list');
+  for (const c of S7.openCommitments()) await S7.updateCommitment(c.id, { status: 'dropped' });
+  await S7.clearFinished(Date.now() + 2 * 864e5);
+  const now = new Date(); now.setHours(12, 0, 0, 0);
+  const t = now.getTime(), H = 36e5;
+  const late = await S7.addCommitment('Late one', t - H);
+  const soon = await S7.addCommitment('This afternoon', t + 3 * H, 'reminder');
+  const tmrw = await S7.addCommitment('Tomorrow thing', t + 24 * H);
+  const any = await S7.addCommitment('Someday');
+  const fin = await S7.addCommitment('Finished today', t + H);
+  await S7.updateCommitment(fin.id, { status: 'done' });
+  const drop = await S7.addCommitment('Dropped', t + H);
+  await S7.updateCommitment(drop.id, { status: 'dropped' });
+  let L = S7.listItems(t);
+  assert.deepEqual(L.today.map((i) => i.text), ['Late one', 'This afternoon', 'Finished today'], 'today: overdue, then soonest, done last');
+  assert.deepEqual(L.later.map((i) => i.text), ['Tomorrow thing', 'Someday'], 'later: dated, then undated');
+  assert.ok(L.today[0].overdue && !L.today[1].overdue, 'overdue flagged');
+  assert.ok(L.today[2].done, 'done shown struck');
+  assert.equal(L.today[1].kind, 'reminder');
+  // Next day: finished entries from yesterday are deleted; open ones stay, whatever their age.
+  const removed = await S7.clearFinished(t + 24 * H);
+  assert.equal(removed, 2, 'done and dropped from yesterday deleted');
+  const left = S7.listItems(t + 24 * H);
+  assert.deepEqual([...left.today, ...left.later].map((i) => i.text).sort(), ['Late one', 'Someday', 'This afternoon', 'Tomorrow thing'].sort());
+  assert.equal(await S7.clearFinished(t + 24 * H), 0, 'nothing more to delete');
+  void late; void soon; void tmrw; void any;
+  console.log('list tests: passed');
+}
+
+// Over budget, the history is trimmed well below it, so the next requests don't each move the start (and re-send it all).
+{
+  const S7 = await import('../store.mjs?trim');
+  let h = [{ role: 'system', content: 'sys' }];
+  const firsts = [];
+  let trims = 0;
+  for (let i = 0; i < 40; i++) {
+    const stats = {};
+    h = S7.fitContext([...h, { role: 'user', content: `q${i} ` + 'x'.repeat(3000) }, { role: 'assistant', content: `a${i}` }], { budgetTokens: 10000, stats });
+    if (stats.trimmed_msgs) { trims++; assert.ok(stats.trimmed_tokens > 0); }
+    assert.ok(JSON.stringify(h).length < 10000 * 3.6 + 4000, 'fits the budget');
+    assert.equal(h[1].role, 'user');
+    firsts.push(h[1].content.match(/q\d+/)[0]);
+  }
+  const moves = firsts.filter((f, i) => i && f !== firsts[i - 1]).length;
+  assert.equal(moves, trims, 'the start only moves on a trim');
+  assert.ok(trims <= 8, `trimmed ${trims} times in 40 requests (one per request would be 29)`);
+  assert.ok(h[1].content.startsWith('[Older parts'), 'trim is noted');
+  console.log('trim hysteresis tests: passed');
+}
+
+// Token budget measured, not assumed: number-heavy text runs ~1.5 letters per token, so the same letters trim sooner.
+{
+  const S8 = await import('../store.mjs?rate');
+  assert.equal(S8.calibrateCharsPerToken(150_000, 100_000), 1.5);
+  assert.equal(S8.calibrateCharsPerToken(900_000, 100_000), S8.CHARS_PER_TOKEN, 'never more lenient than the default');
+  assert.equal(S8.calibrateCharsPerToken(10, 100_000), 1, 'floor');
+  assert.equal(S8.calibrateCharsPerToken(0, 5, 2.2), 2.2, 'no measurement keeps the last rate');
+  assert.equal(S8.calibrateCharsPerToken(4000, 10_000, 3.6), 3.6, 'a small call is mostly system prompt: not measured');
+  const h = [{ role: 'system', content: 'sys' }];
+  for (let i = 0; i < 6; i++) h.push({ role: 'user', content: `q${i} ` + '1234 5678 '.repeat(2000) }, { role: 'assistant', content: `a${i}` });
+  const chars = S8.contextChars(h);
+  const loose = {}, tight = {};
+  S8.fitContext(h, { budgetTokens: 50_000, stats: loose });
+  const fitted = S8.fitContext(h, { budgetTokens: 50_000, stats: tight, charsPerToken: 1.5 });
+  assert.equal(loose.trimmed_msgs, 0, `${chars} letters look like ${Math.round(chars / 3.6)} tokens at the default`);
+  assert.ok(tight.trimmed_msgs > 0, 'at the measured rate it is over budget and trims');
+  assert.ok(S8.contextChars(fitted) / 1.5 <= 50_000, 'and then fits');
+  console.log('measured token rate tests: passed');
+}
+
+// Regression: an image counted as 6000 letters (~1,667 tokens at 3.6), so screenshot-heavy history ran far over budget.
+{
+  const S9 = await import('../store.mjs?images');
+  const n = 25;
+  const calls = Array.from({ length: n }, (_, i) => ({ type: 'tool_call', id: `p${i}`, name: 'take_screenshot', args: {} }));
+  const h = [{ role: 'system', content: 'sys' }];
+  for (let i = 0; i < 4; i++) h.push({ role: 'user', content: `q${i}` }, { role: 'assistant', content: `a${i}` });
+  h.push({ role: 'user', content: 'compare all of these' }, { role: 'assistant', content: calls },
+    { role: 'tool', content: calls.map((c) => ({ type: 'tool_result', toolCallId: c.id, content: [{ type: 'image', mediaType: 'image/jpeg', data: c.id }] })) });
+  assert.equal(S9.contextImages(h), n);
+  assert.ok(S9.contextChars(h) < 2000, 'images are not counted as letters');
+  const stats = {};
+  const fitted = S9.fitContext(h, { budgetTokens: 100_000, stats });
+  assert.ok(stats.trimmed_msgs > 0, `${n} screenshots (~${n * S9.IMAGE_TOKENS} tokens) exceed a 100k budget and trim`);
+  assert.equal(S9.contextImages(fitted), n, 'the current request keeps its screenshots');
+  assert.ok(stats.trimmed_tokens > 0 && stats.trimmed_tokens < 100, 'only the little old text was trimmed');
+  console.log('image token budget tests: passed');
 }

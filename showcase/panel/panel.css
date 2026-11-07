@@ -1,0 +1,240 @@
+/* The panel that opens from the menu bar or tray icon. Built on the setup guide's stylesheet (fonts, colours,
+   pixel frames, buttons, switches, fields), so it's the same LED-panel world; this file only lays it out.
+   One accent fill per view: the update's Install button when there is one, otherwise Ask. */
+:root {
+  --gut: 16px;      /* the one inline gutter: header, pages and note */
+  --step: 10px;     /* gap inside a group */
+  --group: 22px;    /* gap between groups */
+  /* Type scale, four steps: the title, section heads, everything you read (descriptions, rows, empty
+     states), and the small print (dates, hints, timestamps, labels, buttons). */
+  --t-head: 13px; --t-body: 12px; --t-small: 11px;
+  /* Motion: the CRT switch-on when it opens, and the switch-off when it closes (main.rs waits --shut). */
+  --open: 240ms; --shut: 150ms;
+}
+/* The window is transparent and so is the page; the frame is its own box (a body background would be
+   painted across the whole window), so the panel can switch on and off as its own shape. */
+html, body { height: 100%; background: transparent; }
+.frame {
+  height: 100%; display: flex; flex-direction: column; overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(80, 210, 190, 0.07) 0.9px, transparent 1.3px) 0 0 / 8px 8px,
+    var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line-hi);
+  transform-origin: 50% 0;
+}
+/* Above the icon (a taskbar at the bottom): it opens from its bottom edge. */
+.frame.from-bottom { transform-origin: 50% 100%; }
+
+/* Opening: a bright line at the icon's edge that opens out into the panel, like a CRT switching on. */
+.frame.opening { animation: crt-on var(--open) steps(8, end) both; }
+@keyframes crt-on {
+  0% { transform: scaleY(0.012); filter: brightness(2.6); opacity: 0.4; }
+  40% { transform: scaleY(1.01); filter: brightness(1.5); opacity: 1; }
+  100% { transform: none; filter: none; opacity: 1; }
+}
+/* Closing: it folds back into the line and goes dark. */
+.frame.shutting { animation: crt-off var(--shut) steps(5, end) both; pointer-events: none; }
+@keyframes crt-off {
+  0% { transform: none; filter: none; opacity: 1; }
+  60% { transform: scaleY(0.012); filter: brightness(2.6); opacity: 1; }
+  100% { transform: scaleY(0.012) scaleX(0); opacity: 0; }
+}
+.frame.shut { opacity: 0; }
+
+/* Rows dissolve in through an LED dither, one after another from top to bottom, and nothing slides: a
+   quarter of the dots, then half (a checkerboard), then three quarters, then the whole row. --i: the row's
+   place, set by panel.js (capped, so a long list doesn't wait). */
+:root {
+  --d1: conic-gradient(#000 0 25%, transparent 0);
+  --d2: conic-gradient(#000 0 25%, transparent 0 50%, #000 0 75%, transparent 0);
+  --d3: conic-gradient(transparent 0 25%, #000 0);
+}
+.pane.enter > *, .pane.enter .list > li { animation: dissolve-in 200ms step-end both; animation-delay: calc(var(--i, 0) * 26ms); }
+@keyframes dissolve-in {
+  0% { opacity: 0; }
+  25% { opacity: 1; -webkit-mask: var(--d1) 0 0 / 2px 2px; mask: var(--d1) 0 0 / 2px 2px; }
+  50% { opacity: 1; -webkit-mask: var(--d2) 0 0 / 2px 2px; mask: var(--d2) 0 0 / 2px 2px; }
+  75% { opacity: 1; -webkit-mask: var(--d3) 0 0 / 2px 2px; mask: var(--d3) 0 0 / 2px 2px; }
+  100% { opacity: 1; -webkit-mask: none; mask: none; }
+}
+/* A row being taken away (forgotten, done, dropped) dissolves out the same way, then the list closes up. */
+.item.leaving { animation: dissolve-out 200ms step-end both; pointer-events: none; }
+@keyframes dissolve-out {
+  0% { -webkit-mask: var(--d3) 0 0 / 2px 2px; mask: var(--d3) 0 0 / 2px 2px; }
+  33% { -webkit-mask: var(--d2) 0 0 / 2px 2px; mask: var(--d2) 0 0 / 2px 2px; }
+  67% { -webkit-mask: var(--d1) 0 0 / 2px 2px; mask: var(--d1) 0 0 / 2px 2px; }
+  100% { opacity: 0; }
+}
+
+/* ---------- header: who, and what it's doing right now ---------- */
+.head { display: flex; align-items: center; gap: 8px; padding: 6px var(--gut) 6px 4px; }
+.head-text { min-width: 0; flex: 1; display: grid; }
+/* The Roamie stands on a small LED pad, like the setup guide's. */
+.avatar { flex: none; width: 100px; height: 74px; margin-inline-end: -10px; background: radial-gradient(closest-side, rgba(120, 255, 226, 0.10), transparent) 50% 92% / 70% 22% no-repeat; }
+/* Something it says (a new look, an update; not the setup guide's .quip bubble): in the status line's place for a moment, typed in its own font. */
+.head-text .now, .head-text .saying { grid-area: 2 / 1; }
+.saying {
+  margin: 4px 0 0; font: 700 var(--t-body)/1.4 var(--display); letter-spacing: 0.03em; color: var(--accent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; visibility: hidden;
+}
+.saying.on { visibility: visible; animation: dissolve-in 200ms step-end both; }
+.now.quiet { visibility: hidden; }
+.who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.who h1 {
+  margin: 0; font: 900 22px/1.1 var(--display); letter-spacing: 0.02em; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.now {
+  margin: 4px 0 0; font-size: var(--t-small); line-height: 1.4; color: var(--ink-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.now b { font-weight: 700; color: var(--ink); }
+
+/* ---------- look tiles: each look, live ---------- */
+.looks { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.looktile {
+  appearance: none; border: 0; cursor: pointer; display: grid; justify-items: center; gap: 2px; padding: 6px 4px 8px;
+  --bc: var(--line); --fill: var(--panel); color: var(--ink-2);
+}
+.looktile canvas { display: block; width: 104px; height: 76px; }
+.looktile .name { font: 700 var(--t-small)/1.25 var(--mono); font-stretch: 87.5%; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
+.looktile:hover { --bc: var(--line-hi); color: var(--ink); }
+.looktile[aria-checked="true"] { --bc: var(--accent); --fill: #0a2a28; color: var(--accent); }
+
+/* ---------- About: who made it ---------- */
+.maker { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.maker canvas { flex: none; width: 100px; height: 74px; margin-inline-start: -14px; background: radial-gradient(closest-side, rgba(120, 255, 226, 0.10), transparent) 50% 92% / 70% 22% no-repeat; }
+.maker > span { min-width: 0; font: 700 var(--t-head)/1.35 var(--mono); color: var(--ink); white-space: nowrap; }
+.maker > span small { display: block; font: 400 var(--t-small)/1.35 var(--mono); color: var(--ink-3); }
+
+/* ---------- sidebar: one page per concern ---------- */
+.split { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--side) minmax(0, 1fr); border-top: 1px dashed var(--line); }
+:root { --side: 148px; }
+.side { display: flex; flex-direction: column; gap: 4px; padding: 12px 10px var(--gut); border-right: 1px dashed var(--line); overflow-y: auto; }
+.nav { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.side-label { margin: 14px 8px 4px; font: 700 var(--t-small)/1.3 var(--mono); font-stretch: 87.5%; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+/* A page link: quiet text until it's hovered or current; the current one sits in the accent LED frame. */
+.navi {
+  appearance: none; border: 0; cursor: pointer; width: 100%;
+  display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 7px 8px; text-align: start;
+  font: 500 var(--t-body)/1.25 var(--mono); color: var(--ink-2); white-space: nowrap;
+  --bc: transparent; --fill: transparent;
+  transition: color 120ms steps(2, end);
+}
+.navi:hover { color: var(--ink); --fill: rgba(120, 255, 226, 0.05); }
+.navi[aria-current="page"] { color: var(--accent); font-weight: 700; --fill: #0a2a28; --bc: var(--accent); }
+/* Needs you (an update, no account): one small LED at the end, nothing more. */
+.navi .dot { display: none; width: 6px; height: 6px; margin-inline-start: auto; background: var(--accent); }
+.navi.flag .dot { display: block; }
+.navi.ping { animation: navi-ping 240ms steps(3, end); }
+@keyframes navi-ping { 0% { filter: brightness(1.9); } 100% { filter: none; } }
+
+/* ---------- panes ---------- */
+.body { min-height: 0; overflow-y: auto; padding: 4px var(--gut) var(--gut); }
+/* The scrollbar has its own lane at the frame's edge, kept even when nothing scrolls (WebKit ignores
+   scrollbar-gutter on styled bars), so nothing shifts and the lane plus padding make the usual gutter. */
+.body { overflow-y: scroll; scrollbar-gutter: stable; padding-inline-end: calc(var(--gut) - var(--sb)); }
+.pane { display: grid; gap: var(--group); padding-top: 12px; }
+.pane[hidden] { display: none; }
+.group { display: grid; gap: var(--step); min-width: 0; }
+.group[hidden] { display: none; }
+.ghead { display: grid; gap: 3px; min-width: 0; }
+.ghead h2 { display: flex; align-items: baseline; gap: 8px; font-size: var(--t-head); }
+.ghead h2 .n { font-weight: 500; color: var(--ink-3); }
+/* A description reads at the same size as the rows under it; it's quieter by colour, not by size. */
+.ghead p { margin: 0; font-size: var(--t-body); line-height: 1.4; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { margin: 0; font: 700 var(--t-small)/1.3 var(--mono); font-stretch: 87.5%; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+
+/* Buttons here are a size down from the guide's. */
+.body .btn { padding: 8px 12px; font-size: var(--t-small); line-height: 1.25; white-space: nowrap; }
+.actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.actions .btn { width: 100%; }
+.actions .btn.wide { grid-column: 1 / -1; }
+
+/* The update notice: the one accent fill on Home while it's there. */
+.update { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; --bc: var(--accent); --fill: #0a2a28; color: var(--ink); }
+.update p { margin: 0; font-size: var(--t-body); line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- lists: recent, memory, commitments ---------- */
+.list { margin: 0; padding: 0; list-style: none; display: grid; }
+.item {
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  min-height: 32px; padding: 6px 0; border-bottom: 1px dashed var(--line);
+}
+.item:last-child { border-bottom: 0; }
+.item .text { min-width: 0; font-size: var(--t-body); line-height: 1.35; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .meta { font-size: var(--t-small); line-height: 1.3; color: var(--ink-3); white-space: nowrap; }
+.item .text small { display: block; font-size: var(--t-small); line-height: 1.3; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.item.ask .text { color: var(--ink-2); }
+.item.bad .text, .item .text small.late { color: var(--danger); }
+.mark { width: 8px; height: 8px; justify-self: center; background: #1e3f3d; }
+.item.did .mark { background: var(--accent-lo); }
+.item.bad .mark { background: var(--danger); }
+/* A question: two stacked bars, like a quote, instead of a dot. */
+.item.ask .mark { background: none; border-left: 3px solid var(--ink-3); border-right: 3px solid var(--ink-3); height: 8px; width: 9px; }
+.row-btns { display: inline-flex; gap: 10px; }
+.empty { margin: 0; font-size: var(--t-body); line-height: 1.4; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.usage { margin: 0; font-size: var(--t-small); line-height: 1.4; color: var(--ink-3); }
+
+/* A long list: a search field once there are more than a page, and "Show more" at the end. */
+.find { display: flex; }
+.find .field { flex: 1; }
+.group > .link { justify-self: start; }
+
+/* A row action that asks first: Forget turns into Confirm in the same spot, then goes back if left alone.
+   Both words sit in the same cell so the row never shifts or wraps. */
+.arm { display: inline-grid; justify-items: end; }
+.arm > span { grid-area: 1 / 1; padding: 1px 6px; transition: opacity 90ms steps(2, end); }
+.arm > .yes { opacity: 0; }
+.arm[aria-pressed="true"] > .no { opacity: 0; }
+.arm[aria-pressed="true"] > .yes { opacity: 1; color: var(--accent-ink); background: var(--danger); animation: arm-blink 600ms steps(2, end) 2; }
+@keyframes arm-blink { 50% { background: #ff8a78; } }
+
+/* ---------- settings ---------- */
+.setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 32px; }
+.setting > span { min-width: 0; font-size: var(--t-body); line-height: 1.35; color: var(--ink); }
+.setting > span small { display: block; font-size: var(--t-small); line-height: 1.35; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.setting .link { white-space: nowrap; }
+.picks { display: flex; flex-wrap: wrap; gap: 6px; }
+.picks .chord { padding: 4px; }
+.picks .cap { height: 26px; min-width: 0; padding: 0 9px 2px; font-size: var(--t-small); }
+.body .field { flex: 1; }
+.body .field.select { flex: 1 1 auto; }
+/* Same size as the buttons beside them. Desktop webviews only, so the iOS zoom-on-focus rule doesn't apply. */
+.body select, .body input { font-size: var(--t-small); padding: 8px 10px; line-height: 1.25; }
+.body select { padding-inline-end: 30px; }
+.keyform { display: flex; gap: 6px; }
+.keyform[hidden] { display: none; }
+.ok { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: var(--t-body); line-height: 1.25; white-space: nowrap; }
+.setting > span small.late { color: var(--danger); white-space: normal; }
+.spread { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.link.danger { color: var(--danger); }
+.links { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+
+/* Why pick a choice: one line under it, quieter than the setting it explains. */
+.why { margin: -2px 0 0; font-size: var(--t-small); line-height: 1.4; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.why.late { color: var(--danger); }
+
+/* Tooltip: a small LED-framed card against its control, dissolving in like the rows. */
+.tip {
+  position: fixed; z-index: 20; padding: 9px 11px; --bc: var(--line-hi); --fill: #08201f;
+  font-size: var(--t-small); line-height: 1.45; color: var(--ink);
+}
+.tip[hidden] { display: none; }
+.tip.in { animation: dissolve-in 140ms step-end both; }
+@media (prefers-reduced-motion: reduce) { .tip.in { animation: none; } }
+
+/* ---------- note: what just happened after something you did here ---------- */
+.note {
+  margin: 0; padding: 9px var(--gut); border-top: 1px dashed var(--line);
+  font-size: var(--t-body); animation: dissolve-in 160ms step-end both; line-height: 1.4; color: var(--accent); background: var(--panel);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.note.bad { color: var(--danger); }
+.note[hidden] { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .frame.opening, .frame.shutting, .pane.enter > *, .pane.enter .list > li, .navi.ping, .item.leaving, .note, .arm[aria-pressed="true"] > .yes { animation: none; }
+  .navi, .arm > span { transition: none; }
+}

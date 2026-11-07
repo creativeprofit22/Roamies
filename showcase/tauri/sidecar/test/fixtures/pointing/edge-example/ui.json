@@ -1,0 +1,241 @@
+{
+ "controls": [
+  {
+   "bounds": [
+    2422,
+    0,
+    46,
+    40
+   ],
+   "id": 1,
+   "label": "Minimizar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2468,
+    0,
+    46,
+    40
+   ],
+   "id": 2,
+   "label": "Restaurar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2514,
+    0,
+    46,
+    40
+   ],
+   "id": 3,
+   "label": "Cerrar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    0,
+    44,
+    36,
+    32
+   ],
+   "id": 4,
+   "label": "Atrás",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    40,
+    44,
+    32,
+    32
+   ],
+   "id": 5,
+   "label": "Actualizar",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    80,
+    48,
+    24,
+    24
+   ],
+   "id": 6,
+   "label": "Ver información del sitio",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    104,
+    48,
+    2201,
+    24
+   ],
+   "id": 7,
+   "label": "Barra de direcciones y búsqueda",
+   "role": "text field",
+   "value": "https://example.com"
+  },
+  {
+   "bounds": [
+    2309,
+    48,
+    24,
+    24
+   ],
+   "id": 8,
+   "label": "Traducir",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2337,
+    48,
+    24,
+    24
+   ],
+   "id": 9,
+   "label": "Entrar en Modo de lectura (F9)",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2365,
+    48,
+    24,
+    24
+   ],
+   "id": 10,
+   "label": "Agregar esta página a favoritos (Ctrl+D)",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2397,
+    44,
+    32,
+    32
+   ],
+   "id": 11,
+   "label": "Favoritos",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2433,
+    44,
+    87,
+    32
+   ],
+   "id": 12,
+   "label": "Exploración de InPrivate",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    2524,
+    44,
+    36,
+    32
+   ],
+   "id": 13,
+   "label": "Configuración y más (Alt+F)",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    1239,
+    973,
+    82,
+    22
+   ],
+   "id": 14,
+   "label": "Learn more",
+   "role": "link",
+   "value": "https://iana.org/help/example-domains"
+  },
+  {
+   "bounds": [
+    4,
+    0,
+    32,
+    36
+   ],
+   "id": 15,
+   "label": "Buscar pestañas",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    32,
+    0,
+    256,
+    41
+   ],
+   "id": 16,
+   "label": "Example Domain - Uso de memoria - 22.6 MB",
+   "role": "tab"
+  },
+  {
+   "bounds": [
+    256,
+    12,
+    16,
+    16
+   ],
+   "id": 17,
+   "label": "Cerrar pestaña",
+   "role": "button"
+  },
+  {
+   "bounds": [
+    284,
+    0,
+    32,
+    41
+   ],
+   "id": 18,
+   "label": "Nueva pestaña",
+   "role": "button"
+  }
+ ],
+ "elsewhere": [],
+ "note": "",
+ "ok": true,
+ "source": "uia",
+ "texts": [
+  "Este dominio está destinado al uso en ejemplos de documentación sin necesidad de permiso. Esto no es un servicio; evitar utilizarlo para realizar pruebas o moni",
+  "This domain is for use in documentation examples without needing permission. This is not a service; avoid relying on it for testing and monitoring purposes.",
+  "هذا النطاق مُخصص للاستخدام في أمثلة التوثيق دون الحاجة إلى إذن. هذه ليست خدمة، يُرجى تجنب الاعتماد عليها لأغراض الاختبار والمراقبة.",
+  "该域名仅用于文档示例，无需获得许可。这并非一项服务，请勿将其用于测试和监控目的。",
+  "L’usage de ce domaine est réservé à des exemples de documentation, sans autorisation préalable. Il ne s’agit pas d’un service ; son utilisation à des fins de te",
+  "Данный домен предназначен для использования в примерах документации без необходимости получения предварительного разрешения. Это не сервис; не рекомендуется его"
+ ],
+ "unit": "px",
+ "window": {
+  "app": "Microsoft Edge",
+  "bounds": [
+   0,
+   0,
+   2560,
+   1400
+  ],
+  "id": 4000286,
+  "scale": 1,
+  "title": "Example Domain - [InPrivate]: Microsoft​ Edge"
+ },
+ "shot": {
+  "bounds": [
+   0,
+   0,
+   2560,
+   1400
+  ],
+  "native": [
+   2560,
+   1400
+  ]
+ }
+}

@@ -45,7 +45,7 @@ voice, keeps track of what you said you'd do and nudges you when it's due.
 
 ## Also included
 
-- **The Roamies panel:** click the menu bar or tray icon for what it's doing, what it remembers, and every setting.
+- **The Roamies panel:** click the menu bar icon on macOS for the panel, or the tray icon on Windows for Settings; both show what it's doing, what it remembers, and every setting.
 - **Safe by default:** file edits, commands and app control stay off until you turn them on, and risky steps always ask.
 - **Shows its work:** every tool plays its own animation, so you can see what it's doing.
 - **Private keys:** your Fish Audio key stays in the macOS Keychain or encrypted on Windows, never in a file.
@@ -63,7 +63,7 @@ voice, keeps track of what you said you'd do and nudges you when it's due.
 | Click and type in apps  | Yes                        | Yes                         |
 | Ask about an area (⌃⌥A) | Yes                        | Not yet                     |
 
-<sub>Spoken replies are billed to your own Fish Audio account; the panel shows what each voice model costs. On
+<sub>Spoken replies are billed to your own Fish Audio account; the panel (macOS) and Settings (Windows) show what each voice model costs. On
 Windows, voice runs [Moonshine](https://github.com/moonshine-ai/moonshine) (MIT) speech on your PC by default
 (about 140 MB, downloaded once from the setup guide), so your voice never leaves it. For the best accuracy, switch
 to [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
@@ -123,7 +123,8 @@ the same license.
 | `showcase/tauri/sidecar/` | Sidekick's brain: the gg-framework agent, its tools, memory and tests |
 | `showcase/roamies/` | The creatures: physics, rendering, expressions, bubbles, tool animations, sounds |
 | `showcase/onboarding/` | The setup guide |
-| `showcase/panel/` | The Roamies panel: what it's doing, what it remembers, and every setting |
+| `showcase/panel/` | The Roamies panel on macOS: what it's doing, what it remembers, and every setting |
+| `showcase/settings/` | The Settings window, which Windows opens from the tray: the same things, in sections |
 | `docs/telemetry.md` | The local-only timing log: event schema, request ids, privacy and where the files live |
 
 ## Contributing
